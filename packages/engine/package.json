@@ -1,0 +1,11 @@
+{
+  "name": "@mesh/engine",
+  "version": "1.0.0",
+  "description": "Core P2P engine shared by web and cli",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/**/*.test.js"
+  },
+  "license": "ISC"
+}

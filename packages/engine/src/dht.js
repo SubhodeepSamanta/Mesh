@@ -1,0 +1,1 @@
+export const DHT_K = 20;

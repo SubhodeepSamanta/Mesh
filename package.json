@@ -1,0 +1,23 @@
+{
+  "name": "mesh",
+  "version": "1.0.0",
+  "description": "Decentralised P2P file transfer platform",
+  "private": true,
+  "workspaces": [
+    "packages/engine",
+    "packages/signaling",
+    "packages/web",
+    "packages/cli"
+  ],
+  "scripts": {
+    "dev:signaling": "npm run dev --workspace=packages/signaling",
+    "dev:web": "npm run dev --workspace=packages/web",
+    "test": "npm run test --workspace=packages/engine"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/subhodeepsamanta/mesh.git"
+  },
+  "author": "Subhodeep Samanta",
+  "license": "ISC"
+}

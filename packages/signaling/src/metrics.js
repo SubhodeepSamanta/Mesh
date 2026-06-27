@@ -1,0 +1,1 @@
+export const metrics = { totalRooms: 0, totalPeers: 0 };

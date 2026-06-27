@@ -1,0 +1,1 @@
+export const PIPELINE_SIZE = 16;

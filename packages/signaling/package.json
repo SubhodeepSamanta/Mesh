@@ -1,0 +1,15 @@
+{
+  "name": "@mesh/signaling",
+  "version": "1.0.0",
+  "description": "WebSocket signaling server",
+  "main": "src/server.js",
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "ws": "^8.21.0"
+  }
+}

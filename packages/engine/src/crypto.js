@@ -1,0 +1,1 @@
+export const CIPHER = 'aes-256-gcm';

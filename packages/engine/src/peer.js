@@ -1,0 +1,1 @@
+export const PEER_TIMEOUT_MS = 30000;
