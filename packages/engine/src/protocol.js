@@ -1,5 +1,3 @@
-export const PROTOCOL_VERSION = '1.0.0';
-
 const HEADER_SIZE = 4;
 const MAX_MESSAGE_SIZE = 100 * 1024 * 1024;
 
@@ -21,7 +19,6 @@ export const TYPE = {
 };
 
 export function sendMessage(socket, data) {
-  socket.setMaxListeners(100);
   const isBuffer = Buffer.isBuffer(data);
   const body = isBuffer ? data : Buffer.from(JSON.stringify(data), 'utf8');
   const header = Buffer.allocUnsafe(HEADER_SIZE);
@@ -42,12 +39,15 @@ export function sendJSON(socket, obj) {
   return sendMessage(socket, Buffer.concat([typeFlag, body]));
 }
 
-export function sendChunk(socket, chunkIndex, chunkHash, chunkBuffer) {
-  const typeFlag = Buffer.from([TYPE.CHUNK]);
-  const indexBuf = Buffer.allocUnsafe(4);
+export function sendChunk(socket, chunkIndex, chunkHash, proof, chunkBuffer) {
+  const typeFlag  = Buffer.from([TYPE.CHUNK]);
+  const indexBuf  = Buffer.allocUnsafe(4);
   indexBuf.writeUInt32BE(chunkIndex, 0);
-  const hashBuf = Buffer.from(chunkHash, 'hex');
-  const body = Buffer.concat([typeFlag, indexBuf, hashBuf, chunkBuffer]);
+  const hashBuf   = Buffer.from(chunkHash, 'hex');
+  const proofJSON = Buffer.from(JSON.stringify(proof), 'utf8');
+  const proofLen  = Buffer.allocUnsafe(4);
+  proofLen.writeUInt32BE(proofJSON.length, 0);
+  const body = Buffer.concat([typeFlag, indexBuf, hashBuf, proofLen, proofJSON, chunkBuffer]);
   return sendMessage(socket, body);
 }
 
@@ -76,9 +76,11 @@ export function parseMessage(body) {
   }
   if (type === TYPE.CHUNK) {
     const chunkIndex = body.readUInt32BE(1);
-    const chunkHash = body.slice(5, 37).toString('hex');
-    const chunkData = Buffer.from(body.slice(37));
-    return { type: TYPE.CHUNK, chunkIndex, chunkHash, chunkData };
+    const chunkHash  = body.slice(5, 37).toString('hex');
+    const proofLen   = body.readUInt32BE(37);
+    const proof      = JSON.parse(body.slice(41, 41 + proofLen).toString('utf8'));
+    const chunkData  = Buffer.from(body.slice(41 + proofLen));
+    return { type: TYPE.CHUNK, chunkIndex, chunkHash, proof, chunkData };
   }
   throw new Error(`Unknown message type: ${type}`);
 }

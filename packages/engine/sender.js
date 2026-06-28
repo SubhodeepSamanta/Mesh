@@ -1,118 +1,97 @@
 import net from 'net';
-import { writeFile, mkdir } from 'fs/promises';
-import { join } from 'path';
-import { createHash } from 'crypto';
-import { sendJSON, createFramer, parseMessage, MSG, TYPE } from './src/protocol.js';
-import { verifyChunk } from './src/crypto.js';
-import { assembleChunks } from './src/chunker.js';
+import { createReadStream } from 'fs';
+import { stat } from 'fs/promises';
+import { basename, resolve } from 'path';
+import { sha256, buildMerkleTree, getMerkleProof } from './src/crypto.js';
+import { sendJSON, sendChunk, createFramer, parseMessage, MSG, TYPE } from './src/protocol.js';
+import { DEFAULT_CHUNK_SIZE } from './src/chunker.js';
 
-const SENDER_HOST = process.argv[2] || '127.0.0.1';
-const SENDER_PORT = parseInt(process.argv[3] || '9000');
-const OUTPUT_DIR  = process.argv[4] || './received';
-const PIPELINE    = 32;
+const FILE_PATH = resolve(process.argv[2]);
+const PORT = parseInt(process.argv[3] || '9000');
+
+if (!process.argv[2]) {
+  console.error('Usage: node sender.js <filepath> [port]');
+  process.exit(1);
+}
+
+async function buildFileIndex(filePath) {
+  const fileStat = await stat(filePath);
+  const fileSize = fileStat.size;
+  const hashes = [];
+  const stream = createReadStream(filePath, { highWaterMark: DEFAULT_CHUNK_SIZE });
+  for await (const chunk of stream) {
+    hashes.push(sha256(Buffer.from(chunk)));
+  }
+  const tree = buildMerkleTree(hashes);
+  return { fileSize, hashes, tree, merkleRoot: tree.root, totalChunks: hashes.length };
+}
+
+async function readChunk(filePath, index, chunkSize = DEFAULT_CHUNK_SIZE) {
+  return new Promise((resolve, reject) => {
+    const start = index * chunkSize;
+    const stream = createReadStream(filePath, { start, end: start + chunkSize - 1, highWaterMark: chunkSize });
+    const buffers = [];
+    stream.on('data', d => buffers.push(Buffer.from(d)));
+    stream.on('end', () => resolve(Buffer.concat(buffers)));
+    stream.on('error', reject);
+  });
+}
 
 async function main() {
-  await mkdir(OUTPUT_DIR, { recursive: true });
+  console.log(`Indexing ${FILE_PATH}...`);
+  const { fileSize, hashes, tree, merkleRoot, totalChunks } = await buildFileIndex(FILE_PATH);
+  console.log(`Ready: ${totalChunks} chunks, root: ${merkleRoot.slice(0, 16)}...`);
+  console.log(`File size: ${(fileSize / 1024 / 1024).toFixed(2)} MB`);
 
-  let metadata = null;
-  const received = new Map();
-  const inFlight = new Set();
-  let nextRequest = 0;
-  let startTime = null;
+  const server = net.createServer((socket) => {
+    socket.setMaxListeners(0);
+    socket.setNoDelay(true);
+    console.log(`Receiver connected from ${socket.remoteAddress}`);
 
-  const socket = net.createConnection({ host: SENDER_HOST, port: SENDER_PORT });
-  socket.setNoDelay(true);
+    const framer = createFramer(async (body) => {
+      const msg = parseMessage(body);
+      if (msg.type !== TYPE.JSON) return;
+      const { data } = msg;
 
-  function requestNext() {
-    if (!metadata) return;
-    while (inFlight.size < PIPELINE && nextRequest < metadata.totalChunks) {
-      if (!received.has(nextRequest) && !inFlight.has(nextRequest)) {
-        inFlight.add(nextRequest);
-        sendJSON(socket, { type: MSG.CHUNK_REQUEST, index: nextRequest });
-      }
-      nextRequest++;
-    }
-  }
-
-  async function finish() {
-    const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
-    const speedMB = (metadata.fileSize / 1024 / 1024 / elapsed).toFixed(2);
-    process.stdout.write('\n');
-    console.log(`All chunks received. Assembling...`);
-
-    const assembled = assembleChunks(received, metadata.totalChunks);
-    const outPath = join(OUTPUT_DIR, metadata.fileName);
-    await writeFile(outPath, assembled);
-
-    const fileHash = createHash('sha256').update(assembled).digest('hex');
-    console.log(`Saved: ${outPath}`);
-    console.log(`Size: ${(metadata.fileSize / 1024 / 1024).toFixed(2)} MB`);
-    console.log(`Time: ${elapsed}s`);
-    console.log(`Speed: ${speedMB} MB/s`);
-    console.log(`SHA-256: ${fileHash}`);
-
-    sendJSON(socket, { type: MSG.TRANSFER_COMPLETE });
-  }
-
-  const framer = createFramer(async (body) => {
-    const msg = parseMessage(body);
-
-    if (msg.type === TYPE.JSON && msg.data.type === MSG.FILE_OFFER) {
-      metadata = msg.data;
-      startTime = Date.now();
-      console.log(`Incoming: ${metadata.fileName} (${(metadata.fileSize / 1024 / 1024).toFixed(2)} MB)`);
-      console.log(`Chunks: ${metadata.totalChunks}, Root: ${metadata.merkleRoot.slice(0, 16)}...`);
-      sendJSON(socket, { type: MSG.FILE_ACCEPT });
-      requestNext();
-      return;
-    }
-
-    if (msg.type === TYPE.CHUNK) {
-      const { chunkIndex, chunkHash, chunkData } = msg;
-      inFlight.delete(chunkIndex);
-
-      const valid = verifyChunk(chunkData, [], metadata.merkleRoot);
-      const hashMatch = createHash('sha256').update(chunkData).digest('hex') === chunkHash;
-
-      if (!hashMatch) {
-        console.warn(`Chunk ${chunkIndex} hash mismatch, re-requesting`);
-        inFlight.add(chunkIndex);
-        sendJSON(socket, { type: MSG.CHUNK_REQUEST, index: chunkIndex });
-        return;
+      if (data.type === MSG.CHUNK_REQUEST) {
+        const { index } = data;
+        if (index < 0 || index >= totalChunks) return;
+        const chunkData = await readChunk(FILE_PATH, index);
+        const proof = getMerkleProof(tree, index);
+        await sendChunk(socket, index, hashes[index], proof, chunkData);
       }
 
-      received.set(chunkIndex, chunkData);
-
-      const progress = ((received.size / metadata.totalChunks) * 100).toFixed(1);
-      process.stdout.write(`\rProgress: ${progress}% (${received.size}/${metadata.totalChunks})`);
-
-      if (received.size === metadata.totalChunks) {
-        await finish();
-        return;
+      if (data.type === MSG.TRANSFER_COMPLETE) {
+        console.log('Transfer confirmed complete');
+        server.close();
       }
+    });
 
-      if (nextRequest < metadata.totalChunks) {
-        requestNext();
-      } else {
-        const missing = [];
-        for (let i = 0; i < metadata.totalChunks; i++) {
-          if (!received.has(i) && !inFlight.has(i)) missing.push(i);
-        }
-        for (const idx of missing) {
-          inFlight.add(idx);
-          sendJSON(socket, { type: MSG.CHUNK_REQUEST, index: idx });
-        }
-      }
-    }
+    socket.on('data', framer);
+    socket.on('error', (e) => {
+      if (e.code !== 'ECONNRESET') console.error('Socket error:', e.message);
+    });
+    socket.on('close', () => console.log('Connection closed'));
+
+    sendJSON(socket, {
+      type: MSG.FILE_OFFER,
+      fileName: basename(FILE_PATH),
+      fileSize,
+      totalChunks,
+      chunkSize: DEFAULT_CHUNK_SIZE,
+      merkleRoot,
+    });
   });
 
-  socket.on('connect', () => {
-    console.log(`Connected to sender at ${SENDER_HOST}:${SENDER_PORT}`);
+  server.listen(PORT, '127.0.0.1', () => {
+    console.log(`Sender listening on 127.0.0.1:${PORT}`);
+    console.log(`Run receiver: node packages/engine/receiver.js 127.0.0.1 ${PORT} ./received`);
   });
 
-  socket.on('data', framer);
-  socket.on('error', (e) => console.error('Error:', e.message));
-  socket.on('close', () => process.exit(0));
+  server.on('error', (e) => {
+    console.error('Server error:', e.message);
+    process.exit(1);
+  });
 }
 
 main().catch((e) => {

@@ -64,22 +64,24 @@ describe('protocol framer', () => {
   });
 
   it('sends and receives a binary chunk correctly', async () => {
-    const { sender, receiver } = await createTestSocketPair();
-    const received = [];
-    const framer = createFramer((body) => received.push(parseMessage(body)));
-    receiver.on('data', framer);
-    const chunkData = Buffer.from('hello world this is chunk data');
-    const fakeHash = 'a'.repeat(64);
-    await sendChunk(sender, 7, fakeHash, chunkData);
-    await new Promise(resolve => setTimeout(resolve, 50));
-    assert.equal(received.length, 1);
-    assert.equal(received[0].type, TYPE.CHUNK);
-    assert.equal(received[0].chunkIndex, 7);
-    assert.equal(received[0].chunkHash, fakeHash);
-    assert.deepEqual(received[0].chunkData, chunkData);
-    sender.destroy();
-    receiver.destroy();
-  });
+  const { sender, receiver } = await createTestSocketPair();
+  const received = [];
+  const framer = createFramer((body) => received.push(parseMessage(body)));
+  receiver.on('data', framer);
+  const chunkData = Buffer.from('hello world this is chunk data');
+  const fakeHash  = 'a'.repeat(64);
+  const fakeProof = [{ hash: 'b'.repeat(64), position: 'right' }];
+  await sendChunk(sender, 7, fakeHash, fakeProof, chunkData);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(received.length, 1);
+  assert.equal(received[0].type, TYPE.CHUNK);
+  assert.equal(received[0].chunkIndex, 7);
+  assert.equal(received[0].chunkHash, fakeHash);
+  assert.deepEqual(received[0].proof, fakeProof);
+  assert.deepEqual(received[0].chunkData, chunkData);
+  sender.destroy();
+  receiver.destroy();
+});
 
   it('throws when message exceeds max size', () => {
     const framer = createFramer(() => {});
