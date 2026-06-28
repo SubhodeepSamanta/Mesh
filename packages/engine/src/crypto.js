@@ -1,4 +1,4 @@
-import { createHash, createCipheriv, createDecipheriv, randomBytes, generateKeyPairSync, diffieHellman, hkdfSync } from 'crypto';
+import { createHash, createCipheriv, createDecipheriv, randomBytes, generateKeyPairSync, diffieHellman, hkdfSync, createPublicKey } from 'crypto';
 
 export const CIPHER = 'aes-256-gcm';
 
@@ -9,34 +9,67 @@ export function sha256(buffer) {
 export function buildMerkleRoot(hashes) {
   if (hashes.length === 0) throw new Error('No hashes provided');
   if (hashes.length === 1) return hashes[0];
-  let level = [...hashes];
+  let level = hashes.map(h => Buffer.from(h, 'hex'));
   if (level.length % 2 !== 0) level.push(level[level.length - 1]);
   while (level.length > 1) {
     const next = [];
     for (let i = 0; i < level.length; i += 2) {
-      next.push(sha256(Buffer.from(level[i] + level[i + 1], 'utf8')));
+      next.push(Buffer.from(
+        createHash('sha256').update(Buffer.concat([level[i], level[i + 1]])).digest()
+      ));
     }
     level = next;
     if (level.length > 1 && level.length % 2 !== 0) level.push(level[level.length - 1]);
   }
-  return level[0];
+  return level[0].toString('hex');
 }
 
 export function buildMerkleTree(hashes) {
   if (hashes.length === 0) throw new Error('No hashes provided');
-  let level = [...hashes];
+  let level = hashes.map(h => Buffer.from(h, 'hex'));
   if (level.length % 2 !== 0) level.push(level[level.length - 1]);
-  const levels = [level];
+  const levels = [level.map(b => b.toString('hex'))];
   while (level.length > 1) {
     const next = [];
     for (let i = 0; i < level.length; i += 2) {
-      next.push(sha256(Buffer.from(level[i] + level[i + 1], 'utf8')));
+      next.push(Buffer.from(
+        createHash('sha256').update(Buffer.concat([level[i], level[i + 1]])).digest()
+      ));
     }
     level = next;
     if (level.length > 1 && level.length % 2 !== 0) level.push(level[level.length - 1]);
-    levels.push(level);
+    levels.push(level.map(b => b.toString('hex')));
   }
-  return { root: level[0], levels };
+  return { root: level[0].toString('hex'), levels };
+}
+
+export function getMerkleProof(tree, index) {
+  const proof = [];
+  let i = index;
+  for (let lvl = 0; lvl < tree.levels.length - 1; lvl++) {
+    const level = tree.levels[lvl];
+    const isLeft = i % 2 === 0;
+    const siblingIndex = isLeft ? i + 1 : i - 1;
+    if (siblingIndex < level.length) {
+      proof.push({ hash: level[siblingIndex], position: isLeft ? 'right' : 'left' });
+    }
+    i = Math.floor(i / 2);
+  }
+  return proof;
+}
+
+export function verifyChunk(chunkData, proof, expectedRoot) {
+  let current = Buffer.from(
+    createHash('sha256').update(chunkData).digest()
+  );
+  for (const { hash: sibling, position } of proof) {
+    const siblingBuf = Buffer.from(sibling, 'hex');
+    const combined = position === 'right'
+      ? Buffer.concat([current, siblingBuf])
+      : Buffer.concat([siblingBuf, current]);
+    current = Buffer.from(createHash('sha256').update(combined).digest());
+  }
+  return current.toString('hex') === expectedRoot;
 }
 
 export function getMerkleProof(tree, index) {
@@ -74,11 +107,11 @@ export function exportPublicKey(keyPair) {
 }
 
 export function importPublicKey(derBytes) {
-  return { key: Buffer.from(derBytes), type: 'spki', format: 'der' };
+  return createPublicKey({ key: Buffer.from(derBytes), type: 'spki', format: 'der' });
 }
 
 export function deriveSharedKey(myPrivateKey, theirPublicKeyDER) {
-  const theirPublicKey = { key: Buffer.from(theirPublicKeyDER), type: 'spki', format: 'der' };
+  const theirPublicKey = createPublicKey({ key: Buffer.from(theirPublicKeyDER), type: 'spki', format: 'der' });
   const raw = diffieHellman({ privateKey: myPrivateKey, publicKey: theirPublicKey });
   return Buffer.from(hkdfSync('sha256', raw, Buffer.from('mesh-v1'), Buffer.from('mesh-encryption-key'), 32));
 }

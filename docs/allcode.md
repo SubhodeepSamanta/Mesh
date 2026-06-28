@@ -50,12 +50,6 @@ Excluded: node_modules, .git, package-lock.json, .env
 - packages/web/src/index.css
 - packages/web/src/main.jsx
 - packages/web/vite.config.js
-- received/protocol.js
-- received/testfile.bin
-- received/transfer.test.js
-- test-output.txt
-- test-summary.txt
-- testfile.bin
 
 ## Contents
 
@@ -1196,22 +1190,24 @@ describe('protocol framer', () => {
   });
 
   it('sends and receives a binary chunk correctly', async () => {
-    const { sender, receiver } = await createTestSocketPair();
-    const received = [];
-    const framer = createFramer((body) => received.push(parseMessage(body)));
-    receiver.on('data', framer);
-    const chunkData = Buffer.from('hello world this is chunk data');
-    const fakeHash = 'a'.repeat(64);
-    await sendChunk(sender, 7, fakeHash, chunkData);
-    await new Promise(resolve => setTimeout(resolve, 50));
-    assert.equal(received.length, 1);
-    assert.equal(received[0].type, TYPE.CHUNK);
-    assert.equal(received[0].chunkIndex, 7);
-    assert.equal(received[0].chunkHash, fakeHash);
-    assert.deepEqual(received[0].chunkData, chunkData);
-    sender.destroy();
-    receiver.destroy();
-  });
+  const { sender, receiver } = await createTestSocketPair();
+  const received = [];
+  const framer = createFramer((body) => received.push(parseMessage(body)));
+  receiver.on('data', framer);
+  const chunkData = Buffer.from('hello world this is chunk data');
+  const fakeHash  = 'a'.repeat(64);
+  const fakeProof = [{ hash: 'b'.repeat(64), position: 'right' }];
+  await sendChunk(sender, 7, fakeHash, fakeProof, chunkData);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(received.length, 1);
+  assert.equal(received[0].type, TYPE.CHUNK);
+  assert.equal(received[0].chunkIndex, 7);
+  assert.equal(received[0].chunkHash, fakeHash);
+  assert.deepEqual(received[0].proof, fakeProof);
+  assert.deepEqual(received[0].chunkData, chunkData);
+  sender.destroy();
+  receiver.destroy();
+});
 
   it('throws when message exceeds max size', () => {
     const framer = createFramer(() => {});
@@ -1244,7 +1240,7 @@ async function makeTempFile(size) {
 
 function startMiniSender(filePath, port) {
     return new Promise(async (resolveSender, rejectSender) => {
-        const { chunks, hashes, merkleRoot, totalChunks, fileSize } = await chunkFile(filePath);
+       const { chunks, hashes, tree, merkleRoot, totalChunks, fileSize } = await chunkFile(filePath);
 
         const server = net.createServer((socket) => {
             socket.setNoDelay(true);
@@ -2048,354 +2044,4 @@ export default defineConfig({
   plugins: [react()],
 })
 ```
-
-### received/protocol.js
-
-```text
-const HEADER_SIZE = 4;
-const MAX_MESSAGE_SIZE = 100 * 1024 * 1024;
-
-export const MSG = {
-  FILE_OFFER:        'FILE_OFFER',
-  FILE_ACCEPT:       'FILE_ACCEPT',
-  FILE_REJECT:       'FILE_REJECT',
-  CHUNK_REQUEST:     'CHUNK_REQUEST',
-  CHUNK_DATA:        'CHUNK_DATA',
-  CHUNK_NACK:        'CHUNK_NACK',
-  TRANSFER_COMPLETE: 'TRANSFER_COMPLETE',
-  KEEPALIVE:         'KEEPALIVE',
-  ERROR:             'ERROR',
-};
-
-export const TYPE = {
-  JSON:  0x00,
-  CHUNK: 0x01,
-};
-
-export function sendMessage(socket, data) {
-  socket.setMaxListeners(200);
-  const isBuffer = Buffer.isBuffer(data);
-  const body = isBuffer ? data : Buffer.from(JSON.stringify(data), 'utf8');
-  const header = Buffer.allocUnsafe(HEADER_SIZE);
-  header.writeUInt32BE(body.length, 0);
-  const packet = Buffer.concat([header, body]);
-  const ok = socket.write(packet);
-  if (!ok) {
-    return new Promise(resolve => {
-      socket.once('drain', resolve);
-    });
-  }
-  return Promise.resolve();
-}
-
-export function sendJSON(socket, obj) {
-  const typeFlag = Buffer.from([TYPE.JSON]);
-  const body = Buffer.from(JSON.stringify(obj), 'utf8');
-  return sendMessage(socket, Buffer.concat([typeFlag, body]));
-}
-
-export function sendChunk(socket, chunkIndex, chunkHash, proof, chunkBuffer) {
-  const typeFlag  = Buffer.from([TYPE.CHUNK]);
-  const indexBuf  = Buffer.allocUnsafe(4);
-  indexBuf.writeUInt32BE(chunkIndex, 0);
-  const hashBuf   = Buffer.from(chunkHash, 'hex');
-  const proofJSON = Buffer.from(JSON.stringify(proof), 'utf8');
-  const proofLen  = Buffer.allocUnsafe(4);
-  proofLen.writeUInt32BE(proofJSON.length, 0);
-  const body = Buffer.concat([typeFlag, indexBuf, hashBuf, proofLen, proofJSON, chunkBuffer]);
-  return sendMessage(socket, body);
-}
-
-export function createFramer(onMessage) {
-  let accumulator = Buffer.alloc(0);
-  return function (incoming) {
-    accumulator = Buffer.concat([accumulator, incoming]);
-    while (true) {
-      if (accumulator.length < HEADER_SIZE) break;
-      const bodyLength = accumulator.readUInt32BE(0);
-      if (bodyLength > MAX_MESSAGE_SIZE) {
-        throw new Error(`Message too large: ${bodyLength} bytes`);
-      }
-      if (accumulator.length < HEADER_SIZE + bodyLength) break;
-      const body = Buffer.from(accumulator.slice(HEADER_SIZE, HEADER_SIZE + bodyLength));
-      accumulator = Buffer.from(accumulator.slice(HEADER_SIZE + bodyLength));
-      onMessage(body);
-    }
-  };
-}
-
-export function parseMessage(body) {
-  const type = body.readUInt8(0);
-  if (type === TYPE.JSON) {
-    return { type: TYPE.JSON, data: JSON.parse(body.slice(1).toString('utf8')) };
-  }
-  if (type === TYPE.CHUNK) {
-    const chunkIndex = body.readUInt32BE(1);
-    const chunkHash  = body.slice(5, 37).toString('hex');
-    const proofLen   = body.readUInt32BE(37);
-    const proof      = JSON.parse(body.slice(41, 41 + proofLen).toString('utf8'));
-    const chunkData  = Buffer.from(body.slice(41 + proofLen));
-    return { type: TYPE.CHUNK, chunkIndex, chunkHash, proof, chunkData };
-  }
-  throw new Error(`Unknown message type: ${type}`);
-}
-```
-
-### received/testfile.bin
-
-Binary or non-UTF-8 file omitted from markdown snapshot (52428800 bytes).
-
-### received/transfer.test.js
-
-```text
-import { describe, it } from 'node:test';
-import assert from 'node:assert/strict';
-import { writeFile, readFile, unlink, mkdir, rm } from 'fs/promises';
-import { randomBytes, createHash } from 'crypto';
-import { tmpdir } from 'os';
-import { join } from 'path';
-import net from 'net';
-import { chunkFile, assembleChunks } from '../src/chunker.js';
-import { getMerkleProof } from '../src/crypto.js';
-import { sendJSON, sendChunk, createFramer, parseMessage, MSG, TYPE } from '../src/protocol.js';
-
-async function makeTempFile(size) {
-    const filePath = join(tmpdir(), `mesh-transfer-${Date.now()}.bin`);
-    await writeFile(filePath, randomBytes(size));
-    return filePath;
-}
-
-function startMiniSender(filePath, port) {
-    return new Promise(async (resolveSender, rejectSender) => {
-        const { chunks, hashes, merkleRoot, totalChunks, fileSize } = await chunkFile(filePath);
-
-        const server = net.createServer((socket) => {
-            socket.setNoDelay(true);
-            socket.setMaxListeners(200);
-
-            const framer = createFramer((body) => {
-                const msg = parseMessage(body);
-                if (msg.type !== TYPE.JSON) return;
-
-                if (msg.data.type === MSG.CHUNK_REQUEST) {
-                    const { index } = msg.data;
-                    const proof = getMerkleProof(tree, index);
-                    sendChunk(socket, index, hashes[index], proof, chunks[index]);
-                }
-
-                if (msg.data.type === MSG.TRANSFER_COMPLETE) {
-                    server.close();
-                    resolveSender();
-                }
-            });
-
-            socket.on('data', framer);
-            socket.on('error', (e) => {
-                if (e.code !== 'ECONNRESET') rejectSender(e);
-            });
-            socket.on('close', () => resolveSender());
-
-            sendJSON(socket, {
-                type: MSG.FILE_OFFER,
-                fileName: 'testfile.bin',
-                fileSize,
-                totalChunks,
-                merkleRoot,
-                hashes,
-            });
-        });
-
-        server.listen(port, '127.0.0.1');
-        server.on('error', rejectSender);
-    });
-}
-
-function waitForPort(port, retries = 30, delay = 50) {
-    return new Promise((resolve, reject) => {
-        function attempt(n) {
-            const socket = net.createConnection({ host: '127.0.0.1', port });
-            socket.once('connect', () => { socket.destroy(); resolve(); });
-            socket.once('error', () => {
-                if (n <= 0) { reject(new Error(`Port ${port} not ready`)); return; }
-                setTimeout(() => attempt(n - 1), delay);
-            });
-        }
-        attempt(retries);
-    });
-}
-
-function runMiniReceiver(port, outputDir) {
-    return new Promise((resolve, reject) => {
-        const received = new Map();
-        let metadata = null;
-        const PIPELINE = 32;
-        let nextRequest = 0;
-        const inFlight = new Set();
-        let done = false;
-
-        const socket = net.createConnection({ host: '127.0.0.1', port });
-        socket.setNoDelay(true);
-        socket.setMaxListeners(200);
-
-        function requestNext() {
-            if (!metadata || done) return;
-            while (inFlight.size < PIPELINE && nextRequest < metadata.totalChunks) {
-                if (!received.has(nextRequest)) {
-                    inFlight.add(nextRequest);
-                    sendJSON(socket, { type: MSG.CHUNK_REQUEST, index: nextRequest });
-                }
-                nextRequest++;
-            }
-        }
-
-        const framer = createFramer(async (body) => {
-            if (done) return;
-            const msg = parseMessage(body);
-
-            if (msg.type === TYPE.JSON && msg.data.type === MSG.FILE_OFFER) {
-                metadata = msg.data;
-                sendJSON(socket, { type: MSG.FILE_ACCEPT });
-                requestNext();
-                return;
-            }
-
-            if (msg.type === TYPE.CHUNK) {
-                const { chunkIndex, chunkHash, proof, chunkData } = msg;
-                inFlight.delete(chunkIndex);
-                const hashMatch = createHash('sha256').update(chunkData).digest('hex') === chunkHash;
-                if (!hashMatch) { reject(new Error(`Chunk ${chunkIndex} hash mismatch`)); return; }
-                const { verifyChunk } = await import('../src/crypto.js');
-                const proofValid = verifyChunk(chunkData, proof, metadata.merkleRoot);
-                if (!proofValid) { reject(new Error(`Chunk ${chunkIndex} Merkle proof invalid`)); return; }
-                received.set(chunkIndex, chunkData);
-                if (received.size === metadata.totalChunks) {
-                    const assembled = assembleChunks(received, metadata.totalChunks);
-                    const outPath = join(outputDir, metadata.fileName);
-                    await writeFile(outPath, assembled);
-                    sendJSON(socket, { type: MSG.TRANSFER_COMPLETE });
-                    socket.destroy();
-                    resolve(outPath);
-                    return;
-                }
-                requestNext();
-            }
-        });
-
-        socket.on('data', framer);
-        socket.on('error', (e) => {
-            if (!done && e.code !== 'ECONNRESET') reject(e);
-        });
-    });
-}
-
-async function runTransferTest(sizeBytes, port) {
-    const filePath = await makeTempFile(sizeBytes);
-    const outDir = join(tmpdir(), `mesh-out-${Date.now()}`);
-    await mkdir(outDir, { recursive: true });
-
-    const senderReady = startMiniSender(filePath, port);
-    await waitForPort(port);
-    const outPath = await runMiniReceiver(port, outDir);
-    await senderReady;
-
-    const original = await readFile(filePath);
-    const received = await readFile(outPath);
-    const match =
-        createHash('sha256').update(original).digest('hex') ===
-        createHash('sha256').update(received).digest('hex');
-
-    await unlink(filePath);
-    await rm(outDir, { recursive: true });
-
-    return match;
-}
-
-describe('transfer', () => {
-    it('transfers a 10MB file correctly with hash match', async () => {
-        const match = await runTransferTest(10 * 1024 * 1024, 19001);
-        assert.equal(match, true);
-    });
-
-    it('transfers a 100MB file correctly with hash match', { timeout: 60000 }, async () => {
-        const match = await runTransferTest(100 * 1024 * 1024, 19002);
-        assert.equal(match, true);
-    });
-});
-```
-
-### test-output.txt
-
-```text
-
-> mesh@1.0.0 test
-> npm run test --workspace=packages/engine
-
-
-> @mesh/engine@1.0.0 test
-> node --test test/protocol.test.js test/chunker.test.js test/transfer.test.js
-
-TAP version 13
-# Subtest: chunker
-    # Subtest: reassembles chunks to produce identical bytes to original
-    ok 1 - reassembles chunks to produce identical bytes to original
-      ---
-      duration_ms: 98.7819
-      type: 'test'
-      ...
-    # Subtest: produces correct number of chunks for file size
-    ok 2 - produces correct number of chunks for file size
-      ---
-      duration_ms: 18.1985
-      type: 'test'
-      ...
-    # Subtest: merkle root changes when any chunk is modified
-    ok 3 - merkle root changes when any chunk is modified
-      ---
-      duration_ms: 0.7736
-      type: 'test'
-      ...
-    # Subtest: merkle proof verification passes for valid chunk
-    ok 4 - merkle proof verification passes for valid chunk
-      ---
-      duration_ms: 20.5545
-      type: 'test'
-      ...
-    # Subtest: merkle proof verification fails for tampered chunk
-    ok 5 - merkle proof verification fails for tampered chunk
-      ---
-      duration_ms: 20.4608
-      type: 'test'
-      ...
-    # Subtest: does not crash on a large file
-    ok 6 - does not crash on a large file
-      ---
-      duration_ms: 375.728
-      type: 'test'
-      ...
-    1..6
-ok 1 - chunker
-  ---
-  duration_ms: 536.9361
-  type: 'suite'
-  ...
-```
-
-### test-summary.txt
-
-```text
-
-    ok 1 - reassembles chunks to produce identical bytes to original
-    ok 2 - produces correct number of chunks for file size
-    ok 3 - merkle root changes when any chunk is modified
-    # Subtest: merkle proof verification passes for valid chunk
-    ok 4 - merkle proof verification passes for valid chunk
-    # Subtest: merkle proof verification fails for tampered chunk
-    ok 5 - merkle proof verification fails for tampered chunk
-    ok 6 - does not crash on a large file
-ok 1 - chunker
-```
-
-### testfile.bin
-
-Binary or non-UTF-8 file omitted from markdown snapshot (52428800 bytes).
 

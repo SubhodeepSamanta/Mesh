@@ -129,7 +129,7 @@ Examples:
 ## Current Status
 
 - [x] Phase 0: Monorepo scaffolded, all packages initialized
-- [ ] Phase 1: Raw TCP Transfer Engine
+- [x] Phase 1: Raw TCP Transfer Engine
 - [ ] Phase 2: DHT, Encryption, Multi-Peer
 - [ ] Phase 3: Signaling Server and WebRTC
 - [ ] Phase 4: React Frontend
