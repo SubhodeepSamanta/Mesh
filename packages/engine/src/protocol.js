@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = '1.0.0';import net from 'net';
+export const PROTOCOL_VERSION = '1.0.0';
 
 const HEADER_SIZE = 4;
 const MAX_MESSAGE_SIZE = 100 * 1024 * 1024;
