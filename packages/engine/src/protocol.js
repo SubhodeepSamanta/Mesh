@@ -21,6 +21,7 @@ export const TYPE = {
 };
 
 export function sendMessage(socket, data) {
+  socket.setMaxListeners(100);
   const isBuffer = Buffer.isBuffer(data);
   const body = isBuffer ? data : Buffer.from(JSON.stringify(data), 'utf8');
   const header = Buffer.allocUnsafe(HEADER_SIZE);
@@ -28,7 +29,9 @@ export function sendMessage(socket, data) {
   const packet = Buffer.concat([header, body]);
   const ok = socket.write(packet);
   if (!ok) {
-    return new Promise(resolve => socket.once('drain', resolve));
+    return new Promise(resolve => {
+      socket.once('drain', resolve);
+    });
   }
   return Promise.resolve();
 }
