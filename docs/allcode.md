@@ -9,7 +9,6 @@ Excluded: node_modules, .git, package-lock.json, .env
 - .env.example
 - .gitignore
 - docker-compose.yml
-- docs/phase1.md
 - docs/phases.md
 - package.json
 - packages/cli/package.json
@@ -29,6 +28,7 @@ Excluded: node_modules, .git, package-lock.json, .env
 - packages/engine/src/swarm.js
 - packages/engine/src/transfer.js
 - packages/engine/test/chunker.test.js
+- packages/engine/test/crypto.test.js
 - packages/engine/test/protocol.test.js
 - packages/engine/test/transfer.test.js
 - packages/signaling/Dockerfile
@@ -50,6 +50,11 @@ Excluded: node_modules, .git, package-lock.json, .env
 - packages/web/src/index.css
 - packages/web/src/main.jsx
 - packages/web/vite.config.js
+- received/protocol.js
+- received/testfile.bin
+- received/transfer.test.js
+- test-out.txt
+- testfile.bin
 
 ## Contents
 
@@ -86,187 +91,6 @@ services:
       - NODE_ENV=production
       - PORT=8080
     restart: unless-stopped
-```
-
-### docs/phase1.md
-
-```text
-# Mesh — Project Phases
-
-## Overview
-
-Mesh is a decentralised P2P file transfer platform. The project is built in 5 major phases. Each phase has multiple parts. Each part ends with a commit checkpoint. Tests are written alongside each part, not after.
-
----
-
-## Phase 1 — Raw TCP Transfer Engine
-
-The goal of this phase is two Node.js processes transferring a file correctly over raw TCP. No UI, no DHT, no encryption. Just bytes moving from A to B with integrity verification.
-
-Ends when: a 1GB file transfers between two processes with hash match on the received file.
-
----
-
-### Part 1 — Message Framing Protocol
-
-The foundation everything else sits on. TCP is a stream not a packet system. If you write 100 bytes and 200 bytes back to back the receiver might get all 300 at once or in 5 pieces. Without framing you cannot tell where one message ends and the next begins.
-
-What we build:
-- A length prefix framer that prepends every message with a 4 byte header containing the body length
-- A sendMessage function that takes a socket and data and writes a correctly framed packet
-- A createFramer function that accumulates incoming bytes and fires a callback only when a complete message has arrived
-- A message type system so we can distinguish JSON control messages from binary chunk data
-
-What we test:
-- Sending a message and receiving it complete on the other side
-- Sending 10 messages back to back and receiving all 10 correctly despite TCP batching them
-- Sending a message split across multiple data events and still receiving it correctly
-- Max message size guard so a corrupted length header cannot allocate infinite memory
-
-Files touched: protocol.js, test/protocol.test.js
-
-Checkpoint: 1-1
-
----
-
-### Part 2 — File Chunker and Merkle Tree
-
-Takes any file and splits it into fixed size binary chunks. Builds a Merkle tree over all chunk hashes so any single chunk can be verified independently without knowing the rest of the file.
-
-What we build:
-- chunkFile function that reads a file and returns an array of Buffer chunks
-- SHA-256 hash for every chunk
-- buildMerkleTree function that takes chunk hashes and returns the root hash and all tree levels
-- getMerkleProof function that returns the sibling path for any chunk index
-- verifyChunk function that recomputes the root from a chunk and its proof and checks against expected root
-- Stream based chunking for large files so we never load the whole file into memory
-
-What we test:
-- Chunking a file and reassembling chunks produces identical bytes to original
-- Merkle root changes if any single chunk is modified
-- Proof verification passes for valid chunk and fails for tampered chunk
-- Large file chunking does not crash with out of memory
-
-Files touched: chunker.js, crypto.js, test/chunker.test.js
-
-Checkpoint: 1-2
-
----
-
-### Part 3 — Sender and Receiver Scripts
-
-The first real end to end transfer. Two scripts, one sends a file over TCP, the other receives it, verifies every chunk, and writes it to disk.
-
-What we build:
-- sender.js script at packages/engine/sender.js that starts a TCP server, waits for a receiver, sends file metadata then responds to chunk requests
-- receiver.js script at packages/engine/receiver.js that connects to sender, requests chunks in a pipelined way, verifies each chunk hash, assembles the file and writes to disk
-- Pipeline logic so receiver keeps 32 chunk requests in flight at once instead of waiting for each one before requesting the next
-- Transfer summary printed on completion showing file size, time taken, and average speed
-
-What we test:
-- 10MB file transfers correctly with hash match
-- 500MB file transfers correctly with no memory crash
-- If a chunk hash fails verification the receiver re-requests it
-- Receiver handles sender disconnecting mid transfer gracefully
-
-Files touched: sender.js, receiver.js, test/transfer.test.js
-
-Checkpoint: 1-3
-
----
-
-## Phase 2 — DHT, Encryption, Multi-Peer
-
-The goal is making the transfer genuinely decentralised and secure. Peers find each other without any central server. All data is encrypted end to end.
-
-Ends when: three processes find each other via DHT and transfer a file encrypted end to end.
-
-Parts:
-- Part 1: Kademlia routing table, XOR distance, k-buckets
-- Part 2: DHT iterative lookup, announce, get-peers over UDP
-- Part 3: ECDH key exchange and AES-256-GCM encryption per chunk
-- Part 4: Swarm manager coordinating parallel chunk downloads from multiple peers
-
----
-
-## Phase 3 — Signaling Server and WebRTC
-
-The goal is browser-to-browser peer connections through NAT.
-
-Ends when: two browser tabs connect directly via WebRTC data channel using a room code.
-
-Parts:
-- Part 1: WebSocket signaling server with room creation and peer relay
-- Part 2: Room codes, QR generation, password protection, rate limiting
-- Part 3: WebRTC offer/answer flow, ICE candidate exchange, STUN integration
-- Part 4: Full browser peer connection test
-
----
-
-## Phase 4 — React Frontend
-
-The goal is a production quality UI with live transfer visualisation.
-
-Ends when: full transfer flow works in the browser with peer graph, chunk grid, and speed graph animating live.
-
-Parts:
-- Part 1: Zustand store and useTransfer hook
-- Part 2: Landing page and Send page
-- Part 3: Receive page and Transfer dashboard with D3 peer graph
-- Part 4: Chunk grid, speed graph, peer cards, history page
-- Part 5: Mobile responsive layout and polish
-
----
-
-## Phase 5 — CLI, Polish, and Deployment
-
-The goal is shipping the project publicly.
-
-Ends when: mesh send works from terminal, live deployment is accessible, README and demo video are complete.
-
-Parts:
-- Part 1: mesh send and mesh receive CLI commands with Commander
-- Part 2: Ink TUI with live progress bars, peer list, chunk grid
-- Part 3: Docker, Railway deployment for signaling, Vercel for web
-- Part 4: Architecture diagram, README, demo video
-
----
-
-## Testing Strategy
-
-Every phase has tests written in the same part as the code. Not after.
-
-Engine tests use Node's built-in test runner. No Jest, no Vitest for the engine.
-
-Web tests use Vitest since it is already in the Vite ecosystem.
-
-Test types:
-- Unit: individual functions like chunker, hasher, framer, XOR distance
-- Integration: sender to receiver over real TCP, DHT node to node over real UDP
-- End to end: full file transfer through the complete stack
-
----
-
-## Checkpoint Structure
-
-checkpoint [phase]-[part]: description
-
-Examples:
-- checkpoint 1-1: protocol framer complete with tests
-- checkpoint 1-2: chunker and merkle tree complete with tests
-- checkpoint 1-3: sender and receiver scripts with pipeline and tests
-- checkpoint 2-1: kademlia routing table and XOR distance
-
----
-
-## Current Status
-
-- [x] Phase 0: Monorepo scaffolded, all packages initialized
-- [ ] Phase 1: Raw TCP Transfer Engine
-- [ ] Phase 2: DHT, Encryption, Multi-Peer
-- [ ] Phase 3: Signaling Server and WebRTC
-- [ ] Phase 4: React Frontend
-- [ ] Phase 5: CLI, Polish, Deployment
 ```
 
 ### docs/phases.md
@@ -403,7 +227,7 @@ Examples:
 ## Current Status
 
 - [x] Phase 0: Monorepo scaffolded, all packages initialized
-- [ ] Phase 1: Raw TCP Transfer Engine
+- [x] Phase 1: Raw TCP Transfer Engine
 - [ ] Phase 2: DHT, Encryption, Multi-Peer
 - [ ] Phase 3: Signaling Server and WebRTC
 - [ ] Phase 4: React Frontend
@@ -496,7 +320,7 @@ export function TransferTUI() { return null; }
   "main": "src/index.js",
   "type": "module",
   "scripts": {
-    "test": "node --test test/protocol.test.js test/chunker.test.js test/transfer.test.js"
+    "test": "node --test test/protocol.test.js test/chunker.test.js test/crypto.test.js test/transfer.test.js"
   },
   "license": "ISC"
 }
@@ -506,29 +330,33 @@ export function TransferTUI() { return null; }
 
 ```text
 import net from 'net';
-import { writeFile, mkdir } from 'fs/promises';
+import { mkdir, open } from 'fs/promises';
 import { join, resolve } from 'path';
 import { createHash } from 'crypto';
 import { sendJSON, createFramer, parseMessage, MSG, TYPE } from './src/protocol.js';
 import { verifyChunk } from './src/crypto.js';
-import { assembleChunks } from './src/chunker.js';
 
-const SENDER_HOST = process.argv[2] || '127.0.0.1';
-const SENDER_PORT = parseInt(process.argv[3] || '9000');
-const OUTPUT_DIR  = resolve(process.argv[4] || './received');
-const PIPELINE    = 32;
-const TIMEOUT_MS  = 30000;
+const SENDER_HOST  = process.argv[2] || '127.0.0.1';
+const SENDER_PORT  = parseInt(process.argv[3] || '9000');
+const OUTPUT_DIR   = resolve(process.argv[4] || './received');
+const PIPELINE     = 32;
+const TIMEOUT_MS   = 30000;
+const KEEPALIVE_MS = 10000;
 
 async function main() {
   await mkdir(OUTPUT_DIR, { recursive: true });
 
-  let metadata    = null;
-  const received  = new Map();
-  const inFlight  = new Set();
-  let nextRequest = 0;
-  let startTime   = null;
-  let done        = false;
-  let timeoutHandle = null;
+  let metadata         = null;
+  let fileHandle       = null;
+  const received       = new Set();
+  const inFlight       = new Set();
+  const pending        = new Set();
+  let nextRequest      = 0;
+  let startTime        = null;
+  let done             = false;
+  let finishing        = false;
+  let timeoutHandle    = null;
+  let keepaliveHandle  = null;
 
   const socket = net.createConnection({ host: SENDER_HOST, port: SENDER_PORT });
   socket.setMaxListeners(0);
@@ -538,15 +366,31 @@ async function main() {
     clearTimeout(timeoutHandle);
     timeoutHandle = setTimeout(() => {
       if (!done) {
-        console.error('Transfer timed out — no data received for 30 seconds');
-        socket.destroy();
+        console.error('\nTransfer timed out');
+        cleanup();
         process.exit(1);
       }
     }, TIMEOUT_MS);
   }
 
+  function startKeepalive() {
+    keepaliveHandle = setInterval(() => {
+      if (!done) sendJSON(socket, { type: MSG.KEEPALIVE });
+    }, KEEPALIVE_MS);
+  }
+
+  function cleanup() {
+    clearTimeout(timeoutHandle);
+    clearInterval(keepaliveHandle);
+    if (fileHandle) {
+      fileHandle.close().catch(() => {});
+      fileHandle = null;
+    }
+    if (!socket.destroyed) socket.destroy();
+  }
+
   function requestNext() {
-    if (!metadata || done) return;
+    if (!metadata || done || finishing) return;
     while (inFlight.size < PIPELINE && nextRequest < metadata.totalChunks) {
       if (!received.has(nextRequest)) {
         inFlight.add(nextRequest);
@@ -554,84 +398,115 @@ async function main() {
       }
       nextRequest++;
     }
-    const missing = [];
-    for (let i = 0; i < (metadata?.totalChunks || 0); i++) {
-      if (!received.has(i) && !inFlight.has(i)) missing.push(i);
-    }
-    for (const idx of missing) {
-      inFlight.add(idx);
-      sendJSON(socket, { type: MSG.CHUNK_REQUEST, index: idx });
+    if (nextRequest >= metadata.totalChunks && inFlight.size < PIPELINE) {
+      for (const idx of pending) {
+        if (inFlight.size >= PIPELINE) break;
+        inFlight.add(idx);
+        pending.delete(idx);
+        sendJSON(socket, { type: MSG.CHUNK_REQUEST, index: idx });
+      }
     }
   }
 
-  async function finish() {
-    done = true;
-    clearTimeout(timeoutHandle);
-    const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
-    const speedMB = (metadata.fileSize / 1024 / 1024 / parseFloat(elapsed)).toFixed(2);
-    process.stdout.write('\n');
-    console.log('All chunks received and verified. Assembling...');
-    const assembled = assembleChunks(received, metadata.totalChunks);
-    const outPath   = join(OUTPUT_DIR, metadata.fileName);
-    await writeFile(outPath, assembled);
-    const fileHash  = createHash('sha256').update(assembled).digest('hex');
-    console.log(`Saved:   ${outPath}`);
-    console.log(`Size:    ${(metadata.fileSize / 1024 / 1024).toFixed(2)} MB`);
-    console.log(`Time:    ${elapsed}s`);
-    console.log(`Speed:   ${speedMB} MB/s`);
-    console.log(`SHA-256: ${fileHash}`);
-    sendJSON(socket, { type: MSG.TRANSFER_COMPLETE });
-    socket.destroy();
+async function finish() {
+  if (finishing || done) return;
+  finishing = true;
+  done = true;
+
+  clearTimeout(timeoutHandle);
+  clearInterval(keepaliveHandle);
+
+  if (fileHandle) {
+    await fileHandle.close();
+    fileHandle = null;
   }
+
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+  const speedMB = (metadata.fileSize / 1024 / 1024 / parseFloat(elapsed)).toFixed(2);
+
+  process.stdout.write('\n');
+  console.log('All chunks received and verified.');
+  console.log(`Saved:   ${join(OUTPUT_DIR, metadata.fileName)}`);
+  console.log(`Size:    ${(metadata.fileSize / 1024 / 1024).toFixed(2)} MB`);
+  console.log(`Time:    ${elapsed}s`);
+  console.log(`Speed:   ${speedMB} MB/s`);
+
+  sendJSON(socket, { type: MSG.TRANSFER_COMPLETE });
+  socket.end();
+  process.exit(0);
+}
 
   const framer = createFramer(async (body) => {
-    if (done) return;
+    if (done || finishing) return;
     resetTimeout();
+
     const msg = parseMessage(body);
 
     if (msg.type === TYPE.JSON && msg.data.type === MSG.FILE_OFFER) {
       metadata  = msg.data;
       startTime = Date.now();
+
+      const outPath = join(OUTPUT_DIR, metadata.fileName);
+      fileHandle = await open(outPath, 'w');
+      await fileHandle.truncate(metadata.fileSize);
+
       console.log(`Incoming: ${metadata.fileName}`);
       console.log(`Size:     ${(metadata.fileSize / 1024 / 1024).toFixed(2)} MB`);
       console.log(`Chunks:   ${metadata.totalChunks}`);
       console.log(`Root:     ${metadata.merkleRoot.slice(0, 32)}...`);
+
+      for (let i = 0; i < metadata.totalChunks; i++) pending.add(i);
+
       sendJSON(socket, { type: MSG.FILE_ACCEPT });
+      startKeepalive();
       requestNext();
       return;
     }
 
-    if (msg.type === TYPE.CHUNK) {
-      const { chunkIndex, chunkHash, proof, chunkData } = msg;
-      inFlight.delete(chunkIndex);
-
-      const hashMatch = createHash('sha256').update(chunkData).digest('hex') === chunkHash;
-      if (!hashMatch) {
-        console.warn(`Chunk ${chunkIndex} hash mismatch — re-requesting`);
-        inFlight.add(chunkIndex);
-        sendJSON(socket, { type: MSG.CHUNK_REQUEST, index: chunkIndex });
-        return;
-      }
-
-      const proofValid = verifyChunk(chunkData, proof, metadata.merkleRoot);
-      if (!proofValid) {
-        console.warn(`Chunk ${chunkIndex} Merkle proof invalid — re-requesting`);
-        inFlight.add(chunkIndex);
-        sendJSON(socket, { type: MSG.CHUNK_REQUEST, index: chunkIndex });
-        return;
-      }
-
-      received.set(chunkIndex, chunkData);
-      const pct = ((received.size / metadata.totalChunks) * 100).toFixed(1);
-      process.stdout.write(`\rProgress: ${pct}% (${received.size}/${metadata.totalChunks}) — ${inFlight.size} in flight`);
-
-      if (received.size === metadata.totalChunks) {
-        await finish();
-        return;
-      }
-
-      requestNext();
+    if (msg.type === TYPE.JSON && msg.data.type === MSG.KEEPALIVE) {
+      return;
     }
+
+    if (msg.type === TYPE.CHUNK) {
+  const { chunkIndex, chunkHash, proof, chunkData } = msg;
+
+  if (received.has(chunkIndex)) {
+    requestNext();
+    return;
+  }
+
+  inFlight.delete(chunkIndex);
+  pending.delete(chunkIndex);
+
+  const hashMatch = createHash('sha256').update(chunkData).digest('hex') === chunkHash;
+  if (!hashMatch) {
+    console.warn(`\nChunk ${chunkIndex} hash mismatch — re-requesting`);
+    pending.add(chunkIndex);
+    requestNext();
+    return;
+  }
+
+  const proofValid = verifyChunk(chunkData, proof, metadata.merkleRoot);
+  if (!proofValid) {
+    console.warn(`\nChunk ${chunkIndex} Merkle proof invalid — re-requesting`);
+    pending.add(chunkIndex);
+    requestNext();
+    return;
+  }
+
+  await fileHandle.write(chunkData, 0, chunkData.length, chunkIndex * metadata.chunkSize);
+  received.add(chunkIndex);
+
+  const pct = ((received.size / metadata.totalChunks) * 100).toFixed(1);
+  process.stdout.write(`\rProgress: ${pct}% (${received.size}/${metadata.totalChunks}) — ${inFlight.size} in flight   `);
+
+  if (received.size === metadata.totalChunks) {
+    await finish();
+    return;
+  }
+
+  requestNext();
+}
   });
 
   socket.on('connect', () => {
@@ -640,11 +515,19 @@ async function main() {
   });
 
   socket.on('data', framer);
+
   socket.on('error', (e) => {
-    if (!done) console.error('Connection error:', e.message);
+    if (!done) {
+      console.error('\nConnection error:', e.message);
+      cleanup();
+    }
   });
+
   socket.on('close', () => {
-    if (!done) console.error('Connection closed before transfer completed');
+    if (!done) {
+      console.error('\nConnection closed before transfer completed');
+      cleanup();
+    }
   });
 }
 
@@ -658,47 +541,35 @@ main().catch((e) => {
 
 ```text
 import net from 'net';
-import { createReadStream } from 'fs';
-import { stat } from 'fs/promises';
 import { basename, resolve } from 'path';
-import { sha256, buildMerkleTree, getMerkleProof } from './src/crypto.js';
+import { getMerkleProof } from './src/crypto.js';
 import { sendJSON, sendChunk, createFramer, parseMessage, MSG, TYPE } from './src/protocol.js';
-import { DEFAULT_CHUNK_SIZE } from './src/chunker.js';
+import { indexFile, readChunk } from './src/chunker.js';
 
 const FILE_PATH = resolve(process.argv[2]);
-const PORT = parseInt(process.argv[3] || '9000');
+const PORT      = parseInt(process.argv[3] || '9000');
 
 if (!process.argv[2]) {
   console.error('Usage: node sender.js <filepath> [port]');
   process.exit(1);
 }
 
-async function buildFileIndex(filePath) {
-  const fileStat = await stat(filePath);
-  const fileSize = fileStat.size;
-  const hashes = [];
-  const stream = createReadStream(filePath, { highWaterMark: DEFAULT_CHUNK_SIZE });
-  for await (const chunk of stream) {
-    hashes.push(sha256(Buffer.from(chunk)));
-  }
-  const tree = buildMerkleTree(hashes);
-  return { fileSize, hashes, tree, merkleRoot: tree.root, totalChunks: hashes.length };
-}
+const chunkCache = new Map();
+const CACHE_MAX  = 64;
 
-async function readChunk(filePath, index, chunkSize = DEFAULT_CHUNK_SIZE) {
-  return new Promise((resolve, reject) => {
-    const start = index * chunkSize;
-    const stream = createReadStream(filePath, { start, end: start + chunkSize - 1, highWaterMark: chunkSize });
-    const buffers = [];
-    stream.on('data', d => buffers.push(Buffer.from(d)));
-    stream.on('end', () => resolve(Buffer.concat(buffers)));
-    stream.on('error', reject);
-  });
+async function readChunkCached(filePath, index, chunkSize) {
+  if (chunkCache.has(index)) return chunkCache.get(index);
+  const data = await readChunk(filePath, index, chunkSize);
+  if (chunkCache.size >= CACHE_MAX) {
+    chunkCache.delete(chunkCache.keys().next().value);
+  }
+  chunkCache.set(index, data);
+  return data;
 }
 
 async function main() {
   console.log(`Indexing ${FILE_PATH}...`);
-  const { fileSize, hashes, tree, merkleRoot, totalChunks } = await buildFileIndex(FILE_PATH);
+  const { fileSize, hashes, tree, merkleRoot, totalChunks, chunkSize } = await indexFile(FILE_PATH);
   console.log(`Ready: ${totalChunks} chunks, root: ${merkleRoot.slice(0, 16)}...`);
   console.log(`File size: ${(fileSize / 1024 / 1024).toFixed(2)} MB`);
 
@@ -707,37 +578,62 @@ async function main() {
     socket.setNoDelay(true);
     console.log(`Receiver connected from ${socket.remoteAddress}`);
 
+    let peerAlive = true;
+    const keepaliveCheck = setInterval(() => {
+      if (!peerAlive) {
+        console.log('Peer unresponsive — closing connection');
+        clearInterval(keepaliveCheck);
+        socket.destroy();
+        return;
+      }
+      peerAlive = false;
+    }, 35000);
+
     const framer = createFramer(async (body) => {
+      peerAlive = true;
       const msg = parseMessage(body);
       if (msg.type !== TYPE.JSON) return;
       const { data } = msg;
 
+      if (data.type === MSG.FILE_ACCEPT) {
+        console.log('Receiver accepted transfer');
+      }
+
+      if (data.type === MSG.KEEPALIVE) {
+        return;
+      }
+
       if (data.type === MSG.CHUNK_REQUEST) {
         const { index } = data;
         if (index < 0 || index >= totalChunks) return;
-        const chunkData = await readChunk(FILE_PATH, index);
-        const proof = getMerkleProof(tree, index);
+        const chunkData = await readChunkCached(FILE_PATH, index, chunkSize);
+        const proof     = getMerkleProof(tree, index);
         await sendChunk(socket, index, hashes[index], proof, chunkData);
       }
 
       if (data.type === MSG.TRANSFER_COMPLETE) {
         console.log('Transfer confirmed complete');
-        server.close();
+        clearInterval(keepaliveCheck);
+        server.close(() => process.exit(0));
       }
     });
 
-    socket.on('data', framer);
+    socket.on('data',  framer);
     socket.on('error', (e) => {
+      clearInterval(keepaliveCheck);
       if (e.code !== 'ECONNRESET') console.error('Socket error:', e.message);
     });
-    socket.on('close', () => console.log('Connection closed'));
+    socket.on('close', () => {
+      clearInterval(keepaliveCheck);
+      console.log('Connection closed');
+    });
 
     sendJSON(socket, {
       type: MSG.FILE_OFFER,
       fileName: basename(FILE_PATH),
       fileSize,
       totalChunks,
-      chunkSize: DEFAULT_CHUNK_SIZE,
+      chunkSize,
       merkleRoot,
     });
   });
@@ -764,39 +660,42 @@ main().catch((e) => {
 ```text
 import { createReadStream } from 'fs';
 import { stat } from 'fs/promises';
-import { sha256, buildMerkleTree, getMerkleProof } from './crypto.js';
+import { sha256, buildMerkleTree } from './crypto.js';
 
 export const DEFAULT_CHUNK_SIZE = 65536;
 
-export async function chunkFile(filePath, chunkSize = DEFAULT_CHUNK_SIZE) {
+export async function indexFile(filePath, chunkSize = DEFAULT_CHUNK_SIZE) {
   const fileStat = await stat(filePath);
   const fileSize = fileStat.size;
-  const chunks = [];
   const hashes = [];
-
   const stream = createReadStream(filePath, { highWaterMark: chunkSize });
-
   for await (const chunk of stream) {
-    const buf = Buffer.from(chunk);
-    chunks.push(buf);
-    hashes.push(sha256(buf));
+    hashes.push(sha256(Buffer.from(chunk)));
   }
-
   const tree = buildMerkleTree(hashes);
-
-  return {
-    chunks,
-    hashes,
-    tree,
-    merkleRoot: tree.root,
-    totalChunks: chunks.length,
-    fileSize,
-    chunkSize,
-  };
+  return { hashes, tree, merkleRoot: tree.root, totalChunks: hashes.length, fileSize, chunkSize };
 }
 
-export function getChunkProof(tree, index) {
-  return getMerkleProof(tree, index);
+export async function readChunk(filePath, index, chunkSize = DEFAULT_CHUNK_SIZE) {
+  return new Promise((resolve, reject) => {
+    const start  = index * chunkSize;
+    const end    = start + chunkSize - 1;
+    const stream = createReadStream(filePath, { start, end, highWaterMark: chunkSize });
+    const buffers = [];
+    stream.on('data',  d => buffers.push(Buffer.from(d)));
+    stream.on('end',   () => resolve(Buffer.concat(buffers)));
+    stream.on('error', reject);
+  });
+}
+
+export async function chunkFile(filePath, chunkSize = DEFAULT_CHUNK_SIZE) {
+  const { hashes, tree, merkleRoot, totalChunks, fileSize } = await indexFile(filePath, chunkSize);
+  const chunks = [];
+  const stream = createReadStream(filePath, { highWaterMark: chunkSize });
+  for await (const chunk of stream) {
+    chunks.push(Buffer.from(chunk));
+  }
+  return { chunks, hashes, tree, merkleRoot, totalChunks, fileSize, chunkSize };
 }
 
 export function assembleChunks(chunks, totalChunks) {
@@ -812,7 +711,7 @@ export function assembleChunks(chunks, totalChunks) {
 ### packages/engine/src/crypto.js
 
 ```text
-import { createHash, createCipheriv, createDecipheriv, randomBytes, generateKeyPairSync, diffieHellman, hkdfSync } from 'crypto';
+import { createHash, createCipheriv, createDecipheriv, randomBytes, generateKeyPairSync, diffieHellman, hkdfSync, createPublicKey } from 'crypto';
 
 export const CIPHER = 'aes-256-gcm';
 
@@ -823,34 +722,34 @@ export function sha256(buffer) {
 export function buildMerkleRoot(hashes) {
   if (hashes.length === 0) throw new Error('No hashes provided');
   if (hashes.length === 1) return hashes[0];
-  let level = [...hashes];
+  let level = hashes.map(h => Buffer.from(h, 'hex'));
   if (level.length % 2 !== 0) level.push(level[level.length - 1]);
   while (level.length > 1) {
     const next = [];
     for (let i = 0; i < level.length; i += 2) {
-      next.push(sha256(Buffer.from(level[i] + level[i + 1], 'utf8')));
+      next.push(Buffer.from(createHash('sha256').update(Buffer.concat([level[i], level[i + 1]])).digest()));
     }
     level = next;
     if (level.length > 1 && level.length % 2 !== 0) level.push(level[level.length - 1]);
   }
-  return level[0];
+  return level[0].toString('hex');
 }
 
 export function buildMerkleTree(hashes) {
   if (hashes.length === 0) throw new Error('No hashes provided');
-  let level = [...hashes];
+  let level = hashes.map(h => Buffer.from(h, 'hex'));
   if (level.length % 2 !== 0) level.push(level[level.length - 1]);
-  const levels = [level];
+  const levels = [level.map(b => b.toString('hex'))];
   while (level.length > 1) {
     const next = [];
     for (let i = 0; i < level.length; i += 2) {
-      next.push(sha256(Buffer.from(level[i] + level[i + 1], 'utf8')));
+      next.push(Buffer.from(createHash('sha256').update(Buffer.concat([level[i], level[i + 1]])).digest()));
     }
     level = next;
     if (level.length > 1 && level.length % 2 !== 0) level.push(level[level.length - 1]);
-    levels.push(level);
+    levels.push(level.map(b => b.toString('hex')));
   }
-  return { root: level[0], levels };
+  return { root: level[0].toString('hex'), levels };
 }
 
 export function getMerkleProof(tree, index) {
@@ -869,14 +768,15 @@ export function getMerkleProof(tree, index) {
 }
 
 export function verifyChunk(chunkData, proof, expectedRoot) {
-  let current = sha256(chunkData);
+  let current = Buffer.from(createHash('sha256').update(chunkData).digest());
   for (const { hash: sibling, position } of proof) {
-    const combined = position === 'right'
-      ? current + sibling
-      : sibling + current;
-    current = sha256(Buffer.from(combined, 'utf8'));
+    const siblingBuf = Buffer.from(sibling, 'hex');
+    const combined   = position === 'right'
+      ? Buffer.concat([current, siblingBuf])
+      : Buffer.concat([siblingBuf, current]);
+    current = Buffer.from(createHash('sha256').update(combined).digest());
   }
-  return current === expectedRoot;
+  return current.toString('hex') === expectedRoot;
 }
 
 export function generateKeyPair() {
@@ -888,28 +788,28 @@ export function exportPublicKey(keyPair) {
 }
 
 export function importPublicKey(derBytes) {
-  return { key: Buffer.from(derBytes), type: 'spki', format: 'der' };
+  return createPublicKey({ key: Buffer.from(derBytes), type: 'spki', format: 'der' });
 }
 
 export function deriveSharedKey(myPrivateKey, theirPublicKeyDER) {
-  const theirPublicKey = { key: Buffer.from(theirPublicKeyDER), type: 'spki', format: 'der' };
+  const theirPublicKey = createPublicKey({ key: Buffer.from(theirPublicKeyDER), type: 'spki', format: 'der' });
   const raw = diffieHellman({ privateKey: myPrivateKey, publicKey: theirPublicKey });
   return Buffer.from(hkdfSync('sha256', raw, Buffer.from('mesh-v1'), Buffer.from('mesh-encryption-key'), 32));
 }
 
 export function encrypt(plaintext, key) {
-  const iv = randomBytes(12);
-  const cipher = createCipheriv(CIPHER, key, iv);
+  const iv      = randomBytes(12);
+  const cipher  = createCipheriv(CIPHER, key, iv);
   const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
   const authTag = cipher.getAuthTag();
   return Buffer.concat([iv, authTag, encrypted]);
 }
 
 export function decrypt(pkg, key) {
-  const iv = pkg.slice(0, 12);
-  const authTag = pkg.slice(12, 28);
+  const iv        = pkg.slice(0, 12);
+  const authTag   = pkg.slice(12, 28);
   const encrypted = pkg.slice(28);
-  const decipher = createDecipheriv(CIPHER, key, iv);
+  const decipher  = createDecipheriv(CIPHER, key, iv);
   decipher.setAuthTag(authTag);
   try {
     return Buffer.concat([decipher.update(encrypted), decipher.final()]);
@@ -1121,6 +1021,58 @@ describe('chunker', () => {
 });
 ```
 
+### packages/engine/test/crypto.test.js
+
+```text
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  generateKeyPair,
+  exportPublicKey,
+  deriveSharedKey,
+  encrypt,
+  decrypt,
+} from '../src/crypto.js';
+
+describe('crypto', () => {
+  it('ECDH key exchange produces identical shared keys on both sides', () => {
+    const aliceKeys = generateKeyPair();
+    const bobKeys   = generateKeyPair();
+    const alicePub  = exportPublicKey(aliceKeys);
+    const bobPub    = exportPublicKey(bobKeys);
+    const aliceShared = deriveSharedKey(aliceKeys.privateKey, bobPub);
+    const bobShared   = deriveSharedKey(bobKeys.privateKey, alicePub);
+    assert.deepEqual(aliceShared, bobShared);
+  });
+
+  it('encrypt and decrypt round trip produces original plaintext', () => {
+    const keys      = generateKeyPair();
+    const sharedKey = deriveSharedKey(keys.privateKey, exportPublicKey(keys));
+    const plaintext = Buffer.from('hello mesh this is a secret message');
+    const ciphertext = encrypt(plaintext, sharedKey);
+    const decrypted  = decrypt(ciphertext, sharedKey);
+    assert.deepEqual(decrypted, plaintext);
+  });
+
+  it('decrypt throws when ciphertext is tampered', () => {
+    const keys      = generateKeyPair();
+    const sharedKey = deriveSharedKey(keys.privateKey, exportPublicKey(keys));
+    const ciphertext = encrypt(Buffer.from('secret data'), sharedKey);
+    ciphertext[30] = ciphertext[30] ^ 0xff;
+    assert.throws(() => decrypt(ciphertext, sharedKey), /authentication failed/);
+  });
+
+  it('two different encryptions of same plaintext produce different ciphertext', () => {
+    const keys      = generateKeyPair();
+    const sharedKey = deriveSharedKey(keys.privateKey, exportPublicKey(keys));
+    const plaintext = Buffer.from('same message');
+    const ct1 = encrypt(plaintext, sharedKey);
+    const ct2 = encrypt(plaintext, sharedKey);
+    assert.notDeepEqual(ct1, ct2);
+  });
+});
+```
+
 ### packages/engine/test/protocol.test.js
 
 ```text
@@ -1223,176 +1175,196 @@ describe('protocol framer', () => {
 ```text
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFile, readFile, unlink, mkdir, rm } from 'fs/promises';
+import { writeFile, readFile, unlink, mkdir, rm, open } from 'fs/promises';
 import { randomBytes, createHash } from 'crypto';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import net from 'net';
 import { chunkFile, assembleChunks } from '../src/chunker.js';
-import { getMerkleProof } from '../src/crypto.js';
+import { getMerkleProof, verifyChunk } from '../src/crypto.js';
 import { sendJSON, sendChunk, createFramer, parseMessage, MSG, TYPE } from '../src/protocol.js';
 
 async function makeTempFile(size) {
-    const filePath = join(tmpdir(), `mesh-transfer-${Date.now()}.bin`);
-    await writeFile(filePath, randomBytes(size));
-    return filePath;
+  const filePath = join(tmpdir(), `mesh-transfer-${Date.now()}.bin`);
+  await writeFile(filePath, randomBytes(size));
+  return filePath;
 }
 
 function startMiniSender(filePath, port) {
-    return new Promise(async (resolveSender, rejectSender) => {
-       const { chunks, hashes, tree, merkleRoot, totalChunks, fileSize } = await chunkFile(filePath);
+  return new Promise(async (resolveSender, rejectSender) => {
+    const { chunks, hashes, tree, merkleRoot, totalChunks, fileSize, chunkSize } = await chunkFile(filePath);
 
-        const server = net.createServer((socket) => {
-            socket.setNoDelay(true);
-            socket.setMaxListeners(200);
+    const server = net.createServer((socket) => {
+      socket.setNoDelay(true);
+      socket.setMaxListeners(0);
 
-            const framer = createFramer((body) => {
-                const msg = parseMessage(body);
-                if (msg.type !== TYPE.JSON) return;
+      const framer = createFramer((body) => {
+        const msg = parseMessage(body);
+        if (msg.type !== TYPE.JSON) return;
+        if (msg.data.type === MSG.KEEPALIVE) return;
+        if (msg.data.type === MSG.CHUNK_REQUEST) {
+          const { index } = msg.data;
+          const proof = getMerkleProof(tree, index);
+          sendChunk(socket, index, hashes[index], proof, chunks[index]);
+        }
+        if (msg.data.type === MSG.TRANSFER_COMPLETE) {
+          server.close();
+          resolveSender();
+        }
+      });
 
-                if (msg.data.type === MSG.CHUNK_REQUEST) {
-                    const { index } = msg.data;
-                    const proof = getMerkleProof(tree, index);
-                    sendChunk(socket, index, hashes[index], proof, chunks[index]);
-                }
+      socket.on('data', framer);
+      socket.on('error', (e) => {
+        if (e.code !== 'ECONNRESET') rejectSender(e);
+      });
+      socket.on('close', () => resolveSender());
 
-                if (msg.data.type === MSG.TRANSFER_COMPLETE) {
-                    server.close();
-                    resolveSender();
-                }
-            });
-
-            socket.on('data', framer);
-            socket.on('error', (e) => {
-                if (e.code !== 'ECONNRESET') rejectSender(e);
-            });
-            socket.on('close', () => resolveSender());
-
-            sendJSON(socket, {
-                type: MSG.FILE_OFFER,
-                fileName: 'testfile.bin',
-                fileSize,
-                totalChunks,
-                merkleRoot,
-                hashes,
-            });
-        });
-
-        server.listen(port, '127.0.0.1');
-        server.on('error', rejectSender);
+      sendJSON(socket, {
+        type: MSG.FILE_OFFER,
+        fileName: 'testfile.bin',
+        fileSize,
+        totalChunks,
+        chunkSize,
+        merkleRoot,
+        hashes,
+      });
     });
+
+    server.listen(port, '127.0.0.1');
+    server.on('error', rejectSender);
+  });
 }
 
 function waitForPort(port, retries = 30, delay = 50) {
-    return new Promise((resolve, reject) => {
-        function attempt(n) {
-            const socket = net.createConnection({ host: '127.0.0.1', port });
-            socket.once('connect', () => { socket.destroy(); resolve(); });
-            socket.once('error', () => {
-                if (n <= 0) { reject(new Error(`Port ${port} not ready`)); return; }
-                setTimeout(() => attempt(n - 1), delay);
-            });
-        }
-        attempt(retries);
-    });
+  return new Promise((resolve, reject) => {
+    function attempt(n) {
+      const socket = net.createConnection({ host: '127.0.0.1', port });
+      socket.once('connect', () => { socket.destroy(); resolve(); });
+      socket.once('error', () => {
+        if (n <= 0) { reject(new Error(`Port ${port} not ready`)); return; }
+        setTimeout(() => attempt(n - 1), delay);
+      });
+    }
+    attempt(retries);
+  });
 }
 
 function runMiniReceiver(port, outputDir) {
-    return new Promise((resolve, reject) => {
-        const received = new Map();
-        let metadata = null;
-        const PIPELINE = 32;
-        let nextRequest = 0;
-        const inFlight = new Set();
-        let done = false;
+  return new Promise((resolve, reject) => {
+    const received  = new Set();
+    const inFlight  = new Set();
+    const pending   = new Set();
+    let metadata    = null;
+    let fileHandle  = null;
+    let nextRequest = 0;
+    let done        = false;
+    const PIPELINE  = 32;
 
-        const socket = net.createConnection({ host: '127.0.0.1', port });
-        socket.setNoDelay(true);
-        socket.setMaxListeners(200);
+    const socket = net.createConnection({ host: '127.0.0.1', port });
+    socket.setNoDelay(true);
+    socket.setMaxListeners(0);
 
-        function requestNext() {
-            if (!metadata || done) return;
-            while (inFlight.size < PIPELINE && nextRequest < metadata.totalChunks) {
-                if (!received.has(nextRequest)) {
-                    inFlight.add(nextRequest);
-                    sendJSON(socket, { type: MSG.CHUNK_REQUEST, index: nextRequest });
-                }
-                nextRequest++;
-            }
+    function requestNext() {
+      if (!metadata || done) return;
+      while (inFlight.size < PIPELINE && nextRequest < metadata.totalChunks) {
+        if (!received.has(nextRequest)) {
+          inFlight.add(nextRequest);
+          sendJSON(socket, { type: MSG.CHUNK_REQUEST, index: nextRequest });
+        }
+        nextRequest++;
+      }
+      if (nextRequest >= metadata.totalChunks) {
+        for (const idx of pending) {
+          if (inFlight.size >= PIPELINE) break;
+          inFlight.add(idx);
+          pending.delete(idx);
+          sendJSON(socket, { type: MSG.CHUNK_REQUEST, index: idx });
+        }
+      }
+    }
+
+    const framer = createFramer(async (body) => {
+      if (done) return;
+      const msg = parseMessage(body);
+
+      if (msg.type === TYPE.JSON && msg.data.type === MSG.FILE_OFFER) {
+        metadata = msg.data;
+        const outPath = join(outputDir, metadata.fileName);
+        fileHandle = await open(outPath, 'w');
+        await fileHandle.truncate(metadata.fileSize);
+        for (let i = 0; i < metadata.totalChunks; i++) pending.add(i);
+        sendJSON(socket, { type: MSG.FILE_ACCEPT });
+        requestNext();
+        return;
+      }
+
+      if (msg.type === TYPE.CHUNK) {
+        const { chunkIndex, chunkHash, proof, chunkData } = msg;
+        inFlight.delete(chunkIndex);
+        pending.delete(chunkIndex);
+
+        const hashMatch = createHash('sha256').update(chunkData).digest('hex') === chunkHash;
+        if (!hashMatch) { pending.add(chunkIndex); requestNext(); return; }
+
+        const proofValid = verifyChunk(chunkData, proof, metadata.merkleRoot);
+        if (!proofValid) { pending.add(chunkIndex); requestNext(); return; }
+
+        const offset = chunkIndex * metadata.chunkSize;
+        await fileHandle.write(chunkData, 0, chunkData.length, offset);
+        received.add(chunkIndex);
+
+        if (received.size === metadata.totalChunks) {
+          done = true;
+          await fileHandle.close();
+          const outPath = join(outputDir, metadata.fileName);
+          sendJSON(socket, { type: MSG.TRANSFER_COMPLETE });
+          socket.destroy();
+          resolve(outPath);
+          return;
         }
 
-        const framer = createFramer(async (body) => {
-            if (done) return;
-            const msg = parseMessage(body);
-
-            if (msg.type === TYPE.JSON && msg.data.type === MSG.FILE_OFFER) {
-                metadata = msg.data;
-                sendJSON(socket, { type: MSG.FILE_ACCEPT });
-                requestNext();
-                return;
-            }
-
-            if (msg.type === TYPE.CHUNK) {
-                const { chunkIndex, chunkHash, proof, chunkData } = msg;
-                inFlight.delete(chunkIndex);
-                const hashMatch = createHash('sha256').update(chunkData).digest('hex') === chunkHash;
-                if (!hashMatch) { reject(new Error(`Chunk ${chunkIndex} hash mismatch`)); return; }
-                const { verifyChunk } = await import('../src/crypto.js');
-                const proofValid = verifyChunk(chunkData, proof, metadata.merkleRoot);
-                if (!proofValid) { reject(new Error(`Chunk ${chunkIndex} Merkle proof invalid`)); return; }
-                received.set(chunkIndex, chunkData);
-                if (received.size === metadata.totalChunks) {
-                    const assembled = assembleChunks(received, metadata.totalChunks);
-                    const outPath = join(outputDir, metadata.fileName);
-                    await writeFile(outPath, assembled);
-                    sendJSON(socket, { type: MSG.TRANSFER_COMPLETE });
-                    socket.destroy();
-                    resolve(outPath);
-                    return;
-                }
-                requestNext();
-            }
-        });
-
-        socket.on('data', framer);
-        socket.on('error', (e) => {
-            if (!done && e.code !== 'ECONNRESET') reject(e);
-        });
+        requestNext();
+      }
     });
+
+    socket.on('data', framer);
+    socket.on('error', (e) => {
+      if (!done && e.code !== 'ECONNRESET') reject(e);
+    });
+  });
 }
 
 async function runTransferTest(sizeBytes, port) {
-    const filePath = await makeTempFile(sizeBytes);
-    const outDir = join(tmpdir(), `mesh-out-${Date.now()}`);
-    await mkdir(outDir, { recursive: true });
+  const filePath = await makeTempFile(sizeBytes);
+  const outDir   = join(tmpdir(), `mesh-out-${Date.now()}`);
+  await mkdir(outDir, { recursive: true });
 
-    const senderReady = startMiniSender(filePath, port);
-    await waitForPort(port);
-    const outPath = await runMiniReceiver(port, outDir);
-    await senderReady;
+  const senderReady = startMiniSender(filePath, port);
+  await waitForPort(port);
+  const outPath = await runMiniReceiver(port, outDir);
+  await senderReady;
 
-    const original = await readFile(filePath);
-    const received = await readFile(outPath);
-    const match =
-        createHash('sha256').update(original).digest('hex') ===
-        createHash('sha256').update(received).digest('hex');
+  const original = await readFile(filePath);
+  const received = await readFile(outPath);
+  const match =
+    createHash('sha256').update(original).digest('hex') ===
+    createHash('sha256').update(received).digest('hex');
 
-    await unlink(filePath);
-    await rm(outDir, { recursive: true });
-
-    return match;
+  await unlink(filePath);
+  await rm(outDir, { recursive: true });
+  return match;
 }
 
 describe('transfer', () => {
-    it('transfers a 10MB file correctly with hash match', async () => {
-        const match = await runTransferTest(10 * 1024 * 1024, 19001);
-        assert.equal(match, true);
-    });
+  it('transfers a 10MB file correctly with hash match', async () => {
+    const match = await runTransferTest(10 * 1024 * 1024, 19001);
+    assert.equal(match, true);
+  });
 
-    it('transfers a 100MB file correctly with hash match', { timeout: 60000 }, async () => {
-        const match = await runTransferTest(100 * 1024 * 1024, 19002);
-        assert.equal(match, true);
-    });
+  it('transfers a 100MB file correctly with hash match', { timeout: 60000 }, async () => {
+    const match = await runTransferTest(100 * 1024 * 1024, 19002);
+    assert.equal(match, true);
+  });
 });
 ```
 
@@ -2044,4 +2016,285 @@ export default defineConfig({
   plugins: [react()],
 })
 ```
+
+### received/protocol.js
+
+```text
+const HEADER_SIZE = 4;
+const MAX_MESSAGE_SIZE = 100 * 1024 * 1024;
+
+export const MSG = {
+  FILE_OFFER:        'FILE_OFFER',
+  FILE_ACCEPT:       'FILE_ACCEPT',
+  FILE_REJECT:       'FILE_REJECT',
+  CHUNK_REQUEST:     'CHUNK_REQUEST',
+  CHUNK_DATA:        'CHUNK_DATA',
+  CHUNK_NACK:        'CHUNK_NACK',
+  TRANSFER_COMPLETE: 'TRANSFER_COMPLETE',
+  KEEPALIVE:         'KEEPALIVE',
+  ERROR:             'ERROR',
+};
+
+export const TYPE = {
+  JSON:  0x00,
+  CHUNK: 0x01,
+};
+
+export function sendMessage(socket, data) {
+  const isBuffer = Buffer.isBuffer(data);
+  const body = isBuffer ? data : Buffer.from(JSON.stringify(data), 'utf8');
+  const header = Buffer.allocUnsafe(HEADER_SIZE);
+  header.writeUInt32BE(body.length, 0);
+  const packet = Buffer.concat([header, body]);
+  const ok = socket.write(packet);
+  if (!ok) {
+    return new Promise(resolve => {
+      socket.once('drain', resolve);
+    });
+  }
+  return Promise.resolve();
+}
+
+export function sendJSON(socket, obj) {
+  const typeFlag = Buffer.from([TYPE.JSON]);
+  const body = Buffer.from(JSON.stringify(obj), 'utf8');
+  return sendMessage(socket, Buffer.concat([typeFlag, body]));
+}
+
+export function sendChunk(socket, chunkIndex, chunkHash, proof, chunkBuffer) {
+  const typeFlag  = Buffer.from([TYPE.CHUNK]);
+  const indexBuf  = Buffer.allocUnsafe(4);
+  indexBuf.writeUInt32BE(chunkIndex, 0);
+  const hashBuf   = Buffer.from(chunkHash, 'hex');
+  const proofJSON = Buffer.from(JSON.stringify(proof), 'utf8');
+  const proofLen  = Buffer.allocUnsafe(4);
+  proofLen.writeUInt32BE(proofJSON.length, 0);
+  const body = Buffer.concat([typeFlag, indexBuf, hashBuf, proofLen, proofJSON, chunkBuffer]);
+  return sendMessage(socket, body);
+}
+
+export function createFramer(onMessage) {
+  let accumulator = Buffer.alloc(0);
+  return function (incoming) {
+    accumulator = Buffer.concat([accumulator, incoming]);
+    while (true) {
+      if (accumulator.length < HEADER_SIZE) break;
+      const bodyLength = accumulator.readUInt32BE(0);
+      if (bodyLength > MAX_MESSAGE_SIZE) {
+        throw new Error(`Message too large: ${bodyLength} bytes`);
+      }
+      if (accumulator.length < HEADER_SIZE + bodyLength) break;
+      const body = Buffer.from(accumulator.slice(HEADER_SIZE, HEADER_SIZE + bodyLength));
+      accumulator = Buffer.from(accumulator.slice(HEADER_SIZE + bodyLength));
+      onMessage(body);
+    }
+  };
+}
+
+export function parseMessage(body) {
+  const type = body.readUInt8(0);
+  if (type === TYPE.JSON) {
+    return { type: TYPE.JSON, data: JSON.parse(body.slice(1).toString('utf8')) };
+  }
+  if (type === TYPE.CHUNK) {
+    const chunkIndex = body.readUInt32BE(1);
+    const chunkHash  = body.slice(5, 37).toString('hex');
+    const proofLen   = body.readUInt32BE(37);
+    const proof      = JSON.parse(body.slice(41, 41 + proofLen).toString('utf8'));
+    const chunkData  = Buffer.from(body.slice(41 + proofLen));
+    return { type: TYPE.CHUNK, chunkIndex, chunkHash, proof, chunkData };
+  }
+  throw new Error(`Unknown message type: ${type}`);
+}
+```
+
+### received/testfile.bin
+
+Binary or non-UTF-8 file omitted from markdown snapshot (52428800 bytes).
+
+### received/transfer.test.js
+
+```text
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { writeFile, readFile, unlink, mkdir, rm } from 'fs/promises';
+import { randomBytes, createHash } from 'crypto';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import net from 'net';
+import { chunkFile, assembleChunks } from '../src/chunker.js';
+import { getMerkleProof } from '../src/crypto.js';
+import { sendJSON, sendChunk, createFramer, parseMessage, MSG, TYPE } from '../src/protocol.js';
+
+async function makeTempFile(size) {
+    const filePath = join(tmpdir(), `mesh-transfer-${Date.now()}.bin`);
+    await writeFile(filePath, randomBytes(size));
+    return filePath;
+}
+
+function startMiniSender(filePath, port) {
+    return new Promise(async (resolveSender, rejectSender) => {
+       const { chunks, hashes, tree, merkleRoot, totalChunks, fileSize } = await chunkFile(filePath);
+
+        const server = net.createServer((socket) => {
+            socket.setNoDelay(true);
+            socket.setMaxListeners(200);
+
+            const framer = createFramer((body) => {
+                const msg = parseMessage(body);
+                if (msg.type !== TYPE.JSON) return;
+
+                if (msg.data.type === MSG.CHUNK_REQUEST) {
+                    const { index } = msg.data;
+                    const proof = getMerkleProof(tree, index);
+                    sendChunk(socket, index, hashes[index], proof, chunks[index]);
+                }
+
+                if (msg.data.type === MSG.TRANSFER_COMPLETE) {
+                    server.close();
+                    resolveSender();
+                }
+            });
+
+            socket.on('data', framer);
+            socket.on('error', (e) => {
+                if (e.code !== 'ECONNRESET') rejectSender(e);
+            });
+            socket.on('close', () => resolveSender());
+
+            sendJSON(socket, {
+                type: MSG.FILE_OFFER,
+                fileName: 'testfile.bin',
+                fileSize,
+                totalChunks,
+                merkleRoot,
+                hashes,
+            });
+        });
+
+        server.listen(port, '127.0.0.1');
+        server.on('error', rejectSender);
+    });
+}
+
+function waitForPort(port, retries = 30, delay = 50) {
+    return new Promise((resolve, reject) => {
+        function attempt(n) {
+            const socket = net.createConnection({ host: '127.0.0.1', port });
+            socket.once('connect', () => { socket.destroy(); resolve(); });
+            socket.once('error', () => {
+                if (n <= 0) { reject(new Error(`Port ${port} not ready`)); return; }
+                setTimeout(() => attempt(n - 1), delay);
+            });
+        }
+        attempt(retries);
+    });
+}
+
+function runMiniReceiver(port, outputDir) {
+    return new Promise((resolve, reject) => {
+        const received = new Map();
+        let metadata = null;
+        const PIPELINE = 32;
+        let nextRequest = 0;
+        const inFlight = new Set();
+        let done = false;
+
+        const socket = net.createConnection({ host: '127.0.0.1', port });
+        socket.setNoDelay(true);
+        socket.setMaxListeners(200);
+
+        function requestNext() {
+            if (!metadata || done) return;
+            while (inFlight.size < PIPELINE && nextRequest < metadata.totalChunks) {
+                if (!received.has(nextRequest)) {
+                    inFlight.add(nextRequest);
+                    sendJSON(socket, { type: MSG.CHUNK_REQUEST, index: nextRequest });
+                }
+                nextRequest++;
+            }
+        }
+
+        const framer = createFramer(async (body) => {
+            if (done) return;
+            const msg = parseMessage(body);
+
+            if (msg.type === TYPE.JSON && msg.data.type === MSG.FILE_OFFER) {
+                metadata = msg.data;
+                sendJSON(socket, { type: MSG.FILE_ACCEPT });
+                requestNext();
+                return;
+            }
+
+            if (msg.type === TYPE.CHUNK) {
+                const { chunkIndex, chunkHash, proof, chunkData } = msg;
+                inFlight.delete(chunkIndex);
+                const hashMatch = createHash('sha256').update(chunkData).digest('hex') === chunkHash;
+                if (!hashMatch) { reject(new Error(`Chunk ${chunkIndex} hash mismatch`)); return; }
+                const { verifyChunk } = await import('../src/crypto.js');
+                const proofValid = verifyChunk(chunkData, proof, metadata.merkleRoot);
+                if (!proofValid) { reject(new Error(`Chunk ${chunkIndex} Merkle proof invalid`)); return; }
+                received.set(chunkIndex, chunkData);
+                if (received.size === metadata.totalChunks) {
+                    const assembled = assembleChunks(received, metadata.totalChunks);
+                    const outPath = join(outputDir, metadata.fileName);
+                    await writeFile(outPath, assembled);
+                    sendJSON(socket, { type: MSG.TRANSFER_COMPLETE });
+                    socket.destroy();
+                    resolve(outPath);
+                    return;
+                }
+                requestNext();
+            }
+        });
+
+        socket.on('data', framer);
+        socket.on('error', (e) => {
+            if (!done && e.code !== 'ECONNRESET') reject(e);
+        });
+    });
+}
+
+async function runTransferTest(sizeBytes, port) {
+    const filePath = await makeTempFile(sizeBytes);
+    const outDir = join(tmpdir(), `mesh-out-${Date.now()}`);
+    await mkdir(outDir, { recursive: true });
+
+    const senderReady = startMiniSender(filePath, port);
+    await waitForPort(port);
+    const outPath = await runMiniReceiver(port, outDir);
+    await senderReady;
+
+    const original = await readFile(filePath);
+    const received = await readFile(outPath);
+    const match =
+        createHash('sha256').update(original).digest('hex') ===
+        createHash('sha256').update(received).digest('hex');
+
+    await unlink(filePath);
+    await rm(outDir, { recursive: true });
+
+    return match;
+}
+
+describe('transfer', () => {
+    it('transfers a 10MB file correctly with hash match', async () => {
+        const match = await runTransferTest(10 * 1024 * 1024, 19001);
+        assert.equal(match, true);
+    });
+
+    it('transfers a 100MB file correctly with hash match', { timeout: 60000 }, async () => {
+        const match = await runTransferTest(100 * 1024 * 1024, 19002);
+        assert.equal(match, true);
+    });
+});
+```
+
+### test-out.txt
+
+Binary or non-UTF-8 file omitted from markdown snapshot (7622 bytes).
+
+### testfile.bin
+
+Binary or non-UTF-8 file omitted from markdown snapshot (52428800 bytes).
 

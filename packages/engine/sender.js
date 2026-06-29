@@ -1,11 +1,11 @@
 import net from 'net';
 import { basename, resolve } from 'path';
-import { sha256, buildMerkleTree, getMerkleProof } from './src/crypto.js';
+import { getMerkleProof } from './src/crypto.js';
 import { sendJSON, sendChunk, createFramer, parseMessage, MSG, TYPE } from './src/protocol.js';
-import { indexFile, readChunk, DEFAULT_CHUNK_SIZE } from './src/chunker.js';
+import { indexFile, readChunk } from './src/chunker.js';
 
 const FILE_PATH = resolve(process.argv[2]);
-const PORT = parseInt(process.argv[3] || '9000');
+const PORT      = parseInt(process.argv[3] || '9000');
 
 if (!process.argv[2]) {
   console.error('Usage: node sender.js <filepath> [port]');
@@ -19,8 +19,7 @@ async function readChunkCached(filePath, index, chunkSize) {
   if (chunkCache.has(index)) return chunkCache.get(index);
   const data = await readChunk(filePath, index, chunkSize);
   if (chunkCache.size >= CACHE_MAX) {
-    const firstKey = chunkCache.keys().next().value;
-    chunkCache.delete(firstKey);
+    chunkCache.delete(chunkCache.keys().next().value);
   }
   chunkCache.set(index, data);
   return data;
@@ -32,70 +31,70 @@ async function main() {
   console.log(`Ready: ${totalChunks} chunks, root: ${merkleRoot.slice(0, 16)}...`);
   console.log(`File size: ${(fileSize / 1024 / 1024).toFixed(2)} MB`);
 
-const server = net.createServer((socket) => {
-  socket.setMaxListeners(0);
-  socket.setNoDelay(true);
-  console.log(`Receiver connected from ${socket.remoteAddress}`);
+  const server = net.createServer((socket) => {
+    socket.setMaxListeners(0);
+    socket.setNoDelay(true);
+    console.log(`Receiver connected from ${socket.remoteAddress}`);
 
-  let peerAlive = true;
-  const keepaliveCheck = setInterval(() => {
-    if (!peerAlive) {
-      console.log('Peer unresponsive — closing connection');
+    let peerAlive = true;
+    const keepaliveCheck = setInterval(() => {
+      if (!peerAlive) {
+        console.log('Peer unresponsive — closing connection');
+        clearInterval(keepaliveCheck);
+        socket.destroy();
+        return;
+      }
+      peerAlive = false;
+    }, 35000);
+
+    const framer = createFramer(async (body) => {
+      peerAlive = true;
+      const msg = parseMessage(body);
+      if (msg.type !== TYPE.JSON) return;
+      const { data } = msg;
+
+      if (data.type === MSG.FILE_ACCEPT) {
+        console.log('Receiver accepted transfer');
+      }
+
+      if (data.type === MSG.KEEPALIVE) {
+        return;
+      }
+
+      if (data.type === MSG.CHUNK_REQUEST) {
+        const { index } = data;
+        if (index < 0 || index >= totalChunks) return;
+        const chunkData = await readChunkCached(FILE_PATH, index, chunkSize);
+        const proof     = getMerkleProof(tree, index);
+        await sendChunk(socket, index, hashes[index], proof, chunkData);
+      }
+
+      if (data.type === MSG.TRANSFER_COMPLETE) {
+        console.log('Transfer confirmed complete');
+        clearInterval(keepaliveCheck);
+        server.close(() => process.exit(0));
+      }
+    });
+
+    socket.on('data',  framer);
+    socket.on('error', (e) => {
       clearInterval(keepaliveCheck);
-      socket.destroy();
-      return;
-    }
-    peerAlive = false;
-  }, 35000);
-
-  const framer = createFramer(async (body) => {
-    peerAlive = true;
-    const msg = parseMessage(body);
-    if (msg.type !== TYPE.JSON) return;
-    const { data } = msg;
-
-    if (data.type === MSG.FILE_ACCEPT) {
-      console.log('Receiver accepted transfer');
-    }
-
-    if (data.type === MSG.KEEPALIVE) {
-      return;
-    }
-
-    if (data.type === MSG.CHUNK_REQUEST) {
-      const { index } = data;
-      if (index < 0 || index >= totalChunks) return;
-      const chunkData = await readChunkCached(FILE_PATH, index, chunkSize);
-      const proof = getMerkleProof(tree, index);
-      await sendChunk(socket, index, hashes[index], proof, chunkData);
-    }
-
-    if (data.type === MSG.TRANSFER_COMPLETE) {
-      console.log('Transfer confirmed complete');
+      if (e.code !== 'ECONNRESET') console.error('Socket error:', e.message);
+    });
+    socket.on('close', () => {
       clearInterval(keepaliveCheck);
-      server.close();
-    }
-  });
+      console.log('Connection closed');
+    });
 
-  socket.on('data', framer);
-  socket.on('error', (e) => {
-    clearInterval(keepaliveCheck);
-    if (e.code !== 'ECONNRESET') console.error('Socket error:', e.message);
+    sendJSON(socket, {
+      type: MSG.FILE_OFFER,
+      fileName: basename(FILE_PATH),
+      fileSize,
+      totalChunks,
+      chunkSize,
+      merkleRoot,
+    });
   });
-  socket.on('close', () => {
-    clearInterval(keepaliveCheck);
-    console.log('Connection closed');
-  });
-
-  sendJSON(socket, {
-    type: MSG.FILE_OFFER,
-    fileName: basename(FILE_PATH),
-    fileSize,
-    totalChunks,
-    chunkSize,
-    merkleRoot,
-  });
-});
 
   server.listen(PORT, '127.0.0.1', () => {
     console.log(`Sender listening on 127.0.0.1:${PORT}`);

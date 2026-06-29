@@ -14,9 +14,7 @@ export function buildMerkleRoot(hashes) {
   while (level.length > 1) {
     const next = [];
     for (let i = 0; i < level.length; i += 2) {
-      next.push(Buffer.from(
-        createHash('sha256').update(Buffer.concat([level[i], level[i + 1]])).digest()
-      ));
+      next.push(Buffer.from(createHash('sha256').update(Buffer.concat([level[i], level[i + 1]])).digest()));
     }
     level = next;
     if (level.length > 1 && level.length % 2 !== 0) level.push(level[level.length - 1]);
@@ -32,9 +30,7 @@ export function buildMerkleTree(hashes) {
   while (level.length > 1) {
     const next = [];
     for (let i = 0; i < level.length; i += 2) {
-      next.push(Buffer.from(
-        createHash('sha256').update(Buffer.concat([level[i], level[i + 1]])).digest()
-      ));
+      next.push(Buffer.from(createHash('sha256').update(Buffer.concat([level[i], level[i + 1]])).digest()));
     }
     level = next;
     if (level.length > 1 && level.length % 2 !== 0) level.push(level[level.length - 1]);
@@ -59,43 +55,15 @@ export function getMerkleProof(tree, index) {
 }
 
 export function verifyChunk(chunkData, proof, expectedRoot) {
-  let current = Buffer.from(
-    createHash('sha256').update(chunkData).digest()
-  );
+  let current = Buffer.from(createHash('sha256').update(chunkData).digest());
   for (const { hash: sibling, position } of proof) {
     const siblingBuf = Buffer.from(sibling, 'hex');
-    const combined = position === 'right'
+    const combined   = position === 'right'
       ? Buffer.concat([current, siblingBuf])
       : Buffer.concat([siblingBuf, current]);
     current = Buffer.from(createHash('sha256').update(combined).digest());
   }
   return current.toString('hex') === expectedRoot;
-}
-
-export function getMerkleProof(tree, index) {
-  const proof = [];
-  let i = index;
-  for (let lvl = 0; lvl < tree.levels.length - 1; lvl++) {
-    const level = tree.levels[lvl];
-    const isLeft = i % 2 === 0;
-    const siblingIndex = isLeft ? i + 1 : i - 1;
-    if (siblingIndex < level.length) {
-      proof.push({ hash: level[siblingIndex], position: isLeft ? 'right' : 'left' });
-    }
-    i = Math.floor(i / 2);
-  }
-  return proof;
-}
-
-export function verifyChunk(chunkData, proof, expectedRoot) {
-  let current = sha256(chunkData);
-  for (const { hash: sibling, position } of proof) {
-    const combined = position === 'right'
-      ? current + sibling
-      : sibling + current;
-    current = sha256(Buffer.from(combined, 'utf8'));
-  }
-  return current === expectedRoot;
 }
 
 export function generateKeyPair() {
@@ -117,18 +85,18 @@ export function deriveSharedKey(myPrivateKey, theirPublicKeyDER) {
 }
 
 export function encrypt(plaintext, key) {
-  const iv = randomBytes(12);
-  const cipher = createCipheriv(CIPHER, key, iv);
+  const iv      = randomBytes(12);
+  const cipher  = createCipheriv(CIPHER, key, iv);
   const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
   const authTag = cipher.getAuthTag();
   return Buffer.concat([iv, authTag, encrypted]);
 }
 
 export function decrypt(pkg, key) {
-  const iv = pkg.slice(0, 12);
-  const authTag = pkg.slice(12, 28);
+  const iv        = pkg.slice(0, 12);
+  const authTag   = pkg.slice(12, 28);
   const encrypted = pkg.slice(28);
-  const decipher = createDecipheriv(CIPHER, key, iv);
+  const decipher  = createDecipheriv(CIPHER, key, iv);
   decipher.setAuthTag(authTag);
   try {
     return Buffer.concat([decipher.update(encrypted), decipher.final()]);

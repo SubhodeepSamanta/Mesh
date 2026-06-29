@@ -15,14 +15,15 @@ const KEEPALIVE_MS = 10000;
 async function main() {
   await mkdir(OUTPUT_DIR, { recursive: true });
 
-  let metadata      = null;
-  let fileHandle    = null;
-  const received    = new Set();
-  const inFlight    = new Set();
-  const pending     = new Set();
-  let nextRequest   = 0;
-  let startTime     = null;
-  let done          = false;
+  let metadata         = null;
+  let fileHandle       = null;
+  const received       = new Set();
+  const inFlight       = new Set();
+  const pending        = new Set();
+  let nextRequest      = 0;
+  let startTime        = null;
+  let done             = false;
+  let finishing        = false;
   let timeoutHandle    = null;
   let keepaliveHandle  = null;
 
@@ -50,13 +51,15 @@ async function main() {
   function cleanup() {
     clearTimeout(timeoutHandle);
     clearInterval(keepaliveHandle);
-    if (fileHandle) fileHandle.close().catch(() => {});
-    socket.destroy();
+    if (fileHandle) {
+      fileHandle.close().catch(() => {});
+      fileHandle = null;
+    }
+    if (!socket.destroyed) socket.destroy();
   }
 
   function requestNext() {
-    if (!metadata || done) return;
-
+    if (!metadata || done || finishing) return;
     while (inFlight.size < PIPELINE && nextRequest < metadata.totalChunks) {
       if (!received.has(nextRequest)) {
         inFlight.add(nextRequest);
@@ -64,7 +67,6 @@ async function main() {
       }
       nextRequest++;
     }
-
     if (nextRequest >= metadata.totalChunks && inFlight.size < PIPELINE) {
       for (const idx of pending) {
         if (inFlight.size >= PIPELINE) break;
@@ -75,34 +77,36 @@ async function main() {
     }
   }
 
-  async function writeChunkToDisk(index, data) {
-    const offset = index * metadata.chunkSize;
-    await fileHandle.write(data, 0, data.length, offset);
-  }
+async function finish() {
+  if (finishing || done) return;
+  finishing = true;
+  done = true;
 
-  async function finish() {
-    done = true;
-    clearTimeout(timeoutHandle);
-    clearInterval(keepaliveHandle);
+  clearTimeout(timeoutHandle);
+  clearInterval(keepaliveHandle);
+
+  if (fileHandle) {
     await fileHandle.close();
     fileHandle = null;
-
-    const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
-    const speedMB = (metadata.fileSize / 1024 / 1024 / parseFloat(elapsed)).toFixed(2);
-
-    process.stdout.write('\n');
-    console.log('All chunks received and verified.');
-    console.log(`Saved:   ${join(OUTPUT_DIR, metadata.fileName)}`);
-    console.log(`Size:    ${(metadata.fileSize / 1024 / 1024).toFixed(2)} MB`);
-    console.log(`Time:    ${elapsed}s`);
-    console.log(`Speed:   ${speedMB} MB/s`);
-
-    sendJSON(socket, { type: MSG.TRANSFER_COMPLETE });
-    socket.destroy();
   }
 
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+  const speedMB = (metadata.fileSize / 1024 / 1024 / parseFloat(elapsed)).toFixed(2);
+
+  process.stdout.write('\n');
+  console.log('All chunks received and verified.');
+  console.log(`Saved:   ${join(OUTPUT_DIR, metadata.fileName)}`);
+  console.log(`Size:    ${(metadata.fileSize / 1024 / 1024).toFixed(2)} MB`);
+  console.log(`Time:    ${elapsed}s`);
+  console.log(`Speed:   ${speedMB} MB/s`);
+
+  sendJSON(socket, { type: MSG.TRANSFER_COMPLETE });
+  socket.end();
+  process.exit(0);
+}
+
   const framer = createFramer(async (body) => {
-    if (done) return;
+    if (done || finishing) return;
     resetTimeout();
 
     const msg = parseMessage(body);
@@ -133,39 +137,45 @@ async function main() {
     }
 
     if (msg.type === TYPE.CHUNK) {
-      const { chunkIndex, chunkHash, proof, chunkData } = msg;
-      inFlight.delete(chunkIndex);
-      pending.delete(chunkIndex);
+  const { chunkIndex, chunkHash, proof, chunkData } = msg;
 
-      const hashMatch = createHash('sha256').update(chunkData).digest('hex') === chunkHash;
-      if (!hashMatch) {
-        console.warn(`\nChunk ${chunkIndex} hash mismatch — re-requesting`);
-        pending.add(chunkIndex);
-        requestNext();
-        return;
-      }
+  if (received.has(chunkIndex)) {
+    requestNext();
+    return;
+  }
 
-      const proofValid = verifyChunk(chunkData, proof, metadata.merkleRoot);
-      if (!proofValid) {
-        console.warn(`\nChunk ${chunkIndex} Merkle proof invalid — re-requesting`);
-        pending.add(chunkIndex);
-        requestNext();
-        return;
-      }
+  inFlight.delete(chunkIndex);
+  pending.delete(chunkIndex);
 
-      await writeChunkToDisk(chunkIndex, chunkData);
-      received.add(chunkIndex);
+  const hashMatch = createHash('sha256').update(chunkData).digest('hex') === chunkHash;
+  if (!hashMatch) {
+    console.warn(`\nChunk ${chunkIndex} hash mismatch — re-requesting`);
+    pending.add(chunkIndex);
+    requestNext();
+    return;
+  }
 
-      const pct = ((received.size / metadata.totalChunks) * 100).toFixed(1);
-      process.stdout.write(`\rProgress: ${pct}% (${received.size}/${metadata.totalChunks}) — ${inFlight.size} in flight   `);
+  const proofValid = verifyChunk(chunkData, proof, metadata.merkleRoot);
+  if (!proofValid) {
+    console.warn(`\nChunk ${chunkIndex} Merkle proof invalid — re-requesting`);
+    pending.add(chunkIndex);
+    requestNext();
+    return;
+  }
 
-      if (received.size === metadata.totalChunks) {
-        await finish();
-        return;
-      }
+  await fileHandle.write(chunkData, 0, chunkData.length, chunkIndex * metadata.chunkSize);
+  received.add(chunkIndex);
 
-      requestNext();
-    }
+  const pct = ((received.size / metadata.totalChunks) * 100).toFixed(1);
+  process.stdout.write(`\rProgress: ${pct}% (${received.size}/${metadata.totalChunks}) — ${inFlight.size} in flight   `);
+
+  if (received.size === metadata.totalChunks) {
+    await finish();
+    return;
+  }
+
+  requestNext();
+}
   });
 
   socket.on('connect', () => {
