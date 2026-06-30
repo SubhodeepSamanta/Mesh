@@ -53,7 +53,6 @@ Excluded: node_modules, .git, package-lock.json, .env
 - received/protocol.js
 - received/testfile.bin
 - received/transfer.test.js
-- test-out.txt
 - testfile.bin
 
 ## Contents
@@ -320,7 +319,7 @@ export function TransferTUI() { return null; }
   "main": "src/index.js",
   "type": "module",
   "scripts": {
-    "test": "node --test test/protocol.test.js test/chunker.test.js test/crypto.test.js test/transfer.test.js"
+    "test": "node --test --test-force-exit test/protocol.test.js test/chunker.test.js test/crypto.test.js test/transfer.test.js"
   },
   "license": "ISC"
 }
@@ -1184,6 +1183,10 @@ import { chunkFile, assembleChunks } from '../src/chunker.js';
 import { getMerkleProof, verifyChunk } from '../src/crypto.js';
 import { sendJSON, sendChunk, createFramer, parseMessage, MSG, TYPE } from '../src/protocol.js';
 
+process.on('exit', () => {
+  console.log('Active handles:', process._getActiveHandles().map(h => h.constructor.name));
+});
+
 async function makeTempFile(size) {
   const filePath = join(tmpdir(), `mesh-transfer-${Date.now()}.bin`);
   await writeFile(filePath, randomBytes(size));
@@ -1209,6 +1212,7 @@ function startMiniSender(filePath, port) {
         }
         if (msg.data.type === MSG.TRANSFER_COMPLETE) {
           server.close();
+          socket.end();
           resolveSender();
         }
       });
@@ -1318,7 +1322,7 @@ function runMiniReceiver(port, outputDir) {
           await fileHandle.close();
           const outPath = join(outputDir, metadata.fileName);
           sendJSON(socket, { type: MSG.TRANSFER_COMPLETE });
-          socket.destroy();
+          socket.end();
           resolve(outPath);
           return;
         }
@@ -2289,10 +2293,6 @@ describe('transfer', () => {
     });
 });
 ```
-
-### test-out.txt
-
-Binary or non-UTF-8 file omitted from markdown snapshot (7622 bytes).
 
 ### testfile.bin
 
