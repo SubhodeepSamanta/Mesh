@@ -10,7 +10,9 @@ export const REQUEST_TIMEOUT_MS = 3000;
 export function generateNodeId() {
   return randomBytes(ID_BYTES).toString('hex');
 }
-
+export function fileHashToDhtKey(sha256Hex) {
+  return sha256Hex.slice(0, ID_BYTES * 2);
+}
 export function xorDistance(idA, idB) {
   const a = Buffer.from(idA, 'hex');
   const b = Buffer.from(idB, 'hex');
@@ -101,10 +103,14 @@ export class RoutingTable {
 }
 
 export const DHT_MSG = {
-  PING:        'DHT_PING',
-  PONG:        'DHT_PONG',
-  FIND_NODE:   'DHT_FIND_NODE',
-  FOUND_NODE:  'DHT_FOUND_NODE',
+  PING:         'DHT_PING',
+  PONG:         'DHT_PONG',
+  FIND_NODE:    'DHT_FIND_NODE',
+  FOUND_NODE:   'DHT_FOUND_NODE',
+  ANNOUNCE:     'DHT_ANNOUNCE',
+  ANNOUNCE_ACK: 'DHT_ANNOUNCE_ACK',
+  GET_PEERS:    'DHT_GET_PEERS',
+  PEERS:        'DHT_PEERS',
 };
 
 export class DHTNode extends EventEmitter {
@@ -116,6 +122,7 @@ export class DHTNode extends EventEmitter {
     this.pending = new Map();
     this.port = null;
     this.address = null;
+    this.fileStore = new Map();
   }
 
   listen(port = 0) {
@@ -182,7 +189,33 @@ export class DHTNode extends EventEmitter {
       return;
     }
 
-    if (msg.type === DHT_MSG.PONG || msg.type === DHT_MSG.FOUND_NODE) {
+    if (msg.type === DHT_MSG.ANNOUNCE) {
+      const peers = this.fileStore.get(msg.fileHash) || [];
+      const existingIdx = peers.findIndex(p => p.addr === rinfo.address && p.port === msg.port);
+      if (existingIdx === -1) {
+        peers.push({ addr: rinfo.address, port: msg.port, announcedAt: Date.now() });
+      } else {
+        peers[existingIdx].announcedAt = Date.now();
+      }
+      this.fileStore.set(msg.fileHash, peers);
+      this._send(rinfo.address, rinfo.port, {
+        type: DHT_MSG.ANNOUNCE_ACK, msgId: msg.msgId, nodeId: this.nodeId,
+      });
+      return;
+    }
+
+    if (msg.type === DHT_MSG.GET_PEERS) {
+      const peers = this.fileStore.get(msg.fileHash) || [];
+      this._send(rinfo.address, rinfo.port, {
+        type: DHT_MSG.PEERS, msgId: msg.msgId, nodeId: this.nodeId,
+        fileHash: msg.fileHash,
+        peers: peers.map(p => ({ addr: p.addr, port: p.port })),
+      });
+      return;
+    }
+
+    if (msg.type === DHT_MSG.PONG || msg.type === DHT_MSG.FOUND_NODE ||
+        msg.type === DHT_MSG.ANNOUNCE_ACK || msg.type === DHT_MSG.PEERS) {
       const handler = this.pending.get(msg.msgId);
       if (handler) {
         clearTimeout(handler.timeout);
@@ -223,103 +256,137 @@ export class DHTNode extends EventEmitter {
     });
   }
 
-async bootstrap(addr, port) {
-  const closest = await this.findNode(addr, port, this.nodeId);
-  closest.forEach(peer => this.routingTable.addPeer(peer));
-  return closest;
-}
-
-async iterativeFindNode(targetId) {
-  const queried = new Set();
-  let closest = this.routingTable.getClosest(targetId, DHT_K);
-
-  if (closest.length === 0) return [];
-
-  while (true) {
-    const toQuery = closest
-      .filter(peer => peer.id && !queried.has(peer.id))
-      .slice(0, ALPHA);
-
-    if (toQuery.length === 0) break;
-
-    const results = await Promise.allSettled(
-      toQuery.map(async (peer) => {
-        queried.add(peer.id);
-        try {
-          const found = await this.findNode(peer.addr, peer.port, targetId);
-          found.forEach(p => this.routingTable.addPeer(p));
-          return found;
-        } catch {
-          this.routingTable.removePeer(peer.id);
-          return [];
-        }
-      })
-    );
-
-    const newPeers = results.flatMap(r => r.status === 'fulfilled' ? r.value : []);
-
-    const candidateMap = new Map();
-    [...closest, ...newPeers].forEach(p => {
-      if (p.id) candidateMap.set(p.id, p);
-    });
-
-    closest = [...candidateMap.values()]
-      .map(peer => ({ peer, dist: xorDistance(peer.id, targetId) }))
-      .sort((a, b) => compareDistance(a.dist, b.dist))
-      .slice(0, DHT_K)
-      .map(x => x.peer);
-
-    const allQueried = closest.every(p => queried.has(p.id));
-    if (allQueried) break;
+  async bootstrap(addr, port) {
+    const closest = await this.findNode(addr, port, this.nodeId);
+    closest.forEach(peer => this.routingTable.addPeer(peer));
+    return closest;
   }
 
-  return closest;
-}
+  async iterativeFindNode(targetId) {
+    const queried = new Set();
+    let closest = this.routingTable.getClosest(targetId, DHT_K);
 
-async iterativeFindNode(targetId) {
-  const queried = new Set();
-  let closest = this.routingTable.getClosest(targetId, DHT_K);
+    if (closest.length === 0) return [];
 
-  if (closest.length === 0) return [];
+    while (true) {
+      const toQuery = closest
+        .filter(peer => peer.id && !queried.has(peer.id))
+        .slice(0, ALPHA);
 
-  while (true) {
-    const toQuery = closest
-      .filter(peer => peer.id && !queried.has(peer.id))
-      .slice(0, ALPHA);
+      if (toQuery.length === 0) break;
 
-    if (toQuery.length === 0) break;
+      const results = await Promise.allSettled(
+        toQuery.map(async (peer) => {
+          queried.add(peer.id);
+          try {
+            const found = await this.findNode(peer.addr, peer.port, targetId);
+            found.forEach(p => this.routingTable.addPeer(p));
+            return found;
+          } catch {
+            this.routingTable.removePeer(peer.id);
+            return [];
+          }
+        })
+      );
 
-    const results = await Promise.allSettled(
-      toQuery.map(async (peer) => {
-        queried.add(peer.id);
-        try {
-          const found = await this.findNode(peer.addr, peer.port, targetId);
-          found.forEach(p => this.routingTable.addPeer(p));
-          return found;
-        } catch {
-          this.routingTable.removePeer(peer.id);
-          return [];
-        }
-      })
-    );
+      const newPeers = results.flatMap(r => r.status === 'fulfilled' ? r.value : []);
 
-    const newPeers = results.flatMap(r => r.status === 'fulfilled' ? r.value : []);
+      const candidateMap = new Map();
+      [...closest, ...newPeers].forEach(p => {
+        if (p.id) candidateMap.set(p.id, p);
+      });
 
-    const candidateMap = new Map();
-    [...closest, ...newPeers].forEach(p => {
-      if (p.id) candidateMap.set(p.id, p);
-    });
+      closest = [...candidateMap.values()]
+        .map(peer => ({ peer, dist: xorDistance(peer.id, targetId) }))
+        .sort((a, b) => compareDistance(a.dist, b.dist))
+        .slice(0, DHT_K)
+        .map(x => x.peer);
 
-    closest = [...candidateMap.values()]
-      .map(peer => ({ peer, dist: xorDistance(peer.id, targetId) }))
-      .sort((a, b) => compareDistance(a.dist, b.dist))
-      .slice(0, DHT_K)
-      .map(x => x.peer);
+      const allQueried = closest.every(p => queried.has(p.id));
+      if (allQueried) break;
+    }
 
-    const allQueried = closest.every(p => queried.has(p.id));
-    if (allQueried) break;
+    return closest;
   }
 
-  return closest;
+  _announceToOne(addr, port, fileHash, myPort) {
+    return new Promise((resolve, reject) => {
+      const msgId = this._msgId();
+      const timeout = setTimeout(() => {
+        this.pending.delete(msgId);
+        reject(new Error('ANNOUNCE timeout'));
+      }, REQUEST_TIMEOUT_MS);
+      this.pending.set(msgId, { resolve, reject, timeout });
+      this._send(addr, port, {
+        type: DHT_MSG.ANNOUNCE, msgId, nodeId: this.nodeId, fileHash, port: myPort,
+      }).catch(reject);
+    });
+  }
+
+  _getPeersFromOne(addr, port, fileHash) {
+    return new Promise((resolve, reject) => {
+      const msgId = this._msgId();
+      const timeout = setTimeout(() => {
+        this.pending.delete(msgId);
+        reject(new Error('GET_PEERS timeout'));
+      }, REQUEST_TIMEOUT_MS);
+      this.pending.set(msgId, {
+        resolve: (msg) => resolve(msg.peers || []),
+        reject,
+        timeout,
+      });
+      this._send(addr, port, {
+        type: DHT_MSG.GET_PEERS, msgId, nodeId: this.nodeId, fileHash,
+      }).catch(reject);
+    });
+  }
+
+async announceFile(fileHash, myPort) {
+  const dhtKey = fileHashToDhtKey(fileHash);
+  const closest = await this.iterativeFindNode(dhtKey);
+
+  if (closest.length === 0) {
+    const peers = this.fileStore.get(fileHash) || [];
+    const exists = peers.some(p => p.addr === this.address && p.port === myPort);
+    if (!exists) {
+      peers.push({ addr: this.address, port: myPort, announcedAt: Date.now() });
+    }
+    this.fileStore.set(fileHash, peers);
+    return [];
+  }
+
+  const results = await Promise.allSettled(
+    closest.map(peer => this._announceToOne(peer.addr, peer.port, fileHash, myPort))
+  );
+
+  return closest.filter((_, i) => results[i].status === 'fulfilled');
+}
+
+async getPeersForFile(fileHash) {
+  const dhtKey = fileHashToDhtKey(fileHash);
+  const closest = await this.iterativeFindNode(dhtKey);
+
+  const localPeers = this.fileStore.get(fileHash) || [];
+  const seen = new Set();
+  const merged = [];
+
+  for (const peer of localPeers) {
+    const key = `${peer.addr}:${peer.port}`;
+    if (!seen.has(key)) { seen.add(key); merged.push({ addr: peer.addr, port: peer.port }); }
+  }
+
+  const allLists = await Promise.allSettled(
+    closest.map(peer => this._getPeersFromOne(peer.addr, peer.port, fileHash))
+  );
+
+  for (const result of allLists) {
+    if (result.status !== 'fulfilled') continue;
+    for (const peer of result.value) {
+      const key = `${peer.addr}:${peer.port}`;
+      if (!seen.has(key)) { seen.add(key); merged.push(peer); }
+    }
+  }
+
+  return merged;
 }
 }
