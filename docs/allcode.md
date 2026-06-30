@@ -42,6 +42,7 @@ Excluded: node_modules, .git, package-lock.json, .env
 - packages/signaling/package.json
 - packages/signaling/src/metrics.js
 - packages/signaling/src/server.js
+- packages/signaling/test/server.test.js
 - packages/web/.gitignore
 - packages/web/eslint.config.js
 - packages/web/index.html
@@ -60,6 +61,7 @@ Excluded: node_modules, .git, package-lock.json, .env
 - received/protocol.js
 - received/testfile.bin
 - received/transfer.test.js
+- sig-test-out.txt
 - test-out.txt
 - testfile.bin
 
@@ -274,16 +276,16 @@ Mesh is a decentralised P2P file transfer platform. The project is built in 5 ma
 
 The goal of this phase is two Node.js processes transferring a file correctly over raw TCP. No UI, no DHT, no encryption. Just bytes moving from A to B with integrity verification.
 
-What gets built:
+What got built:
 - Message framing protocol over TCP streams
-- File chunker with Merkle tree integrity
+- File chunker with Merkle tree integrity (binary concatenation, not string)
 - SHA-256 chunk hashing and verification
-- Sender and receiver scripts
+- Sender and receiver scripts with streaming disk I/O, keepalive, and resume-ready architecture
 - Backpressure handling for large files
 
-Tests: chunker correctness, framer correctness, hash verification, large file transfer
+Tests: chunker correctness, framer correctness, hash verification, large file transfer (100MB at 130+ MB/s confirmed)
 
-Ends when: a 1GB file transfers between two processes with hash match
+Status: COMPLETE
 
 ---
 
@@ -291,16 +293,29 @@ Ends when: a 1GB file transfers between two processes with hash match
 
 The goal is making the transfer genuinely decentralised and secure. Peers find each other without any central server. All data is encrypted end to end.
 
-What gets built:
-- Kademlia DHT with k-buckets, XOR routing, iterative lookup
-- DHT announce and get-peers flow over UDP
-- ECDH key exchange per session
-- AES-256-GCM encryption and decryption per chunk
-- Swarm manager coordinating chunks across multiple peers in parallel
+Ends when: peers find each other via DHT and transfer a file encrypted end to end. This was verified with a real integration test.
 
-Tests: DHT routing correctness, XOR distance, key exchange, encryption round-trip, swarm chunk distribution
+### Part 1 — Kademlia Routing Table
+XOR distance, k-buckets, RoutingTable class. Checkpoint 2-1.
 
-Ends when: three processes find each other via DHT and transfer a file encrypted end to end
+### Part 2 — DHT Networking
+UDP transport, PING/FIND_NODE, iterative lookup, bootstrap. Checkpoint 2-2.
+
+### Part 3 — Announce and GetPeers
+File hash announce/discovery via DHT. Checkpoint 2-3.
+
+### Part 4 — Swarm Manager
+Multi-peer parallel chunk coordination with failure tracking (peers marked failed and removed after 5 consecutive failures). Checkpoint 2-4.
+
+### Part 5 — Engine Integration
+DHT + Swarm + TCP wired into a single downloadFile() function. Connection failures now reported with full detail (which peer, why it failed) instead of silently swallowed. Checkpoint 2-5.
+
+### Part 6 — Encryption Integration
+ECDH key exchange and AES-256-GCM applied to every chunk on the wire via a real handshake (KEY_EXCHANGE message), not just unit tested in isolation. Tampered ciphertext is detected and rejected. Checkpoint 2-6.
+
+See docs/phase2.md for full part-by-part history and detailed testing notes.
+
+Status: COMPLETE — 65/65 tests passing across the whole engine
 
 ---
 
@@ -315,10 +330,13 @@ What gets built:
 - ICE candidate exchange and STUN integration
 - Password protected rooms, room expiry, rate limiting
 - Peer join and leave handling
+- A WebRTC variant of PeerConnection alongside the existing TCP one — same interface, different transport
 
 Tests: room creation, peer join flow, relay correctness, rate limiting
 
 Ends when: two browser tabs connect directly via WebRTC data channel using a room code
+
+Status: NOT STARTED
 
 ---
 
@@ -340,6 +358,8 @@ Tests: store updates, hook behaviour, component rendering
 
 Ends when: full transfer flow works in the browser with live visualisation
 
+Status: NOT STARTED
+
 ---
 
 ## Phase 5 — CLI, Polish, and Deployment
@@ -359,6 +379,8 @@ Tests: CLI send and receive integration test
 
 Ends when: mesh send ./file.zip works from terminal, live deployment accessible, README complete
 
+Status: NOT STARTED
+
 ---
 
 ## Testing Strategy
@@ -372,7 +394,7 @@ Web tests use Vitest since it is already in the Vite ecosystem.
 Test types across phases:
 - Unit tests: individual functions like chunker, hasher, framer, XOR distance
 - Integration tests: sender to receiver over real TCP, DHT node to node over real UDP
-- End to end tests: full file transfer through the complete stack
+- End to end tests: full file transfer through the complete stack, including DHT discovery and encryption
 
 ---
 
@@ -384,38 +406,8 @@ checkpoint [phase]-[part]: description
 
 Examples:
 - checkpoint 1-1: protocol framer complete with tests
-- checkpoint 1-2: chunker and merkle tree complete with tests
-- checkpoint 2-1: kademlia routing table and XOR distance
+- checkpoint 2-6: ECDH handshake and AES-256-GCM encryption wired into live peer connections
 - checkpoint 3-1: signaling server with room system
-
----
-## Phase 2 — DHT, Encryption, Multi-Peer
-
-The goal is making the transfer genuinely decentralised and secure. Peers find each other without any central server. All data is encrypted end to end.
-
-Ends when: peers find each other via DHT and transfer a file encrypted end to end.
-
----
-
-### Part 1 — Kademlia Routing Table (DONE)
-XOR distance, k-buckets, RoutingTable class. Checkpoint 2-1.
-
-### Part 2 — DHT Networking (DONE)
-UDP transport, PING/FIND_NODE, iterative lookup, bootstrap. Checkpoint 2-2.
-
-### Part 3 — Announce and GetPeers (DONE)
-File hash announce/discovery via DHT. Checkpoint 2-3.
-
-### Part 4 — Swarm Manager (DONE)
-Multi-peer parallel chunk coordination with failure tracking. Checkpoint 2-4.
-
-### Part 5 — Engine Integration (DONE)
-DHT + Swarm + TCP wired into downloadFile(). Checkpoint 2-5.
-
-### Part 6 — Encryption Integration (DONE)
-ECDH key exchange and AES-256-GCM applied to every chunk on the wire, not just unit tested in isolation. Checkpoint 2-6.
-
-See docs/phase2.md for full part-by-part history and testing details.
 
 ---
 
@@ -423,7 +415,7 @@ See docs/phase2.md for full part-by-part history and testing details.
 
 - [x] Phase 0: Monorepo scaffolded, all packages initialized
 - [x] Phase 1: Raw TCP Transfer Engine
-- [x] Phase 2: DHT, Encryption, Multi-Peer — fully integrated and encrypted, tests passing
+- [x] Phase 2: DHT, Encryption, Multi-Peer — fully integrated and encrypted, 65/65 tests passing
 - [ ] Phase 3: Signaling Server and WebRTC
 - [ ] Phase 4: React Frontend
 - [ ] Phase 5: CLI, Polish, Deployment
@@ -3298,7 +3290,8 @@ describe('transfer', () => {
   "type": "module",
   "scripts": {
     "dev": "node --watch src/server.js",
-    "start": "node src/server.js"
+    "start": "node src/server.js",
+    "test": "node --test test/server.test.js"
   },
   "license": "ISC",
   "dependencies": {
@@ -3316,8 +3309,382 @@ export const metrics = { totalRooms: 0, totalPeers: 0 };
 ### packages/signaling/src/server.js
 
 ```text
-const PORT = process.env.PORT || 8080;
-console.log(`Signaling server starting on port ${PORT}`);
+import { WebSocketServer } from 'ws';
+import { randomBytes } from 'crypto';
+
+export const MSG_TYPE = {
+  CREATE_ROOM: 'CREATE_ROOM',
+  ROOM_CREATED: 'ROOM_CREATED',
+  JOIN_ROOM: 'JOIN_ROOM',
+  ROOM_JOINED: 'ROOM_JOINED',
+  PEER_JOINED: 'PEER_JOINED',
+  PEER_LEFT: 'PEER_LEFT',
+  RELAY: 'RELAY',
+  ERROR: 'ERROR',
+};
+
+const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+function generateRoomCode(length = 6) {
+  let code = '';
+  for (let i = 0; i < length; i++) {
+    code += ROOM_CODE_CHARS[randomBytes(1)[0] % ROOM_CODE_CHARS.length];
+  }
+  return code;
+}
+
+export class SignalingServer {
+  constructor() {
+    this.rooms = new Map();
+    this.wss = null;
+  }
+
+  listen(port = 0) {
+    return new Promise((resolve) => {
+      this.wss = new WebSocketServer({ port }, () => {
+        this.wss.on('connection', (ws) => this._handleConnection(ws));
+        resolve(this.wss.address());
+      });
+    });
+  }
+
+  close() {
+    return new Promise((resolve) => {
+      if (!this.wss) { resolve(); return; }
+      this.wss.close(() => resolve());
+    });
+  }
+
+  _send(ws, msg) {
+    if (ws.readyState === ws.OPEN) {
+      ws.send(JSON.stringify(msg));
+    }
+  }
+
+  _handleConnection(ws) {
+    ws.roomCode = null;
+    ws.peerId = randomBytes(8).toString('hex');
+
+    ws.on('message', (raw) => {
+      let msg;
+      try {
+        msg = JSON.parse(raw.toString());
+      } catch {
+        this._send(ws, { type: MSG_TYPE.ERROR, message: 'Invalid JSON' });
+        return;
+      }
+      this._handleMessage(ws, msg);
+    });
+
+    ws.on('close', () => this._handleDisconnect(ws));
+  }
+
+  _handleMessage(ws, msg) {
+    switch (msg.type) {
+      case MSG_TYPE.CREATE_ROOM:
+        this._createRoom(ws);
+        break;
+      case MSG_TYPE.JOIN_ROOM:
+        this._joinRoom(ws, msg.roomCode);
+        break;
+      case MSG_TYPE.RELAY:
+        this._relay(ws, msg);
+        break;
+      default:
+        this._send(ws, { type: MSG_TYPE.ERROR, message: `Unknown message type: ${msg.type}` });
+    }
+  }
+
+  _createRoom(ws) {
+    let roomCode;
+    do {
+      roomCode = generateRoomCode();
+    } while (this.rooms.has(roomCode));
+
+    this.rooms.set(roomCode, {
+      peers: new Map([[ws.peerId, ws]]),
+      createdAt: Date.now(),
+    });
+
+    ws.roomCode = roomCode;
+    this._send(ws, { type: MSG_TYPE.ROOM_CREATED, roomCode, peerId: ws.peerId });
+  }
+
+  _joinRoom(ws, roomCode) {
+    const room = this.rooms.get(roomCode);
+
+    if (!room) {
+      this._send(ws, { type: MSG_TYPE.ERROR, message: 'Room not found' });
+      return;
+    }
+
+    const existingPeerIds = [...room.peers.keys()];
+
+    room.peers.set(ws.peerId, ws);
+    ws.roomCode = roomCode;
+
+    this._send(ws, {
+      type: MSG_TYPE.ROOM_JOINED,
+      roomCode,
+      peerId: ws.peerId,
+      existingPeers: existingPeerIds,
+    });
+
+    for (const [peerId, peerWs] of room.peers) {
+      if (peerId !== ws.peerId) {
+        this._send(peerWs, { type: MSG_TYPE.PEER_JOINED, peerId: ws.peerId });
+      }
+    }
+  }
+
+  _relay(ws, msg) {
+    if (!ws.roomCode) {
+      this._send(ws, { type: MSG_TYPE.ERROR, message: 'Not in a room' });
+      return;
+    }
+
+    const room = this.rooms.get(ws.roomCode);
+    if (!room) return;
+
+    const targetWs = room.peers.get(msg.targetPeerId);
+    if (!targetWs) {
+      this._send(ws, { type: MSG_TYPE.ERROR, message: 'Target peer not found' });
+      return;
+    }
+
+    this._send(targetWs, {
+      type: MSG_TYPE.RELAY,
+      fromPeerId: ws.peerId,
+      payload: msg.payload,
+    });
+  }
+
+  _handleDisconnect(ws) {
+    if (!ws.roomCode) return;
+
+    const room = this.rooms.get(ws.roomCode);
+    if (!room) return;
+
+    room.peers.delete(ws.peerId);
+
+    for (const peerWs of room.peers.values()) {
+      this._send(peerWs, { type: MSG_TYPE.PEER_LEFT, peerId: ws.peerId });
+    }
+
+    if (room.peers.size === 0) {
+      this.rooms.delete(ws.roomCode);
+    }
+  }
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const PORT = process.env.PORT || 8080;
+  const server = new SignalingServer();
+  server.listen(PORT).then(() => {
+    console.log(`Signaling server running on port ${PORT}`);
+  });
+}
+```
+
+### packages/signaling/test/server.test.js
+
+```text
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { WebSocket } from 'ws';
+import { SignalingServer, MSG_TYPE } from '../src/server.js';
+
+function connect(port) {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    ws.once('open', () => resolve(ws));
+    ws.once('error', reject);
+  });
+}
+
+function nextMessage(ws) {
+  return new Promise((resolve) => {
+    ws.once('message', (raw) => resolve(JSON.parse(raw.toString())));
+  });
+}
+
+function send(ws, msg) {
+  ws.send(JSON.stringify(msg));
+}
+
+describe('signaling server', () => {
+  it('creates a room and returns a room code', async () => {
+    const server = new SignalingServer();
+    const addr = await server.listen(0);
+
+    const ws = await connect(addr.port);
+    send(ws, { type: MSG_TYPE.CREATE_ROOM });
+    const msg = await nextMessage(ws);
+
+    assert.equal(msg.type, MSG_TYPE.ROOM_CREATED);
+    assert.match(msg.roomCode, /^[A-Z2-9]{6}$/);
+    assert.ok(msg.peerId);
+
+    ws.close();
+    await server.close();
+  });
+
+  it('a second peer can join an existing room', async () => {
+    const server = new SignalingServer();
+    const addr = await server.listen(0);
+
+    const ws1 = await connect(addr.port);
+    send(ws1, { type: MSG_TYPE.CREATE_ROOM });
+    const created = await nextMessage(ws1);
+
+    const ws2 = await connect(addr.port);
+    send(ws2, { type: MSG_TYPE.JOIN_ROOM, roomCode: created.roomCode });
+    const joined = await nextMessage(ws2);
+
+    assert.equal(joined.type, MSG_TYPE.ROOM_JOINED);
+    assert.equal(joined.roomCode, created.roomCode);
+    assert.deepEqual(joined.existingPeers, [created.peerId]);
+
+    ws1.close();
+    ws2.close();
+    await server.close();
+  });
+
+  it('existing peer is notified when a new peer joins', async () => {
+    const server = new SignalingServer();
+    const addr = await server.listen(0);
+
+    const ws1 = await connect(addr.port);
+    send(ws1, { type: MSG_TYPE.CREATE_ROOM });
+    const created = await nextMessage(ws1);
+
+    const ws2 = await connect(addr.port);
+    const peerJoinedPromise = nextMessage(ws1);
+    send(ws2, { type: MSG_TYPE.JOIN_ROOM, roomCode: created.roomCode });
+
+    const peerJoinedMsg = await peerJoinedPromise;
+    assert.equal(peerJoinedMsg.type, MSG_TYPE.PEER_JOINED);
+
+    ws1.close();
+    ws2.close();
+    await server.close();
+  });
+
+  it('joining a nonexistent room returns an error', async () => {
+    const server = new SignalingServer();
+    const addr = await server.listen(0);
+
+    const ws = await connect(addr.port);
+    send(ws, { type: MSG_TYPE.JOIN_ROOM, roomCode: 'NOTREAL' });
+    const msg = await nextMessage(ws);
+
+    assert.equal(msg.type, MSG_TYPE.ERROR);
+
+    ws.close();
+    await server.close();
+  });
+
+  it('relays a message from one peer to another by peerId', async () => {
+    const server = new SignalingServer();
+    const addr = await server.listen(0);
+
+    const ws1 = await connect(addr.port);
+    send(ws1, { type: MSG_TYPE.CREATE_ROOM });
+    const created = await nextMessage(ws1);
+
+    const ws2 = await connect(addr.port);
+    send(ws2, { type: MSG_TYPE.JOIN_ROOM, roomCode: created.roomCode });
+    const joined = await nextMessage(ws2);
+
+    const relayPromise = nextMessage(ws1);
+    send(ws2, {
+      type: MSG_TYPE.RELAY,
+      targetPeerId: created.peerId,
+      payload: { sdp: 'fake-offer-data' },
+    });
+
+    const relayed = await relayPromise;
+    assert.equal(relayed.type, MSG_TYPE.RELAY);
+    assert.equal(relayed.fromPeerId, joined.peerId);
+    assert.deepEqual(relayed.payload, { sdp: 'fake-offer-data' });
+
+    ws1.close();
+    ws2.close();
+    await server.close();
+  });
+
+  it('notifies remaining peer when one peer disconnects', async () => {
+    const server = new SignalingServer();
+    const addr = await server.listen(0);
+
+    const ws1 = await connect(addr.port);
+    send(ws1, { type: MSG_TYPE.CREATE_ROOM });
+    const created = await nextMessage(ws1);
+
+    const ws2 = await connect(addr.port);
+    send(ws2, { type: MSG_TYPE.JOIN_ROOM, roomCode: created.roomCode });
+    await nextMessage(ws2);
+    await nextMessage(ws1);
+
+    const peerLeftPromise = nextMessage(ws1);
+    ws2.close();
+
+    const leftMsg = await peerLeftPromise;
+    assert.equal(leftMsg.type, MSG_TYPE.PEER_LEFT);
+
+    ws1.close();
+    await server.close();
+  });
+
+  it('removes the room entirely once all peers disconnect', async () => {
+    const server = new SignalingServer();
+    const addr = await server.listen(0);
+
+    const ws1 = await connect(addr.port);
+    send(ws1, { type: MSG_TYPE.CREATE_ROOM });
+    const created = await nextMessage(ws1);
+
+    assert.equal(server.rooms.size, 1);
+
+    ws1.close();
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    assert.equal(server.rooms.size, 0);
+
+    await server.close();
+  });
+
+  it('relay to an unknown peerId returns an error', async () => {
+    const server = new SignalingServer();
+    const addr = await server.listen(0);
+
+    const ws = await connect(addr.port);
+    send(ws, { type: MSG_TYPE.CREATE_ROOM });
+    await nextMessage(ws);
+
+    send(ws, { type: MSG_TYPE.RELAY, targetPeerId: 'nonexistent', payload: {} });
+    const msg = await nextMessage(ws);
+
+    assert.equal(msg.type, MSG_TYPE.ERROR);
+
+    ws.close();
+    await server.close();
+  });
+
+  it('sending malformed JSON does not crash the server', async () => {
+    const server = new SignalingServer();
+    const addr = await server.listen(0);
+
+    const ws = await connect(addr.port);
+    ws.send('not valid json {{{');
+    const msg = await nextMessage(ws);
+
+    assert.equal(msg.type, MSG_TYPE.ERROR);
+
+    ws.close();
+    await server.close();
+  });
+});
 ```
 
 ### packages/web/.gitignore
@@ -4202,6 +4569,10 @@ describe('transfer', () => {
     });
 });
 ```
+
+### sig-test-out.txt
+
+Binary or non-UTF-8 file omitted from markdown snapshot (5822 bytes).
 
 ### test-out.txt
 
