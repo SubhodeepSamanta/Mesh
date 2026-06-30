@@ -10,16 +10,16 @@ Mesh is a decentralised P2P file transfer platform. The project is built in 5 ma
 
 The goal of this phase is two Node.js processes transferring a file correctly over raw TCP. No UI, no DHT, no encryption. Just bytes moving from A to B with integrity verification.
 
-What gets built:
+What got built:
 - Message framing protocol over TCP streams
-- File chunker with Merkle tree integrity
+- File chunker with Merkle tree integrity (binary concatenation, not string)
 - SHA-256 chunk hashing and verification
-- Sender and receiver scripts
+- Sender and receiver scripts with streaming disk I/O, keepalive, and resume-ready architecture
 - Backpressure handling for large files
 
-Tests: chunker correctness, framer correctness, hash verification, large file transfer
+Tests: chunker correctness, framer correctness, hash verification, large file transfer (100MB at 130+ MB/s confirmed)
 
-Ends when: a 1GB file transfers between two processes with hash match
+Status: COMPLETE
 
 ---
 
@@ -27,16 +27,29 @@ Ends when: a 1GB file transfers between two processes with hash match
 
 The goal is making the transfer genuinely decentralised and secure. Peers find each other without any central server. All data is encrypted end to end.
 
-What gets built:
-- Kademlia DHT with k-buckets, XOR routing, iterative lookup
-- DHT announce and get-peers flow over UDP
-- ECDH key exchange per session
-- AES-256-GCM encryption and decryption per chunk
-- Swarm manager coordinating chunks across multiple peers in parallel
+Ends when: peers find each other via DHT and transfer a file encrypted end to end. This was verified with a real integration test.
 
-Tests: DHT routing correctness, XOR distance, key exchange, encryption round-trip, swarm chunk distribution
+### Part 1 — Kademlia Routing Table
+XOR distance, k-buckets, RoutingTable class. Checkpoint 2-1.
 
-Ends when: three processes find each other via DHT and transfer a file encrypted end to end
+### Part 2 — DHT Networking
+UDP transport, PING/FIND_NODE, iterative lookup, bootstrap. Checkpoint 2-2.
+
+### Part 3 — Announce and GetPeers
+File hash announce/discovery via DHT. Checkpoint 2-3.
+
+### Part 4 — Swarm Manager
+Multi-peer parallel chunk coordination with failure tracking (peers marked failed and removed after 5 consecutive failures). Checkpoint 2-4.
+
+### Part 5 — Engine Integration
+DHT + Swarm + TCP wired into a single downloadFile() function. Connection failures now reported with full detail (which peer, why it failed) instead of silently swallowed. Checkpoint 2-5.
+
+### Part 6 — Encryption Integration
+ECDH key exchange and AES-256-GCM applied to every chunk on the wire via a real handshake (KEY_EXCHANGE message), not just unit tested in isolation. Tampered ciphertext is detected and rejected. Checkpoint 2-6.
+
+See docs/phase2.md for full part-by-part history and detailed testing notes.
+
+Status: COMPLETE — 65/65 tests passing across the whole engine
 
 ---
 
@@ -51,10 +64,13 @@ What gets built:
 - ICE candidate exchange and STUN integration
 - Password protected rooms, room expiry, rate limiting
 - Peer join and leave handling
+- A WebRTC variant of PeerConnection alongside the existing TCP one — same interface, different transport
 
 Tests: room creation, peer join flow, relay correctness, rate limiting
 
 Ends when: two browser tabs connect directly via WebRTC data channel using a room code
+
+Status: NOT STARTED
 
 ---
 
@@ -76,6 +92,8 @@ Tests: store updates, hook behaviour, component rendering
 
 Ends when: full transfer flow works in the browser with live visualisation
 
+Status: NOT STARTED
+
 ---
 
 ## Phase 5 — CLI, Polish, and Deployment
@@ -95,6 +113,8 @@ Tests: CLI send and receive integration test
 
 Ends when: mesh send ./file.zip works from terminal, live deployment accessible, README complete
 
+Status: NOT STARTED
+
 ---
 
 ## Testing Strategy
@@ -108,7 +128,7 @@ Web tests use Vitest since it is already in the Vite ecosystem.
 Test types across phases:
 - Unit tests: individual functions like chunker, hasher, framer, XOR distance
 - Integration tests: sender to receiver over real TCP, DHT node to node over real UDP
-- End to end tests: full file transfer through the complete stack
+- End to end tests: full file transfer through the complete stack, including DHT discovery and encryption
 
 ---
 
@@ -120,18 +140,16 @@ checkpoint [phase]-[part]: description
 
 Examples:
 - checkpoint 1-1: protocol framer complete with tests
-- checkpoint 1-2: chunker and merkle tree complete with tests
-- checkpoint 2-1: kademlia routing table and XOR distance
+- checkpoint 2-6: ECDH handshake and AES-256-GCM encryption wired into live peer connections
 - checkpoint 3-1: signaling server with room system
 
 ---
-
 
 ## Current Status
 
 - [x] Phase 0: Monorepo scaffolded, all packages initialized
 - [x] Phase 1: Raw TCP Transfer Engine
-- [ ] Phase 2: DHT, Encryption, Multi-Peer
+- [x] Phase 2: DHT, Encryption, Multi-Peer — fully integrated and encrypted, 65/65 tests passing
 - [ ] Phase 3: Signaling Server and WebRTC
 - [ ] Phase 4: React Frontend
 - [ ] Phase 5: CLI, Polish, Deployment

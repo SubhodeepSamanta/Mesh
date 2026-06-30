@@ -1,8 +1,10 @@
 import { EventEmitter } from 'events';
 import { createHash } from 'crypto';
 import { verifyChunk } from './crypto.js';
+import { assembleChunks } from './chunker.js';
 
 export const PIPELINE_SIZE = 16;
+export const MAX_CONSECUTIVE_FAILURES = 5;
 
 const CHUNK_STATE = {
   PENDING:   'pending',
@@ -28,6 +30,7 @@ export class SwarmManager extends EventEmitter {
       requestChunk: requestChunkFn,
       pending: new Set(),
       failed: false,
+      consecutiveFailures: 0,
       chunksServed: 0,
     });
     this._fillPipeline(peerId);
@@ -52,6 +55,14 @@ export class SwarmManager extends EventEmitter {
     }
   }
 
+  _markPeerFailed(peerId) {
+    const peer = this.peers.get(peerId);
+    if (!peer || peer.failed) return;
+    peer.failed = true;
+    this.emit('peerFailed', { peerId, reason: 'too_many_consecutive_failures' });
+    this.removePeer(peerId);
+  }
+
   _fillPipeline(peerId) {
     const peer = this.peers.get(peerId);
     if (!peer || peer.failed || this.done) return;
@@ -72,11 +83,19 @@ export class SwarmManager extends EventEmitter {
 
   _handleChunkFailure(peerId, chunkIndex) {
     const peer = this.peers.get(peerId);
-    if (peer) peer.pending.delete(chunkIndex);
+    if (peer) {
+      peer.pending.delete(chunkIndex);
+      peer.consecutiveFailures++;
+    }
 
     if (this.chunkState[chunkIndex] === CHUNK_STATE.REQUESTED) {
       this.chunkState[chunkIndex] = CHUNK_STATE.PENDING;
       this.chunkPeer[chunkIndex] = null;
+    }
+
+    if (peer && peer.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+      this._markPeerFailed(peerId);
+      return;
     }
 
     if (peer) this._fillPipeline(peerId);
@@ -95,21 +114,34 @@ export class SwarmManager extends EventEmitter {
 
     const actualHash = createHash('sha256').update(chunkData).digest('hex');
     if (actualHash !== expectedHash) {
+      peer.consecutiveFailures++;
       this.emit('chunkFailed', { peerId, chunkIndex, reason: 'hash_mismatch' });
       this.chunkState[chunkIndex] = CHUNK_STATE.PENDING;
       this.chunkPeer[chunkIndex] = null;
-      this._fillPipeline(peerId);
+
+      if (peer.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        this._markPeerFailed(peerId);
+      } else {
+        this._fillPipeline(peerId);
+      }
       return false;
     }
 
     if (proof && !verifyChunk(chunkData, proof, this.merkleRoot)) {
+      peer.consecutiveFailures++;
       this.emit('chunkFailed', { peerId, chunkIndex, reason: 'proof_invalid' });
       this.chunkState[chunkIndex] = CHUNK_STATE.PENDING;
       this.chunkPeer[chunkIndex] = null;
-      this._fillPipeline(peerId);
+
+      if (peer.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        this._markPeerFailed(peerId);
+      } else {
+        this._fillPipeline(peerId);
+      }
       return false;
     }
 
+    peer.consecutiveFailures = 0;
     this.chunkState[chunkIndex] = CHUNK_STATE.VERIFIED;
     this.received.set(chunkIndex, chunkData);
     peer.chunksServed++;
@@ -140,6 +172,7 @@ export class SwarmManager extends EventEmitter {
       pending: p.pending.size,
       chunksServed: p.chunksServed,
       failed: p.failed,
+      consecutiveFailures: p.consecutiveFailures,
     }));
   }
 
@@ -149,10 +182,6 @@ export class SwarmManager extends EventEmitter {
 
   assemble() {
     if (!this.done) throw new Error('Transfer not complete');
-    const ordered = [];
-    for (let i = 0; i < this.totalChunks; i++) {
-      ordered.push(this.received.get(i));
-    }
-    return Buffer.concat(ordered);
+    return assembleChunks(this.received, this.totalChunks);
   }
 }

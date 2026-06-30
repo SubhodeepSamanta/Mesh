@@ -9,10 +9,6 @@ import { chunkFile, assembleChunks } from '../src/chunker.js';
 import { getMerkleProof, verifyChunk } from '../src/crypto.js';
 import { sendJSON, sendChunk, createFramer, parseMessage, MSG, TYPE } from '../src/protocol.js';
 
-process.on('exit', () => {
-  console.log('Active handles:', process._getActiveHandles().map(h => h.constructor.name));
-});
-
 async function makeTempFile(size) {
   const filePath = join(tmpdir(), `mesh-transfer-${Date.now()}.bin`);
   await writeFile(filePath, randomBytes(size));

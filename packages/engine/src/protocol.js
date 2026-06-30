@@ -11,6 +11,7 @@ export const MSG = {
   TRANSFER_COMPLETE: 'TRANSFER_COMPLETE',
   KEEPALIVE:         'KEEPALIVE',
   ERROR:             'ERROR',
+  KEY_EXCHANGE:      'KEY_EXCHANGE',
 };
 
 export const TYPE = {

@@ -16,21 +16,6 @@ function buildTestFile(numChunks, chunkSize = 1024) {
   return { chunks, hashes, tree, merkleRoot: tree.root };
 }
 
-function mockPeer(chunks, hashes, tree, opts = {}) {
-  const { failRate = 0, delay = 0 } = opts;
-  return (chunkIndex) => {
-    return new Promise((resolve, reject) => {
-      setTimeout(() => {
-        if (Math.random() < failRate) {
-          reject(new Error('mock peer failure'));
-          return;
-        }
-        resolve();
-      }, delay);
-    });
-  };
-}
-
 describe('swarm manager', () => {
   it('completes a transfer with a single reliable peer', async () => {
     const { chunks, hashes, tree, merkleRoot } = buildTestFile(10);
@@ -206,5 +191,39 @@ describe('swarm manager', () => {
     const { merkleRoot } = buildTestFile(5);
     const swarm = new SwarmManager(5, merkleRoot);
     assert.throws(() => swarm.assemble(), /not complete/);
+  });
+  it('marks a peer as failed after too many consecutive chunk failures', async () => {
+    const { merkleRoot } = buildTestFile(10);
+    const swarm = new SwarmManager(10, merkleRoot);
+
+    const failedEvents = [];
+    swarm.on('peerFailed', (e) => failedEvents.push(e));
+
+    swarm.addPeer('badPeer', () => Promise.reject(new Error('always fails')));
+
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    assert.equal(failedEvents.length, 1);
+    assert.equal(failedEvents[0].peerId, 'badPeer');
+    assert.equal(swarm.peers.has('badPeer'), false);
+  });
+
+  it('recovers and completes when a bad peer is replaced by a good one', async () => {
+    const { chunks, hashes, tree, merkleRoot } = buildTestFile(10);
+    const swarm = new SwarmManager(10, merkleRoot);
+
+    swarm.addPeer('badPeer', () => Promise.reject(new Error('always fails')));
+
+    swarm.addPeer('goodPeer', (idx) => {
+      setImmediate(() => {
+        const proof = getMerkleProof(tree, idx);
+        swarm.onChunkReceived('goodPeer', idx, chunks[idx], hashes[idx], proof);
+      });
+      return Promise.resolve();
+    });
+
+    await new Promise(resolve => swarm.on('complete', resolve));
+
+    assert.equal(swarm.isComplete(), true);
   });
 });

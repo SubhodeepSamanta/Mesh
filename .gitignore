@@ -6,3 +6,6 @@ dist/
 received/
 testfile.bin
 test-out.txt
+dht-out.txt
+dhtfiles-out.txt
+*-out.txt

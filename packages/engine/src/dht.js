@@ -125,20 +125,20 @@ export class DHTNode extends EventEmitter {
     this.fileStore = new Map();
   }
 
-  listen(port = 0) {
-    return new Promise((resolve, reject) => {
-      this.socket.once('error', reject);
-      this.socket.bind(port, () => {
-        const addr = this.socket.address();
-        this.port = addr.port;
-        this.address = addr.address;
-        this.socket.removeListener('error', reject);
-        this.socket.on('message', (msg, rinfo) => this._handleMessage(msg, rinfo));
-        this.socket.on('error', (e) => this.emit('error', e));
-        resolve(addr);
-      });
+listen(port = 0, host = '127.0.0.1') {
+  return new Promise((resolve, reject) => {
+    this.socket.once('error', reject);
+    this.socket.bind(port, host, () => {
+      const addr = this.socket.address();
+      this.port = addr.port;
+      this.address = addr.address;
+      this.socket.removeListener('error', reject);
+      this.socket.on('message', (msg, rinfo) => this._handleMessage(msg, rinfo));
+      this.socket.on('error', (e) => this.emit('error', e));
+      resolve(addr);
     });
-  }
+  });
+}
 
   close() {
     return new Promise((resolve) => {
@@ -189,30 +189,32 @@ export class DHTNode extends EventEmitter {
       return;
     }
 
-    if (msg.type === DHT_MSG.ANNOUNCE) {
-      const peers = this.fileStore.get(msg.fileHash) || [];
-      const existingIdx = peers.findIndex(p => p.addr === rinfo.address && p.port === msg.port);
-      if (existingIdx === -1) {
-        peers.push({ addr: rinfo.address, port: msg.port, announcedAt: Date.now() });
-      } else {
-        peers[existingIdx].announcedAt = Date.now();
-      }
-      this.fileStore.set(msg.fileHash, peers);
-      this._send(rinfo.address, rinfo.port, {
-        type: DHT_MSG.ANNOUNCE_ACK, msgId: msg.msgId, nodeId: this.nodeId,
-      });
-      return;
-    }
+if (msg.type === DHT_MSG.ANNOUNCE) {
+  if (typeof msg.fileHash !== 'string' || typeof msg.port !== 'number') return;
+  const peers = this.fileStore.get(msg.fileHash) || [];
+  const existingIdx = peers.findIndex(p => p.addr === rinfo.address && p.port === msg.port);
+  if (existingIdx === -1) {
+    peers.push({ addr: rinfo.address, port: msg.port, announcedAt: Date.now() });
+  } else {
+    peers[existingIdx].announcedAt = Date.now();
+  }
+  this.fileStore.set(msg.fileHash, peers);
+  this._send(rinfo.address, rinfo.port, {
+    type: DHT_MSG.ANNOUNCE_ACK, msgId: msg.msgId, nodeId: this.nodeId,
+  });
+  return;
+}
 
-    if (msg.type === DHT_MSG.GET_PEERS) {
-      const peers = this.fileStore.get(msg.fileHash) || [];
-      this._send(rinfo.address, rinfo.port, {
-        type: DHT_MSG.PEERS, msgId: msg.msgId, nodeId: this.nodeId,
-        fileHash: msg.fileHash,
-        peers: peers.map(p => ({ addr: p.addr, port: p.port })),
-      });
-      return;
-    }
+if (msg.type === DHT_MSG.GET_PEERS) {
+  if (typeof msg.fileHash !== 'string') return;
+  const peers = this.fileStore.get(msg.fileHash) || [];
+  this._send(rinfo.address, rinfo.port, {
+    type: DHT_MSG.PEERS, msgId: msg.msgId, nodeId: this.nodeId,
+    fileHash: msg.fileHash,
+    peers: peers.map(p => ({ addr: p.addr, port: p.port })),
+  });
+  return;
+}
 
     if (msg.type === DHT_MSG.PONG || msg.type === DHT_MSG.FOUND_NODE ||
         msg.type === DHT_MSG.ANNOUNCE_ACK || msg.type === DHT_MSG.PEERS) {

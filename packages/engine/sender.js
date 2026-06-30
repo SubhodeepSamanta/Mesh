@@ -3,6 +3,7 @@ import { basename, resolve } from 'path';
 import { getMerkleProof } from './src/crypto.js';
 import { sendJSON, sendChunk, createFramer, parseMessage, MSG, TYPE } from './src/protocol.js';
 import { indexFile, readChunk } from './src/chunker.js';
+import { generateKeyPair, exportPublicKey, deriveSharedKey, encrypt } from './src/crypto.js';
 
 const FILE_PATH = resolve(process.argv[2]);
 const PORT      = parseInt(process.argv[3] || '9000');
@@ -35,7 +36,8 @@ async function main() {
     socket.setMaxListeners(0);
     socket.setNoDelay(true);
     console.log(`Receiver connected from ${socket.remoteAddress}`);
-
+    const keyPair = generateKeyPair();
+let sharedKey = null;
     let peerAlive = true;
     const keepaliveCheck = setInterval(() => {
       if (!peerAlive) {
@@ -60,14 +62,21 @@ async function main() {
       if (data.type === MSG.KEEPALIVE) {
         return;
       }
-
+if (data.type === MSG.KEY_EXCHANGE) {
+  const theirPublicKeyDER = Buffer.from(data.publicKey, 'base64');
+  sharedKey = deriveSharedKey(keyPair.privateKey, theirPublicKeyDER);
+  const myPublicKey = exportPublicKey(keyPair).toString('base64');
+  sendJSON(socket, { type: MSG.KEY_EXCHANGE, publicKey: myPublicKey });
+}
       if (data.type === MSG.CHUNK_REQUEST) {
-        const { index } = data;
-        if (index < 0 || index >= totalChunks) return;
-        const chunkData = await readChunkCached(FILE_PATH, index, chunkSize);
-        const proof     = getMerkleProof(tree, index);
-        await sendChunk(socket, index, hashes[index], proof, chunkData);
-      }
+  const { index } = data;
+  if (index < 0 || index >= totalChunks) return;
+  if (!sharedKey) return;
+  const chunkData = await readChunkCached(FILE_PATH, index, chunkSize);
+  const encryptedData = encrypt(chunkData, sharedKey);
+  const proof = getMerkleProof(tree, index);
+  await sendChunk(socket, index, hashes[index], proof, encryptedData);
+}
 
       if (data.type === MSG.TRANSFER_COMPLETE) {
         console.log('Transfer confirmed complete');
