@@ -5,3 +5,4 @@ dist/
 .DS_Store
 received/
 testfile.bin
+test-out.txt
