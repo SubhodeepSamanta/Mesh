@@ -112,3 +112,39 @@ Checkpoint: 2-3
 ---
 
 ### Part 4 — Swarm Manager (NEXT)
+
+### Part 4 — Swarm Manager (DONE)
+
+The coordination layer that takes peers discovered via DHT and downloads different chunks from different peers in parallel, with verification and automatic recovery on failure.
+
+What we built:
+- SwarmManager class with chunk state tracking (pending, requested, verified)
+- Pipeline-based chunk assignment per peer, max 16 in flight
+- Hash and Merkle proof verification on every received chunk
+- Automatic re-queue of chunks when a peer fails or disconnects
+- Event-driven interface: chunkVerified, chunkFailed, complete, peerRemoved
+- Progress and per-peer stats reporting
+
+What we tested:
+- Single peer completes a full transfer
+- Assembled output matches original byte-for-byte
+- Chunks distributed across multiple peers simultaneously
+- Corrupted chunks rejected and re-requested
+- Peer removal mid-transfer re-queues its in-flight chunks to others
+- Pipeline limit respected per peer
+- Progress and peer stats reporting correctness
+
+Files touched: swarm.js, test/swarm.test.js
+
+Checkpoint: 2-4
+
+---
+
+## Current Status
+
+- [x] Phase 0: Monorepo scaffolded, all packages initialized
+- [x] Phase 1: Raw TCP Transfer Engine
+- [x] Phase 2: DHT, Encryption, Multi-Peer
+- [ ] Phase 3: Signaling Server and WebRTC
+- [ ] Phase 4: React Frontend
+- [ ] Phase 5: CLI, Polish, Deployment

@@ -8,7 +8,10 @@ Excluded: node_modules, .git, package-lock.json, .env
 
 - .env.example
 - .gitignore
+- dht-out.txt
+- dhtfiles-out.txt
 - docker-compose.yml
+- docs/phase2.md
 - docs/phases.md
 - package.json
 - packages/cli/package.json
@@ -29,7 +32,11 @@ Excluded: node_modules, .git, package-lock.json, .env
 - packages/engine/src/transfer.js
 - packages/engine/test/chunker.test.js
 - packages/engine/test/crypto.test.js
+- packages/engine/test/dht.test.js
+- packages/engine/test/dhtfiles.test.js
+- packages/engine/test/dhtnode.test.js
 - packages/engine/test/protocol.test.js
+- packages/engine/test/swarm.test.js
 - packages/engine/test/transfer.test.js
 - packages/signaling/Dockerfile
 - packages/signaling/package.json
@@ -53,6 +60,7 @@ Excluded: node_modules, .git, package-lock.json, .env
 - received/protocol.js
 - received/testfile.bin
 - received/transfer.test.js
+- test-out.txt
 - testfile.bin
 
 ## Contents
@@ -75,7 +83,16 @@ dist/
 .DS_Store
 received/
 testfile.bin
+test-out.txt
 ```
+
+### dht-out.txt
+
+Binary or non-UTF-8 file omitted from markdown snapshot (7208 bytes).
+
+### dhtfiles-out.txt
+
+Binary or non-UTF-8 file omitted from markdown snapshot (16056 bytes).
 
 ### docker-compose.yml
 
@@ -90,6 +107,161 @@ services:
       - NODE_ENV=production
       - PORT=8080
     restart: unless-stopped
+```
+
+### docs/phase2.md
+
+```text
+## Phase 2 — DHT, Encryption, Multi-Peer
+
+The goal is making the transfer genuinely decentralised and secure. Peers find each other without any central server. All data is encrypted end to end.
+
+Ends when: three processes find each other via DHT and transfer a file encrypted end to end.
+
+---
+
+### Part 1 — Kademlia Routing Table (DONE)
+
+Built the foundational data structure for the DHT. No networking yet — pure math and data structure, fully testable in isolation.
+
+What we built:
+- 160-bit random node ID generation
+- XOR distance calculation between two node IDs
+- Bucket index calculation based on leading differing bit
+- RoutingTable class with k-buckets (max 20 peers per bucket)
+- addPeer, removePeer, getClosest functions
+
+What we tested:
+- Node ID generation and uniqueness
+- XOR distance properties: zero for self, symmetric, nonzero for different IDs
+- Distance comparison ordering by most significant byte
+- Bucket index correctness for various bit-difference scenarios
+- Routing table peer management including bucket overflow rejection
+- getClosest sorting correctness
+
+Files touched: dht.js, test/dht.test.js
+
+Checkpoint: 2-1
+
+---
+
+### Part 2 — DHT Networking (NEXT)
+
+UDP transport, FIND_NODE protocol, iterative lookup algorithm, bootstrap process.
+
+What we will build:
+- UDP socket setup with message send/receive
+- DHT_PING, DHT_FIND_NODE, DHT_FOUND_NODE message types
+- Iterative lookup algorithm with alpha=3 concurrency
+- Bootstrap process to join an existing DHT network
+- Timeout and retry handling for unresponsive peers
+
+### Part 3 — Announce and GetPeers
+
+Storing and retrieving which peers have which files via the DHT.
+
+### Part 4 — Swarm Manager
+
+Coordinating parallel chunk downloads from multiple peers found via DHT.
+
+---
+
+## Phase 3 — Signaling Server and WebRTC
+
+
+### Part 2 — DHT Networking (DONE)
+
+UDP transport layer for the DHT. Nodes can ping each other, find other nodes via FIND_NODE queries, and the iterative lookup algorithm converges on any target node ID across multi-hop chains.
+
+What we built:
+- UDP socket setup with dgram, message send/receive
+- DHT_PING / DHT_PONG message types
+- DHT_FIND_NODE / DHT_FOUND_NODE message types
+- Iterative lookup algorithm with ALPHA=3 concurrency
+- Bootstrap process to join an existing DHT network
+- Timeout handling for unresponsive peers
+- Malformed packet resilience
+
+What we tested:
+- Ping/pong round trip and routing table population
+- Ping timeout for unreachable peers
+- FindNode returns closest known peers
+- Bootstrap joins network and populates routing table
+- Iterative lookup converges across 3-node and 5-node chains
+- Malformed UDP packets do not crash the node
+
+Files touched: dht.js, test/dhtnode.test.js
+
+Checkpoint: 2-2
+
+---
+
+
+### Part 3 — Announce and GetPeers (NEXT)
+
+### Part 3 — Announce and GetPeers (DONE)
+
+The layer that lets peers say "I have this file" and other peers discover "who has this file" using the file's hash as a DHT key.
+
+What we built:
+- DHT_ANNOUNCE / DHT_ANNOUNCE_ACK message types
+- DHT_GET_PEERS / DHT_PEERS message types
+- File store per node mapping fileHash to a list of seeding peers
+- fileHashToDhtKey helper truncating SHA-256 (32 bytes) to DHT key size (20 bytes)
+- announceFile method using iterativeFindNode to reach the K closest nodes to the file hash
+- getPeersForFile method merging local and remote results, deduplicated
+
+What we tested:
+- Single node announces and finds its own file
+- Peer announces, different peer finds it through a relay node
+- Multiple seeders for the same file all discoverable
+- GetPeers for an unannounced file returns empty array
+- Re-announcing does not create duplicate entries
+- Announce and discovery work correctly across a five node mesh
+
+Files touched: dht.js, test/dhtfiles.test.js
+
+Checkpoint: 2-3
+
+---
+
+### Part 4 — Swarm Manager (NEXT)
+
+### Part 4 — Swarm Manager (DONE)
+
+The coordination layer that takes peers discovered via DHT and downloads different chunks from different peers in parallel, with verification and automatic recovery on failure.
+
+What we built:
+- SwarmManager class with chunk state tracking (pending, requested, verified)
+- Pipeline-based chunk assignment per peer, max 16 in flight
+- Hash and Merkle proof verification on every received chunk
+- Automatic re-queue of chunks when a peer fails or disconnects
+- Event-driven interface: chunkVerified, chunkFailed, complete, peerRemoved
+- Progress and per-peer stats reporting
+
+What we tested:
+- Single peer completes a full transfer
+- Assembled output matches original byte-for-byte
+- Chunks distributed across multiple peers simultaneously
+- Corrupted chunks rejected and re-requested
+- Peer removal mid-transfer re-queues its in-flight chunks to others
+- Pipeline limit respected per peer
+- Progress and peer stats reporting correctness
+
+Files touched: swarm.js, test/swarm.test.js
+
+Checkpoint: 2-4
+
+---
+
+## Current Status
+
+- [x] Phase 0: Monorepo scaffolded, all packages initialized
+- [x] Phase 1: Raw TCP Transfer Engine
+- [x] Phase 2: DHT, Encryption, Multi-Peer
+- [ ] Phase 3: Signaling Server and WebRTC
+- [ ] Phase 4: React Frontend
+- [ ] Phase 5: CLI, Polish, Deployment
 ```
 
 ### docs/phases.md
@@ -223,6 +395,7 @@ Examples:
 
 ---
 
+
 ## Current Status
 
 - [x] Phase 0: Monorepo scaffolded, all packages initialized
@@ -319,7 +492,7 @@ export function TransferTUI() { return null; }
   "main": "src/index.js",
   "type": "module",
   "scripts": {
-    "test": "node --test --test-force-exit test/protocol.test.js test/chunker.test.js test/crypto.test.js test/transfer.test.js"
+    "test": "node --test test/protocol.test.js test/chunker.test.js test/crypto.test.js test/transfer.test.js test/dht.test.js test/dhtnode.test.js test/dhtfiles.test.js test/swarm.test.js"
   },
   "license": "ISC"
 }
@@ -821,7 +994,398 @@ export function decrypt(pkg, key) {
 ### packages/engine/src/dht.js
 
 ```text
+import { randomBytes } from 'crypto';
+import dgram from 'dgram';
+import { EventEmitter } from 'events';
+
 export const DHT_K = 20;
+export const ID_BYTES = 20;
+export const ALPHA = 3;
+export const REQUEST_TIMEOUT_MS = 3000;
+
+export function generateNodeId() {
+  return randomBytes(ID_BYTES).toString('hex');
+}
+export function fileHashToDhtKey(sha256Hex) {
+  return sha256Hex.slice(0, ID_BYTES * 2);
+}
+export function xorDistance(idA, idB) {
+  const a = Buffer.from(idA, 'hex');
+  const b = Buffer.from(idB, 'hex');
+  if (a.length !== ID_BYTES || b.length !== ID_BYTES) {
+    throw new Error('Node IDs must be 20 bytes');
+  }
+  const result = Buffer.allocUnsafe(ID_BYTES);
+  for (let i = 0; i < ID_BYTES; i++) {
+    result[i] = a[i] ^ b[i];
+  }
+  return result;
+}
+
+export function compareDistance(distA, distB) {
+  for (let i = 0; i < ID_BYTES; i++) {
+    if (distA[i] !== distB[i]) return distA[i] - distB[i];
+  }
+  return 0;
+}
+
+export function bucketIndex(myId, peerId) {
+  const dist = xorDistance(myId, peerId);
+  for (let byteIdx = 0; byteIdx < ID_BYTES; byteIdx++) {
+    if (dist[byteIdx] === 0) continue;
+    for (let bit = 7; bit >= 0; bit--) {
+      if ((dist[byteIdx] >> bit) & 1) {
+        return byteIdx * 8 + (7 - bit);
+      }
+    }
+  }
+  return ID_BYTES * 8 - 1;
+}
+
+export class RoutingTable {
+  constructor(myId) {
+    this.myId = myId;
+    this.buckets = Array.from({ length: ID_BYTES * 8 }, () => []);
+  }
+
+  addPeer(peer) {
+    if (peer.id === this.myId) return false;
+    const idx = bucketIndex(this.myId, peer.id);
+    const bucket = this.buckets[idx];
+    const existingIdx = bucket.findIndex(p => p.id === peer.id);
+    if (existingIdx !== -1) {
+      bucket.splice(existingIdx, 1);
+      bucket.push({ ...peer, lastSeen: Date.now() });
+      return true;
+    }
+    if (bucket.length < DHT_K) {
+      bucket.push({ ...peer, lastSeen: Date.now() });
+      return true;
+    }
+    return false;
+  }
+
+  removePeer(peerId) {
+    const idx = bucketIndex(this.myId, peerId);
+    const bucket = this.buckets[idx];
+    const existingIdx = bucket.findIndex(p => p.id === peerId);
+    if (existingIdx !== -1) {
+      bucket.splice(existingIdx, 1);
+      return true;
+    }
+    return false;
+  }
+
+  getBucket(idx) {
+    return this.buckets[idx];
+  }
+
+  getAllPeers() {
+    return this.buckets.flat();
+  }
+
+  getClosest(targetId, count = DHT_K) {
+    const all = this.getAllPeers();
+    return all
+      .map(peer => ({ peer, dist: xorDistance(peer.id, targetId) }))
+      .sort((a, b) => compareDistance(a.dist, b.dist))
+      .slice(0, count)
+      .map(x => x.peer);
+  }
+
+  size() {
+    return this.getAllPeers().length;
+  }
+}
+
+export const DHT_MSG = {
+  PING:         'DHT_PING',
+  PONG:         'DHT_PONG',
+  FIND_NODE:    'DHT_FIND_NODE',
+  FOUND_NODE:   'DHT_FOUND_NODE',
+  ANNOUNCE:     'DHT_ANNOUNCE',
+  ANNOUNCE_ACK: 'DHT_ANNOUNCE_ACK',
+  GET_PEERS:    'DHT_GET_PEERS',
+  PEERS:        'DHT_PEERS',
+};
+
+export class DHTNode extends EventEmitter {
+  constructor(nodeId = generateNodeId()) {
+    super();
+    this.nodeId = nodeId;
+    this.routingTable = new RoutingTable(nodeId);
+    this.socket = dgram.createSocket('udp4');
+    this.pending = new Map();
+    this.port = null;
+    this.address = null;
+    this.fileStore = new Map();
+  }
+
+  listen(port = 0) {
+    return new Promise((resolve, reject) => {
+      this.socket.once('error', reject);
+      this.socket.bind(port, () => {
+        const addr = this.socket.address();
+        this.port = addr.port;
+        this.address = addr.address;
+        this.socket.removeListener('error', reject);
+        this.socket.on('message', (msg, rinfo) => this._handleMessage(msg, rinfo));
+        this.socket.on('error', (e) => this.emit('error', e));
+        resolve(addr);
+      });
+    });
+  }
+
+  close() {
+    return new Promise((resolve) => {
+      this.socket.close(resolve);
+    });
+  }
+
+  _msgId() {
+    return randomBytes(4).toString('hex');
+  }
+
+  _send(addr, port, obj) {
+    const buf = Buffer.from(JSON.stringify(obj), 'utf8');
+    return new Promise((resolve, reject) => {
+      this.socket.send(buf, port, addr, (err) => {
+        if (err) reject(err); else resolve();
+      });
+    });
+  }
+
+  _handleMessage(msgBuf, rinfo) {
+    let msg;
+    try {
+      msg = JSON.parse(msgBuf.toString('utf8'));
+    } catch {
+      return;
+    }
+
+    if (msg.nodeId && msg.nodeId !== this.nodeId) {
+      this.routingTable.addPeer({ id: msg.nodeId, addr: rinfo.address, port: rinfo.port });
+    }
+
+    if (msg.type === DHT_MSG.PING) {
+      this._send(rinfo.address, rinfo.port, {
+        type: DHT_MSG.PONG, msgId: msg.msgId, nodeId: this.nodeId,
+      });
+      return;
+    }
+
+    if (msg.type === DHT_MSG.FIND_NODE) {
+      const closest = this.routingTable.getClosest(msg.targetId, DHT_K);
+      this._send(rinfo.address, rinfo.port, {
+        type: DHT_MSG.FOUND_NODE,
+        msgId: msg.msgId,
+        nodeId: this.nodeId,
+        closest: closest.map(p => ({ id: p.id, addr: p.addr, port: p.port })),
+      });
+      return;
+    }
+
+    if (msg.type === DHT_MSG.ANNOUNCE) {
+      const peers = this.fileStore.get(msg.fileHash) || [];
+      const existingIdx = peers.findIndex(p => p.addr === rinfo.address && p.port === msg.port);
+      if (existingIdx === -1) {
+        peers.push({ addr: rinfo.address, port: msg.port, announcedAt: Date.now() });
+      } else {
+        peers[existingIdx].announcedAt = Date.now();
+      }
+      this.fileStore.set(msg.fileHash, peers);
+      this._send(rinfo.address, rinfo.port, {
+        type: DHT_MSG.ANNOUNCE_ACK, msgId: msg.msgId, nodeId: this.nodeId,
+      });
+      return;
+    }
+
+    if (msg.type === DHT_MSG.GET_PEERS) {
+      const peers = this.fileStore.get(msg.fileHash) || [];
+      this._send(rinfo.address, rinfo.port, {
+        type: DHT_MSG.PEERS, msgId: msg.msgId, nodeId: this.nodeId,
+        fileHash: msg.fileHash,
+        peers: peers.map(p => ({ addr: p.addr, port: p.port })),
+      });
+      return;
+    }
+
+    if (msg.type === DHT_MSG.PONG || msg.type === DHT_MSG.FOUND_NODE ||
+        msg.type === DHT_MSG.ANNOUNCE_ACK || msg.type === DHT_MSG.PEERS) {
+      const handler = this.pending.get(msg.msgId);
+      if (handler) {
+        clearTimeout(handler.timeout);
+        this.pending.delete(msg.msgId);
+        handler.resolve(msg);
+      }
+      return;
+    }
+  }
+
+  ping(addr, port) {
+    return new Promise((resolve, reject) => {
+      const msgId = this._msgId();
+      const timeout = setTimeout(() => {
+        this.pending.delete(msgId);
+        reject(new Error('PING timeout'));
+      }, REQUEST_TIMEOUT_MS);
+      this.pending.set(msgId, { resolve, reject, timeout });
+      this._send(addr, port, { type: DHT_MSG.PING, msgId, nodeId: this.nodeId }).catch(reject);
+    });
+  }
+
+  findNode(addr, port, targetId) {
+    return new Promise((resolve, reject) => {
+      const msgId = this._msgId();
+      const timeout = setTimeout(() => {
+        this.pending.delete(msgId);
+        reject(new Error('FIND_NODE timeout'));
+      }, REQUEST_TIMEOUT_MS);
+      this.pending.set(msgId, {
+        resolve: (msg) => resolve(msg.closest || []),
+        reject,
+        timeout,
+      });
+      this._send(addr, port, {
+        type: DHT_MSG.FIND_NODE, msgId, nodeId: this.nodeId, targetId,
+      }).catch(reject);
+    });
+  }
+
+  async bootstrap(addr, port) {
+    const closest = await this.findNode(addr, port, this.nodeId);
+    closest.forEach(peer => this.routingTable.addPeer(peer));
+    return closest;
+  }
+
+  async iterativeFindNode(targetId) {
+    const queried = new Set();
+    let closest = this.routingTable.getClosest(targetId, DHT_K);
+
+    if (closest.length === 0) return [];
+
+    while (true) {
+      const toQuery = closest
+        .filter(peer => peer.id && !queried.has(peer.id))
+        .slice(0, ALPHA);
+
+      if (toQuery.length === 0) break;
+
+      const results = await Promise.allSettled(
+        toQuery.map(async (peer) => {
+          queried.add(peer.id);
+          try {
+            const found = await this.findNode(peer.addr, peer.port, targetId);
+            found.forEach(p => this.routingTable.addPeer(p));
+            return found;
+          } catch {
+            this.routingTable.removePeer(peer.id);
+            return [];
+          }
+        })
+      );
+
+      const newPeers = results.flatMap(r => r.status === 'fulfilled' ? r.value : []);
+
+      const candidateMap = new Map();
+      [...closest, ...newPeers].forEach(p => {
+        if (p.id) candidateMap.set(p.id, p);
+      });
+
+      closest = [...candidateMap.values()]
+        .map(peer => ({ peer, dist: xorDistance(peer.id, targetId) }))
+        .sort((a, b) => compareDistance(a.dist, b.dist))
+        .slice(0, DHT_K)
+        .map(x => x.peer);
+
+      const allQueried = closest.every(p => queried.has(p.id));
+      if (allQueried) break;
+    }
+
+    return closest;
+  }
+
+  _announceToOne(addr, port, fileHash, myPort) {
+    return new Promise((resolve, reject) => {
+      const msgId = this._msgId();
+      const timeout = setTimeout(() => {
+        this.pending.delete(msgId);
+        reject(new Error('ANNOUNCE timeout'));
+      }, REQUEST_TIMEOUT_MS);
+      this.pending.set(msgId, { resolve, reject, timeout });
+      this._send(addr, port, {
+        type: DHT_MSG.ANNOUNCE, msgId, nodeId: this.nodeId, fileHash, port: myPort,
+      }).catch(reject);
+    });
+  }
+
+  _getPeersFromOne(addr, port, fileHash) {
+    return new Promise((resolve, reject) => {
+      const msgId = this._msgId();
+      const timeout = setTimeout(() => {
+        this.pending.delete(msgId);
+        reject(new Error('GET_PEERS timeout'));
+      }, REQUEST_TIMEOUT_MS);
+      this.pending.set(msgId, {
+        resolve: (msg) => resolve(msg.peers || []),
+        reject,
+        timeout,
+      });
+      this._send(addr, port, {
+        type: DHT_MSG.GET_PEERS, msgId, nodeId: this.nodeId, fileHash,
+      }).catch(reject);
+    });
+  }
+
+async announceFile(fileHash, myPort) {
+  const dhtKey = fileHashToDhtKey(fileHash);
+  const closest = await this.iterativeFindNode(dhtKey);
+
+  if (closest.length === 0) {
+    const peers = this.fileStore.get(fileHash) || [];
+    const exists = peers.some(p => p.addr === this.address && p.port === myPort);
+    if (!exists) {
+      peers.push({ addr: this.address, port: myPort, announcedAt: Date.now() });
+    }
+    this.fileStore.set(fileHash, peers);
+    return [];
+  }
+
+  const results = await Promise.allSettled(
+    closest.map(peer => this._announceToOne(peer.addr, peer.port, fileHash, myPort))
+  );
+
+  return closest.filter((_, i) => results[i].status === 'fulfilled');
+}
+
+async getPeersForFile(fileHash) {
+  const dhtKey = fileHashToDhtKey(fileHash);
+  const closest = await this.iterativeFindNode(dhtKey);
+
+  const localPeers = this.fileStore.get(fileHash) || [];
+  const seen = new Set();
+  const merged = [];
+
+  for (const peer of localPeers) {
+    const key = `${peer.addr}:${peer.port}`;
+    if (!seen.has(key)) { seen.add(key); merged.push({ addr: peer.addr, port: peer.port }); }
+  }
+
+  const allLists = await Promise.allSettled(
+    closest.map(peer => this._getPeersFromOne(peer.addr, peer.port, fileHash))
+  );
+
+  for (const result of allLists) {
+    if (result.status !== 'fulfilled') continue;
+    for (const peer of result.value) {
+      const key = `${peer.addr}:${peer.port}`;
+      if (!seen.has(key)) { seen.add(key); merged.push(peer); }
+    }
+  }
+
+  return merged;
+}
+}
 ```
 
 ### packages/engine/src/index.js
@@ -830,6 +1394,8 @@ export const DHT_K = 20;
 export * from './protocol.js';
 export * from './chunker.js';
 export * from './crypto.js';
+export * from './dht.js';
+export * from './swarm.js';
 ```
 
 ### packages/engine/src/peer.js
@@ -932,7 +1498,164 @@ export function parseMessage(body) {
 ### packages/engine/src/swarm.js
 
 ```text
+import { EventEmitter } from 'events';
+import { createHash } from 'crypto';
+import { verifyChunk } from './crypto.js';
+
 export const PIPELINE_SIZE = 16;
+
+const CHUNK_STATE = {
+  PENDING:   'pending',
+  REQUESTED: 'requested',
+  VERIFIED:  'verified',
+};
+
+export class SwarmManager extends EventEmitter {
+  constructor(totalChunks, merkleRoot) {
+    super();
+    this.totalChunks = totalChunks;
+    this.merkleRoot  = merkleRoot;
+    this.chunkState  = new Array(totalChunks).fill(CHUNK_STATE.PENDING);
+    this.chunkPeer   = new Array(totalChunks).fill(null);
+    this.received    = new Map();
+    this.peers       = new Map();
+    this.done        = false;
+  }
+
+  addPeer(peerId, requestChunkFn) {
+    this.peers.set(peerId, {
+      id: peerId,
+      requestChunk: requestChunkFn,
+      pending: new Set(),
+      failed: false,
+      chunksServed: 0,
+    });
+    this._fillPipeline(peerId);
+  }
+
+  removePeer(peerId) {
+    const peer = this.peers.get(peerId);
+    if (!peer) return;
+
+    for (const chunkIdx of peer.pending) {
+      if (this.chunkState[chunkIdx] === CHUNK_STATE.REQUESTED) {
+        this.chunkState[chunkIdx] = CHUNK_STATE.PENDING;
+        this.chunkPeer[chunkIdx] = null;
+      }
+    }
+
+    this.peers.delete(peerId);
+    this.emit('peerRemoved', peerId);
+
+    for (const id of this.peers.keys()) {
+      this._fillPipeline(id);
+    }
+  }
+
+  _fillPipeline(peerId) {
+    const peer = this.peers.get(peerId);
+    if (!peer || peer.failed || this.done) return;
+
+    for (let i = 0; i < this.totalChunks; i++) {
+      if (peer.pending.size >= PIPELINE_SIZE) break;
+      if (this.chunkState[i] !== CHUNK_STATE.PENDING) continue;
+
+      this.chunkState[i] = CHUNK_STATE.REQUESTED;
+      this.chunkPeer[i]  = peerId;
+      peer.pending.add(i);
+
+      peer.requestChunk(i).catch(() => {
+        this._handleChunkFailure(peerId, i);
+      });
+    }
+  }
+
+  _handleChunkFailure(peerId, chunkIndex) {
+    const peer = this.peers.get(peerId);
+    if (peer) peer.pending.delete(chunkIndex);
+
+    if (this.chunkState[chunkIndex] === CHUNK_STATE.REQUESTED) {
+      this.chunkState[chunkIndex] = CHUNK_STATE.PENDING;
+      this.chunkPeer[chunkIndex] = null;
+    }
+
+    if (peer) this._fillPipeline(peerId);
+  }
+
+  onChunkReceived(peerId, chunkIndex, chunkData, expectedHash, proof) {
+    const peer = this.peers.get(peerId);
+    if (!peer) return false;
+
+    peer.pending.delete(chunkIndex);
+
+    if (this.chunkState[chunkIndex] === CHUNK_STATE.VERIFIED) {
+      this._fillPipeline(peerId);
+      return true;
+    }
+
+    const actualHash = createHash('sha256').update(chunkData).digest('hex');
+    if (actualHash !== expectedHash) {
+      this.emit('chunkFailed', { peerId, chunkIndex, reason: 'hash_mismatch' });
+      this.chunkState[chunkIndex] = CHUNK_STATE.PENDING;
+      this.chunkPeer[chunkIndex] = null;
+      this._fillPipeline(peerId);
+      return false;
+    }
+
+    if (proof && !verifyChunk(chunkData, proof, this.merkleRoot)) {
+      this.emit('chunkFailed', { peerId, chunkIndex, reason: 'proof_invalid' });
+      this.chunkState[chunkIndex] = CHUNK_STATE.PENDING;
+      this.chunkPeer[chunkIndex] = null;
+      this._fillPipeline(peerId);
+      return false;
+    }
+
+    this.chunkState[chunkIndex] = CHUNK_STATE.VERIFIED;
+    this.received.set(chunkIndex, chunkData);
+    peer.chunksServed++;
+
+    this.emit('chunkVerified', { peerId, chunkIndex, total: this.totalChunks, verified: this.received.size });
+
+    if (this.received.size === this.totalChunks) {
+      this.done = true;
+      this.emit('complete');
+    } else {
+      this._fillPipeline(peerId);
+    }
+
+    return true;
+  }
+
+  getProgress() {
+    return {
+      verified: this.received.size,
+      total: this.totalChunks,
+      percent: (this.received.size / this.totalChunks) * 100,
+    };
+  }
+
+  getPeerStats() {
+    return [...this.peers.values()].map(p => ({
+      id: p.id,
+      pending: p.pending.size,
+      chunksServed: p.chunksServed,
+      failed: p.failed,
+    }));
+  }
+
+  isComplete() {
+    return this.done;
+  }
+
+  assemble() {
+    if (!this.done) throw new Error('Transfer not complete');
+    const ordered = [];
+    for (let i = 0; i < this.totalChunks; i++) {
+      ordered.push(this.received.get(i));
+    }
+    return Buffer.concat(ordered);
+  }
+}
 ```
 
 ### packages/engine/src/transfer.js
@@ -1072,6 +1795,466 @@ describe('crypto', () => {
 });
 ```
 
+### packages/engine/test/dht.test.js
+
+```text
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  generateNodeId,
+  xorDistance,
+  compareDistance,
+  bucketIndex,
+  RoutingTable,
+  ID_BYTES,
+  DHT_K,
+} from '../src/dht.js';
+
+describe('dht node id', () => {
+  it('generates a 20 byte hex node id', () => {
+    const id = generateNodeId();
+    assert.equal(id.length, ID_BYTES * 2);
+    assert.match(id, /^[0-9a-f]+$/);
+  });
+
+  it('generates different ids each time', () => {
+    const id1 = generateNodeId();
+    const id2 = generateNodeId();
+    assert.notEqual(id1, id2);
+  });
+});
+
+describe('xor distance', () => {
+  it('distance from a node to itself is zero', () => {
+    const id = generateNodeId();
+    const dist = xorDistance(id, id);
+    assert.ok(dist.every(byte => byte === 0));
+  });
+
+  it('distance is symmetric', () => {
+    const idA = generateNodeId();
+    const idB = generateNodeId();
+    const distAB = xorDistance(idA, idB);
+    const distBA = xorDistance(idB, idA);
+    assert.deepEqual(distAB, distBA);
+  });
+
+  it('different ids produce nonzero distance', () => {
+    const idA = generateNodeId();
+    const idB = generateNodeId();
+    const dist = xorDistance(idA, idB);
+    assert.ok(dist.some(byte => byte !== 0));
+  });
+
+  it('throws on malformed node id length', () => {
+    assert.throws(() => xorDistance('abc', generateNodeId()));
+  });
+});
+
+describe('compare distance', () => {
+  it('returns 0 for equal distances', () => {
+    const id = generateNodeId();
+    const dist = xorDistance(id, id);
+    assert.equal(compareDistance(dist, dist), 0);
+  });
+
+  it('correctly orders by first differing byte', () => {
+    const distA = Buffer.from('00'.repeat(19) + '01', 'hex');
+    const distB = Buffer.from('00'.repeat(19) + '02', 'hex');
+    assert.ok(compareDistance(distA, distB) < 0);
+    assert.ok(compareDistance(distB, distA) > 0);
+  });
+
+  it('most significant byte dominates comparison', () => {
+    const distA = Buffer.from('01' + 'ff'.repeat(19), 'hex');
+    const distB = Buffer.from('02' + '00'.repeat(19), 'hex');
+    assert.ok(compareDistance(distA, distB) < 0);
+  });
+});
+
+describe('bucket index', () => {
+  it('identical ids fall in the last bucket', () => {
+    const id = generateNodeId();
+    assert.equal(bucketIndex(id, id), ID_BYTES * 8 - 1);
+  });
+
+  it('ids differing only in the last bit fall in bucket 0', () => {
+    const myId = '00'.repeat(ID_BYTES);
+    const peerId = '00'.repeat(ID_BYTES - 1) + '01';
+    assert.equal(bucketIndex(myId, peerId), 159);
+  });
+
+  it('ids differing in the first bit fall in bucket 0', () => {
+    const myId = '00'.repeat(ID_BYTES);
+    const peerId = '80' + '00'.repeat(ID_BYTES - 1);
+    assert.equal(bucketIndex(myId, peerId), 0);
+  });
+});
+
+describe('routing table', () => {
+  it('does not add self', () => {
+    const myId = generateNodeId();
+    const table = new RoutingTable(myId);
+    const added = table.addPeer({ id: myId, addr: '127.0.0.1', port: 9000 });
+    assert.equal(added, false);
+    assert.equal(table.size(), 0);
+  });
+
+  it('adds a peer successfully', () => {
+    const myId = generateNodeId();
+    const table = new RoutingTable(myId);
+    const peerId = generateNodeId();
+    const added = table.addPeer({ id: peerId, addr: '127.0.0.1', port: 9001 });
+    assert.equal(added, true);
+    assert.equal(table.size(), 1);
+  });
+
+  it('updates lastSeen when adding an existing peer again', () => {
+    const myId = generateNodeId();
+    const table = new RoutingTable(myId);
+    const peerId = generateNodeId();
+    table.addPeer({ id: peerId, addr: '127.0.0.1', port: 9001 });
+    const idx = bucketIndex(myId, peerId);
+    const firstSeen = table.getBucket(idx)[0].lastSeen;
+
+    table.addPeer({ id: peerId, addr: '127.0.0.1', port: 9001 });
+    const secondSeen = table.getBucket(idx)[0].lastSeen;
+
+    assert.ok(secondSeen >= firstSeen);
+    assert.equal(table.size(), 1);
+  });
+
+it('rejects new peer when bucket is full', () => {
+  const myId = '00'.repeat(ID_BYTES);
+  const table = new RoutingTable(myId);
+
+  for (let i = 0; i < DHT_K; i++) {
+    const peerId = '80' + i.toString(16).padStart(2, '0') + '00'.repeat(ID_BYTES - 2);
+    table.addPeer({ id: peerId, addr: '127.0.0.1', port: 9000 + i });
+  }
+  assert.equal(table.getBucket(0).length, DHT_K);
+
+  const overflowId = '80ff' + '00'.repeat(ID_BYTES - 2);
+  const added = table.addPeer({ id: overflowId, addr: '127.0.0.1', port: 9999 });
+  assert.equal(added, false);
+  assert.equal(table.getBucket(0).length, DHT_K);
+});
+
+  it('removes a peer', () => {
+    const myId = generateNodeId();
+    const table = new RoutingTable(myId);
+    const peerId = generateNodeId();
+    table.addPeer({ id: peerId, addr: '127.0.0.1', port: 9001 });
+    assert.equal(table.size(), 1);
+    const removed = table.removePeer(peerId);
+    assert.equal(removed, true);
+    assert.equal(table.size(), 0);
+  });
+
+  it('getClosest returns peers sorted by XOR distance to target', () => {
+    const myId = '00'.repeat(ID_BYTES);
+    const table = new RoutingTable(myId);
+
+    const peerNear = '00'.repeat(ID_BYTES - 1) + '01';
+    const peerFar  = 'ff'.repeat(ID_BYTES);
+    const peerMid  = '0f'.repeat(ID_BYTES);
+
+    table.addPeer({ id: peerFar,  addr: '1.1.1.1', port: 1 });
+    table.addPeer({ id: peerNear, addr: '1.1.1.2', port: 2 });
+    table.addPeer({ id: peerMid,  addr: '1.1.1.3', port: 3 });
+
+    const target = '00'.repeat(ID_BYTES);
+    const closest = table.getClosest(target, 3);
+
+    assert.equal(closest[0].id, peerNear);
+    assert.equal(closest[2].id, peerFar);
+  });
+
+  it('getClosest respects count limit', () => {
+    const myId = generateNodeId();
+    const table = new RoutingTable(myId);
+    for (let i = 0; i < 10; i++) {
+      table.addPeer({ id: generateNodeId(), addr: '127.0.0.1', port: 9000 + i });
+    }
+    const closest = table.getClosest(generateNodeId(), 5);
+    assert.equal(closest.length, 5);
+  });
+});
+```
+
+### packages/engine/test/dhtfiles.test.js
+
+```text
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { DHTNode, generateNodeId } from '../src/dht.js';
+import { sha256 } from '../src/crypto.js';
+
+describe('dht announce and get peers', () => {
+  it('a single node can announce and find its own file', async () => {
+    const nodeA = new DHTNode();
+    await nodeA.listen();
+
+    const fileHash = sha256(Buffer.from('test file contents'));
+    await nodeA.announceFile(fileHash, 9999);
+
+    const peers = await nodeA.getPeersForFile(fileHash);
+    assert.ok(peers.some(p => p.port === 9999));
+
+    await nodeA.close();
+  });
+
+  it('peer announces, different peer finds it across the network', async () => {
+    const seeder   = new DHTNode();
+    const finder   = new DHTNode();
+    const relay    = new DHTNode();
+    await seeder.listen();
+    await finder.listen();
+    await relay.listen();
+
+    seeder.routingTable.addPeer({ id: relay.nodeId, addr: '127.0.0.1', port: relay.port });
+    finder.routingTable.addPeer({ id: relay.nodeId, addr: '127.0.0.1', port: relay.port });
+
+    const fileHash = sha256(Buffer.from('shared file data'));
+    await seeder.announceFile(fileHash, 8888);
+
+    const peers = await finder.getPeersForFile(fileHash);
+    assert.ok(peers.some(p => p.port === 8888));
+
+    await seeder.close();
+    await finder.close();
+    await relay.close();
+  });
+
+  it('multiple seeders for the same file are all discoverable', async () => {
+    const seederA = new DHTNode();
+    const seederB = new DHTNode();
+    const finder  = new DHTNode();
+    const relay   = new DHTNode();
+    await seederA.listen();
+    await seederB.listen();
+    await finder.listen();
+    await relay.listen();
+
+    seederA.routingTable.addPeer({ id: relay.nodeId, addr: '127.0.0.1', port: relay.port });
+    seederB.routingTable.addPeer({ id: relay.nodeId, addr: '127.0.0.1', port: relay.port });
+    finder.routingTable.addPeer({ id: relay.nodeId, addr: '127.0.0.1', port: relay.port });
+
+    const fileHash = sha256(Buffer.from('a file with multiple seeders'));
+    await seederA.announceFile(fileHash, 7001);
+    await seederB.announceFile(fileHash, 7002);
+
+    const peers = await finder.getPeersForFile(fileHash);
+    assert.ok(peers.some(p => p.port === 7001));
+    assert.ok(peers.some(p => p.port === 7002));
+
+    await seederA.close();
+    await seederB.close();
+    await finder.close();
+    await relay.close();
+  });
+
+  it('getPeers for a file nobody announced returns empty array', async () => {
+    const nodeA = new DHTNode();
+    const nodeB = new DHTNode();
+    await nodeA.listen();
+    await nodeB.listen();
+
+    nodeA.routingTable.addPeer({ id: nodeB.nodeId, addr: '127.0.0.1', port: nodeB.port });
+
+    const fileHash = sha256(Buffer.from('nobody has this file'));
+    const peers = await nodeA.getPeersForFile(fileHash);
+    assert.deepEqual(peers, []);
+
+    await nodeA.close();
+    await nodeB.close();
+  });
+
+  it('re-announcing the same file updates timestamp not duplicates entry', async () => {
+    const nodeA = new DHTNode();
+    await nodeA.listen();
+
+    const fileHash = sha256(Buffer.from('re-announce test'));
+    await nodeA.announceFile(fileHash, 6000);
+    await nodeA.announceFile(fileHash, 6000);
+
+    const peers = await nodeA.getPeersForFile(fileHash);
+    const matching = peers.filter(p => p.port === 6000);
+    assert.equal(matching.length, 1);
+
+    await nodeA.close();
+  });
+
+  it('announce and getPeers work across a five node mesh', async () => {
+    const nodes = [];
+    for (let i = 0; i < 5; i++) {
+      const n = new DHTNode();
+      await n.listen();
+      nodes.push(n);
+    }
+
+    for (let i = 0; i < nodes.length; i++) {
+      const next = nodes[(i + 1) % nodes.length];
+      nodes[i].routingTable.addPeer({ id: next.nodeId, addr: '127.0.0.1', port: next.port });
+    }
+
+    const fileHash = sha256(Buffer.from('mesh network file'));
+    await nodes[0].announceFile(fileHash, 5500);
+
+    const peers = await nodes[3].getPeersForFile(fileHash);
+    assert.ok(peers.some(p => p.port === 5500));
+
+    for (const n of nodes) await n.close();
+  });
+});
+```
+
+### packages/engine/test/dhtnode.test.js
+
+```text
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { DHTNode, generateNodeId } from '../src/dht.js';
+
+describe('dht node networking', () => {
+  it('two nodes can ping each other', async () => {
+    const nodeA = new DHTNode();
+    const nodeB = new DHTNode();
+    await nodeA.listen();
+    await nodeB.listen();
+
+    const result = await nodeA.ping('127.0.0.1', nodeB.port);
+    assert.equal(result.type, 'DHT_PONG');
+    assert.equal(result.nodeId, nodeB.nodeId);
+
+    await nodeA.close();
+    await nodeB.close();
+  });
+
+  it('ping adds the responding peer to routing table', async () => {
+    const nodeA = new DHTNode();
+    const nodeB = new DHTNode();
+    await nodeA.listen();
+    await nodeB.listen();
+
+    await nodeA.ping('127.0.0.1', nodeB.port);
+    await new Promise(r => setTimeout(r, 50));
+
+    const peers = nodeA.routingTable.getAllPeers();
+    assert.equal(peers.length, 1);
+    assert.equal(peers[0].id, nodeB.nodeId);
+
+    await nodeA.close();
+    await nodeB.close();
+  });
+
+  it('ping times out for unreachable peer', async () => {
+    const nodeA = new DHTNode();
+    await nodeA.listen();
+
+    await assert.rejects(
+      () => nodeA.ping('127.0.0.1', 1),
+      /timeout/
+    );
+
+    await nodeA.close();
+  });
+
+  it('findNode returns closest known peers from target node', async () => {
+    const nodeA = new DHTNode();
+    const nodeB = new DHTNode();
+    const nodeC = new DHTNode();
+    await nodeA.listen();
+    await nodeB.listen();
+    await nodeC.listen();
+
+    nodeB.routingTable.addPeer({ id: nodeC.nodeId, addr: '127.0.0.1', port: nodeC.port });
+
+    const closest = await nodeA.findNode('127.0.0.1', nodeB.port, nodeC.nodeId);
+    assert.ok(closest.some(p => p.id === nodeC.nodeId));
+
+    await nodeA.close();
+    await nodeB.close();
+    await nodeC.close();
+  });
+
+  it('bootstrap joins the network and populates routing table', async () => {
+    const nodeA = new DHTNode();
+    const nodeB = new DHTNode();
+    await nodeA.listen();
+    await nodeB.listen();
+
+    nodeB.routingTable.addPeer({ id: nodeA.nodeId, addr: '127.0.0.1', port: nodeA.port });
+
+    await nodeA.bootstrap('127.0.0.1', nodeB.port);
+    await new Promise(r => setTimeout(r, 50));
+
+    const peers = nodeA.routingTable.getAllPeers();
+    assert.ok(peers.some(p => p.id === nodeB.nodeId));
+
+    await nodeA.close();
+    await nodeB.close();
+  });
+
+  it('iterativeFindNode converges and finds a target across three nodes', async () => {
+    const nodeA = new DHTNode();
+    const nodeB = new DHTNode();
+    const nodeC = new DHTNode();
+    await nodeA.listen();
+    await nodeB.listen();
+    await nodeC.listen();
+
+    nodeA.routingTable.addPeer({ id: nodeB.nodeId, addr: '127.0.0.1', port: nodeB.port });
+    nodeB.routingTable.addPeer({ id: nodeC.nodeId, addr: '127.0.0.1', port: nodeC.port });
+
+    const result = await nodeA.iterativeFindNode(nodeC.nodeId);
+    assert.ok(result.some(p => p.id === nodeC.nodeId));
+
+    await nodeA.close();
+    await nodeB.close();
+    await nodeC.close();
+  });
+
+it('iterativeFindNode handles a five node chain', { timeout: 15000 }, async () => {
+  const nodes = [];
+  for (let i = 0; i < 5; i++) {
+    const n = new DHTNode();
+    await n.listen();
+    nodes.push(n);
+  }
+
+  for (let i = 0; i < nodes.length - 1; i++) {
+    nodes[i].routingTable.addPeer({
+      id: nodes[i + 1].nodeId, addr: '127.0.0.1', port: nodes[i + 1].port,
+    });
+  }
+
+  const target = nodes[4].nodeId;
+  const result = await nodes[0].iterativeFindNode(target);
+  assert.ok(result.some(p => p.id === target));
+
+  for (const n of nodes) await n.close();
+});
+
+  it('handles malformed UDP packets without crashing', async () => {
+    const nodeA = new DHTNode();
+    await nodeA.listen();
+
+    const dgram = await import('dgram');
+    const sender = dgram.default.createSocket('udp4');
+    sender.send(Buffer.from('not valid json {{{'), nodeA.port, '127.0.0.1');
+
+    await new Promise(r => setTimeout(r, 100));
+
+    const stillAlive = await nodeA.ping('127.0.0.1', nodeA.port).catch(() => 'survived');
+    assert.ok(stillAlive);
+
+    sender.close();
+    await nodeA.close();
+  });
+});
+```
+
 ### packages/engine/test/protocol.test.js
 
 ```text
@@ -1165,6 +2348,221 @@ describe('protocol framer', () => {
     const fakeHeader = Buffer.allocUnsafe(4);
     fakeHeader.writeUInt32BE(200 * 1024 * 1024, 0);
     assert.throws(() => framer(fakeHeader), /too large/);
+  });
+});
+```
+
+### packages/engine/test/swarm.test.js
+
+```text
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { createHash, randomBytes } from 'crypto';
+import { SwarmManager } from '../src/swarm.js';
+import { buildMerkleTree, getMerkleProof, sha256 } from '../src/crypto.js';
+
+function buildTestFile(numChunks, chunkSize = 1024) {
+  const chunks = [];
+  const hashes = [];
+  for (let i = 0; i < numChunks; i++) {
+    const chunk = randomBytes(chunkSize);
+    chunks.push(chunk);
+    hashes.push(sha256(chunk));
+  }
+  const tree = buildMerkleTree(hashes);
+  return { chunks, hashes, tree, merkleRoot: tree.root };
+}
+
+function mockPeer(chunks, hashes, tree, opts = {}) {
+  const { failRate = 0, delay = 0 } = opts;
+  return (chunkIndex) => {
+    return new Promise((resolve, reject) => {
+      setTimeout(() => {
+        if (Math.random() < failRate) {
+          reject(new Error('mock peer failure'));
+          return;
+        }
+        resolve();
+      }, delay);
+    });
+  };
+}
+
+describe('swarm manager', () => {
+  it('completes a transfer with a single reliable peer', async () => {
+    const { chunks, hashes, tree, merkleRoot } = buildTestFile(10);
+    const swarm = new SwarmManager(10, merkleRoot);
+
+    let completed = false;
+    swarm.on('complete', () => { completed = true; });
+
+    swarm.addPeer('peerA', (idx) => {
+      setImmediate(() => {
+        const proof = getMerkleProof(tree, idx);
+        swarm.onChunkReceived('peerA', idx, chunks[idx], hashes[idx], proof);
+      });
+      return Promise.resolve();
+    });
+
+    await new Promise(resolve => {
+      swarm.on('complete', resolve);
+    });
+
+    assert.equal(completed, true);
+    assert.equal(swarm.isComplete(), true);
+    assert.equal(swarm.getProgress().verified, 10);
+  });
+
+  it('assembled buffer matches original chunks in order', async () => {
+    const { chunks, hashes, tree, merkleRoot } = buildTestFile(5);
+    const swarm = new SwarmManager(5, merkleRoot);
+
+    swarm.addPeer('peerA', (idx) => {
+      setImmediate(() => {
+        const proof = getMerkleProof(tree, idx);
+        swarm.onChunkReceived('peerA', idx, chunks[idx], hashes[idx], proof);
+      });
+      return Promise.resolve();
+    });
+
+    await new Promise(resolve => swarm.on('complete', resolve));
+
+    const assembled = swarm.assemble();
+    const expected = Buffer.concat(chunks);
+    assert.deepEqual(assembled, expected);
+  });
+
+  it('distributes chunks across multiple peers', async () => {
+    const { chunks, hashes, tree, merkleRoot } = buildTestFile(20);
+    const swarm = new SwarmManager(20, merkleRoot);
+
+    const servedBy = { peerA: 0, peerB: 0 };
+
+    const makeHandler = (peerId) => (idx) => {
+      setImmediate(() => {
+        servedBy[peerId]++;
+        const proof = getMerkleProof(tree, idx);
+        swarm.onChunkReceived(peerId, idx, chunks[idx], hashes[idx], proof);
+      });
+      return Promise.resolve();
+    };
+
+    swarm.addPeer('peerA', makeHandler('peerA'));
+    swarm.addPeer('peerB', makeHandler('peerB'));
+
+    await new Promise(resolve => swarm.on('complete', resolve));
+
+    assert.equal(servedBy.peerA + servedBy.peerB, 20);
+    assert.ok(servedBy.peerA > 0);
+    assert.ok(servedBy.peerB > 0);
+  });
+
+  it('rejects a chunk with wrong hash and re-requests it', async () => {
+    const { chunks, hashes, tree, merkleRoot } = buildTestFile(3);
+    const swarm = new SwarmManager(3, merkleRoot);
+
+    let attempt = 0;
+    const failedEvents = [];
+    swarm.on('chunkFailed', (e) => failedEvents.push(e));
+
+    swarm.addPeer('peerA', (idx) => {
+      setImmediate(() => {
+        attempt++;
+        if (idx === 0 && attempt === 1) {
+          swarm.onChunkReceived('peerA', idx, Buffer.from('wrong data'), hashes[idx], null);
+        } else {
+          const proof = getMerkleProof(tree, idx);
+          swarm.onChunkReceived('peerA', idx, chunks[idx], hashes[idx], proof);
+        }
+      });
+      return Promise.resolve();
+    });
+
+    await new Promise(resolve => swarm.on('complete', resolve));
+
+    assert.ok(failedEvents.some(e => e.reason === 'hash_mismatch'));
+    assert.equal(swarm.isComplete(), true);
+  });
+
+  it('re-queues chunks when a peer is removed mid-transfer', async () => {
+    const { chunks, hashes, tree, merkleRoot } = buildTestFile(10);
+    const swarm = new SwarmManager(10, merkleRoot);
+
+    swarm.addPeer('peerA', () => new Promise(() => {}));
+    swarm.addPeer('peerB', (idx) => {
+      setImmediate(() => {
+        const proof = getMerkleProof(tree, idx);
+        swarm.onChunkReceived('peerB', idx, chunks[idx], hashes[idx], proof);
+      });
+      return Promise.resolve();
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    swarm.removePeer('peerA');
+
+    await new Promise(resolve => swarm.on('complete', resolve));
+
+    assert.equal(swarm.isComplete(), true);
+  });
+
+  it('does not exceed pipeline size per peer', async () => {
+    const { merkleRoot } = buildTestFile(100);
+    const swarm = new SwarmManager(100, merkleRoot);
+
+    let maxPending = 0;
+    swarm.addPeer('peerA', () => {
+      const peer = swarm.peers.get('peerA');
+      maxPending = Math.max(maxPending, peer.pending.size);
+      return new Promise(() => {});
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    assert.ok(maxPending <= 16);
+  });
+
+  it('getProgress reports correct percentage', async () => {
+    const { chunks, hashes, tree, merkleRoot } = buildTestFile(4);
+    const swarm = new SwarmManager(4, merkleRoot);
+
+    swarm.addPeer('peerA', (idx) => {
+      setImmediate(() => {
+        const proof = getMerkleProof(tree, idx);
+        swarm.onChunkReceived('peerA', idx, chunks[idx], hashes[idx], proof);
+      });
+      return Promise.resolve();
+    });
+
+    await new Promise(resolve => swarm.on('complete', resolve));
+
+    const progress = swarm.getProgress();
+    assert.equal(progress.percent, 100);
+  });
+
+  it('getPeerStats reports chunks served per peer', async () => {
+    const { chunks, hashes, tree, merkleRoot } = buildTestFile(6);
+    const swarm = new SwarmManager(6, merkleRoot);
+
+    swarm.addPeer('peerA', (idx) => {
+      setImmediate(() => {
+        const proof = getMerkleProof(tree, idx);
+        swarm.onChunkReceived('peerA', idx, chunks[idx], hashes[idx], proof);
+      });
+      return Promise.resolve();
+    });
+
+    await new Promise(resolve => swarm.on('complete', resolve));
+
+    const stats = swarm.getPeerStats();
+    assert.equal(stats.length, 1);
+    assert.equal(stats[0].chunksServed, 6);
+  });
+
+  it('assemble throws if called before completion', () => {
+    const { merkleRoot } = buildTestFile(5);
+    const swarm = new SwarmManager(5, merkleRoot);
+    assert.throws(() => swarm.assemble(), /not complete/);
   });
 });
 ```
@@ -2293,6 +3691,10 @@ describe('transfer', () => {
     });
 });
 ```
+
+### test-out.txt
+
+Binary or non-UTF-8 file omitted from markdown snapshot (25424 bytes).
 
 ### testfile.bin
 
