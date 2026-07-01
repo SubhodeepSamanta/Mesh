@@ -11,6 +11,7 @@ import Accordion from '../components/shared/Accordion.jsx'
 import FileDropZone from '../components/FileDropZone.jsx'
 import RoomCode from '../components/RoomCode.jsx'
 import StatusLog from '../components/StatusLog.jsx'
+import { useConfirmStore } from '../store/useConfirmStore.js'
 
 export default function Send() {
   const navigate = useNavigate()
@@ -80,9 +81,10 @@ export default function Send() {
     else if (st === 'error') { addLine(`Error: ${useTransferStore.getState().error}`) }
   }, [st])
 
-  function handleCancel() {
+  async function handleCancel() {
     if (peers.length > 0) {
-      if (!window.confirm('Peers are still connected. Are you sure you want to stop seeding and close the room?')) {
+      const confirmed = await useConfirmStore.getState().confirm('Peers are still connected. Are you sure you want to stop seeding and close the room?', 'Stop Seeding')
+      if (!confirmed) {
         return
       }
     }

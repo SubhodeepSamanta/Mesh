@@ -13,6 +13,7 @@ import ChunkGrid from '../components/ChunkGrid.jsx'
 import SpeedChart from '../components/SpeedChart.jsx'
 import PeerGraph from '../components/PeerGraph.jsx'
 import { formatEta } from '../lib/format.js'
+import { useConfirmStore } from '../store/useConfirmStore.js'
 
 export default function Dashboard() {
   const navigate = useNavigate()
@@ -83,12 +84,11 @@ export default function Dashboard() {
     return () => M.stopSeederListener()
   }, [fileMeta, seeding, addSenderPeer])
 
-  const handleDismiss = useCallback(() => {
+  const handleDismiss = useCallback(async () => {
     const currentStatus = useTransferStore.getState().status
     if (currentStatus !== 'complete' && currentStatus !== 'error') {
-      if (!window.confirm('Active transfer in progress. Are you sure you want to abort?')) {
-        return
-      }
+      const confirmed = await useConfirmStore.getState().confirm('Active transfer in progress. Are you sure you want to abort?', 'Abort Transfer')
+      if (!confirmed) return
     }
     const currentRole = useTransferStore.getState().role
     const target = currentRole === 'sender' ? '/send' : '/receive'

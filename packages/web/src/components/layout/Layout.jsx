@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { useTransferStore } from '../../store/useTransferStore.js'
 import Header from './Header.jsx'
 import Toaster from '../Toaster.jsx'
+import ConfirmModal from '../ConfirmModal.jsx'
 
 export default function Layout({ children }) {
   const status = useTransferStore((s) => s.status)
@@ -20,6 +21,7 @@ export default function Layout({ children }) {
       <Header />
       <main className="flex-1">{children}</main>
       <Toaster />
+      <ConfirmModal />
     </div>
   )
 }

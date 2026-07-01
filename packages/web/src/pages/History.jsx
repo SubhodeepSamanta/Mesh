@@ -6,6 +6,8 @@ import Card from '../components/shared/Card.jsx'
 import { getHistory, clearHistory, removeHistoryEntry } from '../store/useHistoryStore.js'
 import { formatBytes, formatDuration } from '../lib/format.js'
 
+import { useConfirmStore } from '../store/useConfirmStore.js'
+
 const STATUS_META = {
   complete: { color: 'green', label: 'Complete' },
   failed: { color: 'red', label: 'Failed' },
@@ -23,8 +25,9 @@ export default function History() {
     return () => window.removeEventListener('storage', handler)
   }, [])
 
-  function handleClear() {
-    if (!window.confirm('Clear all transfer history?')) return
+  async function handleClear() {
+    const confirmed = await useConfirmStore.getState().confirm('Clear all transfer history?', 'Clear History')
+    if (!confirmed) return
     setEntries(clearHistory())
   }
 
