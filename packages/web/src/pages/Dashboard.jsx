@@ -26,7 +26,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (status === 'idle') navigate('/', { replace: true })
-  }, [status])
+  }, [])
 
   useEffect(() => {
     if (status === 'transferring' && !startRef.current) {
@@ -91,6 +91,8 @@ export default function Dashboard() {
       }
     }
     const currentRole = useTransferStore.getState().role
+    const target = currentRole === 'sender' ? '/send' : '/receive'
+    
     M.stopSeederListener()
     try {
       const signal = useSignalingStore.getState()
@@ -99,7 +101,7 @@ export default function Dashboard() {
     try { disconnectAll() } catch {}
     startRef.current = null
     setElapsed(0)
-    navigate(currentRole === 'sender' ? '/send' : '/receive')
+    navigate(target)
   }, [disconnectAll, navigate])
 
   const mmss = `${String(Math.floor(elapsed / 60)).padStart(2, '0')}:${String(elapsed % 60).padStart(2, '0')}`
