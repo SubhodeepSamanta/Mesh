@@ -17,11 +17,9 @@ function validateFileMeta(meta) {
   if (typeof meta.chunkSize !== 'number' || !Number.isInteger(meta.chunkSize) || meta.chunkSize < 1 || meta.chunkSize > 262144) return 'Invalid chunkSize'
   if (!meta.merkleRoot || typeof meta.merkleRoot !== 'string' || !VALID_MERKLE.test(meta.merkleRoot)) return 'Invalid merkleRoot'
   if (!meta.fileName || typeof meta.fileName !== 'string') return 'Missing fileName'
-  // Validate fileSize is roughly consistent
   if (typeof meta.fileSize === 'number') {
     const expectedMax = meta.totalChunks * meta.chunkSize
-    const expectedMin = Math.max(0, (meta.totalChunks - 1) * meta.chunkSize)
-    if (meta.fileSize < expectedMin || meta.fileSize > expectedMax) return 'fileSize inconsistent with chunk parameters'
+    if (meta.fileSize < 0 || meta.fileSize > expectedMax) return 'fileSize inconsistent with chunk parameters'
   }
   // Validate file paths
   if (meta.files) {

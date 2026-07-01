@@ -43,6 +43,7 @@ export default function Receive() {
   const saveMode = useTransferStore((s) => s.saveMode)
   const setSaveMode = useTransferStore((s) => s.setSaveMode)
   const setComplete = useTransferStore((s) => s.setComplete)
+  const error = useTransferStore((s) => s.error)
 
   const { startReceiving, addReceiverPeer, triggerDownload, disconnectAll } = useTransfer()
 
@@ -366,6 +367,14 @@ export default function Receive() {
               <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--accent)]" />
               <span className="text-xs text-[var(--accent)]/80">Listening for file offer...</span>
             </div>
+            {error && (
+              <div className="flex items-center gap-2 rounded-lg border border-[var(--error)]/20 bg-[var(--error)]/5 px-4 py-3">
+                <svg className="h-4 w-4 shrink-0 text-[var(--error)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <p className="text-xs text-[var(--error)]">{error}</p>
+              </div>
+            )}
             <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-4 py-3">
               <p className="mb-2 text-xs uppercase tracking-widest text-[var(--txt-secondary)]">Save preference</p>
               <div className="flex gap-2">
