@@ -8,7 +8,7 @@ import { join } from 'path';
 import { DHTNode } from '../src/dht.js';
 import { buildMerkleTree, getMerkleProof, sha256, generateKeyPair, exportPublicKey, deriveSharedKey, encrypt } from '../src/crypto.js';
 import { sendJSON, sendChunk, createFramer, parseMessage, MSG, TYPE } from '../src/protocol.js';
-import { downloadFile, MAX_CONCURRENT_CONNECTIONS } from '../src/transfer.js';
+import { downloadFile, downloadFileByHash, MAX_CONCURRENT_CONNECTIONS } from '../src/transfer.js';
 
 function startTestSeeder(chunks, hashes, tree, merkleRoot, fileSize, port) {
   return new Promise((resolveListen) => {
@@ -40,6 +40,15 @@ function startTestSeeder(chunks, hashes, tree, merkleRoot, fileSize, port) {
       });
 
       socket.on('data', framer);
+
+      sendJSON(socket, {
+        type: MSG.FILE_OFFER,
+        fileName: 'testfile.bin',
+        fileSize,
+        totalChunks: chunks.length,
+        chunkSize: chunks.length > 0 ? chunks[0].length : 0,
+        merkleRoot,
+      });
     });
 
     server.listen(port, '127.0.0.1', () => resolveListen(server));
@@ -83,7 +92,52 @@ function startSlowTestSeeder(chunks, hashes, tree, delayMs, port) {
     server.listen(port, '127.0.0.1', () => resolveListen(server));
   });
 }
+function startThrottledTestSeeder(chunks, hashes, tree, delayPerChunkMs, port) {
+  return new Promise((resolveListen) => {
+    const server = net.createServer((socket) => {
+      socket.setNoDelay(true);
+      socket.setMaxListeners(0);
 
+      const keyPair = generateKeyPair();
+      let sharedKey = null;
+
+      const framer = createFramer((body) => {
+        const msg = parseMessage(body);
+        if (msg.type !== TYPE.JSON) return;
+
+        if (msg.data.type === MSG.KEY_EXCHANGE) {
+          const theirPub = Buffer.from(msg.data.publicKey, 'base64');
+          sharedKey = deriveSharedKey(keyPair.privateKey, theirPub);
+          const myPub = exportPublicKey(keyPair).toString('base64');
+          sendJSON(socket, { type: MSG.KEY_EXCHANGE, publicKey: myPub });
+          return;
+        }
+
+        if (msg.data.type === MSG.CHUNK_REQUEST && sharedKey) {
+          const { index } = msg.data;
+          setTimeout(() => {
+            const proof = getMerkleProof(tree, index);
+            const encrypted = encrypt(chunks[index], sharedKey);
+            sendChunk(socket, index, hashes[index], proof, encrypted);
+          }, delayPerChunkMs);
+        }
+      });
+
+      socket.on('data', framer);
+
+      sendJSON(socket, {
+        type: MSG.FILE_OFFER,
+        fileName: 'testfile.bin',
+        fileSize: chunks.length * chunks[0].length,
+        totalChunks: chunks.length,
+        chunkSize: chunks[0].length,
+        merkleRoot: tree.root,
+      });
+    });
+
+    server.listen(port, '127.0.0.1', () => resolveListen(server));
+  });
+}
 describe('engine integration', () => {
   it('downloads a file end to end via DHT discovery and encrypted swarm transfer', async () => {
     const numChunks = 10;
@@ -237,5 +291,102 @@ await assert.rejects(
 
     await downloaderNode.close();
     await fakeSeederNode.close();
+  });
+  it('downloadFileByHash discovers file metadata automatically via a peer and completes the transfer', async () => {
+    const numChunks = 8;
+    const chunkSize = 1024;
+    const chunks = [];
+    const hashes = [];
+    for (let i = 0; i < numChunks; i++) {
+      const chunk = randomBytes(chunkSize);
+      chunks.push(chunk);
+      hashes.push(sha256(chunk));
+    }
+    const tree = buildMerkleTree(hashes);
+    const fileHash = tree.root;
+
+    const seederNode = new DHTNode();
+    const downloaderNode = new DHTNode();
+    await seederNode.listen();
+    await downloaderNode.listen();
+
+    downloaderNode.routingTable.addPeer({
+      id: seederNode.nodeId, addr: '127.0.0.1', port: seederNode.port,
+    });
+
+    const tcpPort = 18900 + Math.floor(Math.random() * 500);
+    const fileSize = numChunks * chunkSize;
+    const server = await startTestSeeder(chunks, hashes, tree, tree.root, fileSize, tcpPort);
+
+    await seederNode.announceFile(fileHash, tcpPort);
+
+    const outputPath = join(tmpdir(), `mesh-byhash-${Date.now()}.bin`);
+
+    const result = await downloadFileByHash({ fileHash, outputPath, dhtNode: downloaderNode });
+
+    assert.equal(result.status, 'complete');
+    const resultBuf = await readFile(outputPath);
+    assert.deepEqual(resultBuf, Buffer.concat(chunks));
+
+    await unlink(outputPath);
+    server.close();
+    await seederNode.close();
+    await downloaderNode.close();
+  });
+
+  it('pauses a transfer via signal, then resumes it and completes without re-downloading finished chunks', async () => {
+    const numChunks = 40;
+    const chunkSize = 1024;
+    const chunks = [];
+    const hashes = [];
+    for (let i = 0; i < numChunks; i++) {
+      const chunk = randomBytes(chunkSize);
+      chunks.push(chunk);
+      hashes.push(sha256(chunk));
+    }
+    const tree = buildMerkleTree(hashes);
+    const fileHash = sha256(Buffer.concat(chunks));
+
+    const seederNode = new DHTNode();
+    const downloaderNode = new DHTNode();
+    await seederNode.listen();
+    await downloaderNode.listen();
+
+    downloaderNode.routingTable.addPeer({
+      id: seederNode.nodeId, addr: '127.0.0.1', port: seederNode.port,
+    });
+
+    const tcpPort = 19100 + Math.floor(Math.random() * 500);
+    const fileSize = numChunks * chunkSize;
+    const server = await startThrottledTestSeeder(chunks, hashes, tree, 20, tcpPort);
+    await seederNode.announceFile(fileHash, tcpPort);
+
+    const outputPath = join(tmpdir(), `mesh-pause-${Date.now()}.bin`);
+
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 30);
+
+    const firstResult = await downloadFile({
+      fileHash, fileSize, totalChunks: numChunks, chunkSize,
+      merkleRoot: tree.root, outputPath, dhtNode: downloaderNode,
+      signal: controller.signal,
+    });
+
+    assert.equal(firstResult.status, 'paused');
+    assert.ok(firstResult.verifiedChunks < numChunks);
+
+    const secondResult = await downloadFile({
+      fileHash, fileSize, totalChunks: numChunks, chunkSize,
+      merkleRoot: tree.root, outputPath, dhtNode: downloaderNode,
+    });
+
+    assert.equal(secondResult.status, 'complete');
+    const resultBuf = await readFile(outputPath);
+    assert.deepEqual(resultBuf, Buffer.concat(chunks));
+
+    await unlink(outputPath);
+    server.close();
+    await seederNode.close();
+    await downloaderNode.close();
   });
 });

@@ -4,6 +4,7 @@ import { generateKeyPair, exportPublicKey, deriveSharedKey, encrypt, decrypt } f
 
 export const PEER_TIMEOUT_MS = 30000;
 export const HANDSHAKE_TIMEOUT_MS = 5000;
+export const METADATA_TIMEOUT_MS = 10000;
 
 export class PeerConnection {
   constructor(addr, port) {
@@ -16,6 +17,7 @@ export class PeerConnection {
     this.sharedKey = null;
     this._handshakeResolve = null;
     this._handshakeReject = null;
+    this._metadataWaiters = [];
   }
 
   connect() {
@@ -43,6 +45,10 @@ export class PeerConnection {
           rej(new Error('Connection closed'));
         }
         this.pendingRequests.clear();
+        for (const { reject: rej } of this._metadataWaiters) {
+          rej(new Error('Connection closed'));
+        }
+        this._metadataWaiters = [];
       });
     });
   }
@@ -58,6 +64,21 @@ export class PeerConnection {
 
       const myPublicKey = exportPublicKey(this.keyPair).toString('base64');
       sendJSON(this.socket, { type: MSG.KEY_EXCHANGE, publicKey: myPublicKey }).catch(reject);
+    });
+  }
+
+  waitForMetadata(timeoutMs = METADATA_TIMEOUT_MS) {
+    if (this.metadata) return Promise.resolve(this.metadata);
+    return new Promise((resolve, reject) => {
+      const entry = { resolve: null, reject: null };
+      const timeout = setTimeout(() => {
+        const idx = this._metadataWaiters.indexOf(entry);
+        if (idx !== -1) this._metadataWaiters.splice(idx, 1);
+        reject(new Error('Timed out waiting for file metadata'));
+      }, timeoutMs);
+      entry.resolve = (data) => { clearTimeout(timeout); resolve(data); };
+      entry.reject = (e) => { clearTimeout(timeout); reject(e); };
+      this._metadataWaiters.push(entry);
     });
   }
 
@@ -77,6 +98,9 @@ export class PeerConnection {
 
     if (msg.type === TYPE.JSON && msg.data.type === MSG.FILE_OFFER) {
       this.metadata = msg.data;
+      const waiters = this._metadataWaiters;
+      this._metadataWaiters = [];
+      for (const { resolve } of waiters) resolve(msg.data);
       return;
     }
 

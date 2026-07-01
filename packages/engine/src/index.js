@@ -5,3 +5,4 @@ export * from './dht.js';
 export * from './swarm.js';
 export * from './peer.js';
 export * from './transfer.js';
+export * from './resume.js';

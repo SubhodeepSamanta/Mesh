@@ -163,7 +163,93 @@ it('does not exceed pipeline size per peer', async () => {
     assert.ok(largeChunkSwarm.pipelineSize < 16);
     assert.ok(largeChunkSwarm.pipelineSize >= 4);
   });
+it('resumes with pre-verified chunks skipped and not re-requested', async () => {
+    const { chunks, hashes, tree, merkleRoot } = buildTestFile(10);
+    const requested = [];
+    const swarm = new SwarmManager(10, merkleRoot, 1024, [0, 1, 2]);
 
+    assert.equal(swarm.getProgress().verified, 3);
+
+    swarm.addPeer('peerA', (idx) => {
+      requested.push(idx);
+      setImmediate(() => {
+        const proof = getMerkleProof(tree, idx);
+        swarm.onChunkReceived('peerA', idx, chunks[idx], hashes[idx], proof);
+      });
+      return Promise.resolve();
+    });
+
+    await new Promise(resolve => swarm.on('complete', resolve));
+
+    assert.equal(swarm.isComplete(), true);
+    assert.ok(!requested.includes(0));
+    assert.ok(!requested.includes(1));
+    assert.ok(!requested.includes(2));
+    assert.equal(requested.length, 7);
+  });
+
+  it('reports already complete immediately when all chunks are pre-verified', () => {
+    const { merkleRoot } = buildTestFile(5);
+    const swarm = new SwarmManager(5, merkleRoot, 1024, [0, 1, 2, 3, 4]);
+    assert.equal(swarm.isComplete(), true);
+    assert.equal(swarm.getProgress().verified, 5);
+  });
+
+  it('getVerifiedChunkIndices returns exactly the verified set', async () => {
+    const { chunks, hashes, tree, merkleRoot } = buildTestFile(4);
+    const swarm = new SwarmManager(4, merkleRoot);
+
+    swarm.addPeer('peerA', (idx) => {
+      setImmediate(() => {
+        const proof = getMerkleProof(tree, idx);
+        swarm.onChunkReceived('peerA', idx, chunks[idx], hashes[idx], proof);
+      });
+      return Promise.resolve();
+    });
+
+    await new Promise(resolve => swarm.on('complete', resolve));
+
+    const verified = swarm.getVerifiedChunkIndices();
+    assert.deepEqual(verified.sort((a, b) => a - b), [0, 1, 2, 3]);
+  });
+
+  it('abort() stops issuing new chunk requests but keeps prior state', async () => {
+    const { merkleRoot } = buildTestFile(50);
+    const swarm = new SwarmManager(50, merkleRoot);
+
+    let requestCount = 0;
+    swarm.addPeer('peerA', () => {
+      requestCount++;
+      return new Promise(() => {});
+    });
+
+    const countAfterStart = requestCount;
+    swarm.abort();
+    swarm.addPeer('peerB', () => {
+      requestCount++;
+      return new Promise(() => {});
+    });
+
+    assert.equal(requestCount, countAfterStart);
+  });
+
+  it('compacts pendingQueue after heavy retries instead of growing unboundedly', async () => {
+    const { merkleRoot } = buildTestFile(2000, 16);
+    const swarm = new SwarmManager(2000, merkleRoot, 16);
+
+    let calls = 0;
+    swarm.addPeer('flakyPeer', () => {
+      calls++;
+      if (calls < 5000) {
+        return Promise.reject(new Error('simulated failure'));
+      }
+      return new Promise(() => {});
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 200));
+
+    assert.ok(swarm.pendingQueue.length < 20000, `pendingQueue grew to ${swarm.pendingQueue.length}, compaction likely not working`);
+  });
   it('getProgress reports correct percentage', async () => {
     const { chunks, hashes, tree, merkleRoot } = buildTestFile(4);
     const swarm = new SwarmManager(4, merkleRoot);

@@ -1,16 +1,29 @@
-import { open, unlink } from 'fs/promises';
+import { open } from 'fs/promises';
 import { DHTNode } from './dht.js';
 import { SwarmManager } from './swarm.js';
 import { PeerConnection } from './peer.js';
+import { loadResumeState, saveResumeState, deleteResumeState, resumeStateMatches } from './resume.js';
 
 export const TRANSFER_VERSION = '1.0.0';
 export const MAX_CONCURRENT_CONNECTIONS = 30;
+export const CHECKPOINT_INTERVAL_MS = 2000;
 
-export async function downloadFile({ fileHash, fileSize, totalChunks, chunkSize, merkleRoot, outputPath, dhtNode }) {
+export async function downloadFile({ fileHash, fileSize, totalChunks, chunkSize, merkleRoot, outputPath, dhtNode, signal }) {
   if (totalChunks === 0) {
     const emptyHandle = await open(outputPath, 'w');
     await emptyHandle.close();
-    return { outputPath, fileSize: 0, totalChunks: 0 };
+    return { outputPath, fileSize: 0, totalChunks: 0, status: 'complete' };
+  }
+
+  const existingState = await loadResumeState(outputPath);
+  const canResume = resumeStateMatches(existingState, { fileHash, totalChunks, chunkSize, merkleRoot, fileSize });
+  const alreadyVerified = canResume ? existingState.completedChunks : [];
+
+  const swarm = new SwarmManager(totalChunks, merkleRoot, chunkSize, alreadyVerified);
+
+  if (swarm.isComplete()) {
+    await deleteResumeState(outputPath);
+    return { outputPath, fileSize, totalChunks, status: 'complete' };
   }
 
   const peers = await dhtNode.getPeersForFile(fileHash);
@@ -20,15 +33,29 @@ export async function downloadFile({ fileHash, fileSize, totalChunks, chunkSize,
   }
 
   const peersToTry = peers.slice(0, MAX_CONCURRENT_CONNECTIONS);
-
-  const swarm = new SwarmManager(totalChunks, merkleRoot, chunkSize);
   const connections = new Map();
   const connectionErrors = [];
-  const fileHandle = await open(outputPath, 'w');
-  let succeeded = false;
+  const fileHandle = await open(outputPath, canResume ? 'r+' : 'w');
+
+  let checkpointTimer = null;
+  const checkpoint = async () => {
+    await saveResumeState(outputPath, {
+      fileHash, fileSize, totalChunks, chunkSize, merkleRoot,
+      completedChunks: swarm.getVerifiedChunkIndices(),
+    }).catch(() => {});
+  };
+  const scheduleCheckpoint = () => {
+    if (checkpointTimer) return;
+    checkpointTimer = setTimeout(async () => {
+      checkpointTimer = null;
+      await checkpoint();
+    }, CHECKPOINT_INTERVAL_MS);
+  };
 
   try {
-    await fileHandle.truncate(fileSize);
+    if (!canResume) {
+      await fileHandle.truncate(fileSize);
+    }
 
     const connectionAttempts = await Promise.allSettled(
       peersToTry.map(async (peerInfo) => {
@@ -56,6 +83,7 @@ export async function downloadFile({ fileHash, fileSize, totalChunks, chunkSize,
             await fileHandle.write(
               chunkMsg.chunkData, 0, chunkMsg.chunkData.length, chunkIndex * chunkSize
             );
+            scheduleCheckpoint();
           }
         });
       } else {
@@ -72,6 +100,8 @@ export async function downloadFile({ fileHash, fileSize, totalChunks, chunkSize,
       swarm.emit('connectionWarnings', connectionErrors);
     }
 
+    let onAbort = null;
+
     await new Promise((resolve, reject) => {
       swarm.on('complete', resolve);
       swarm.on('peerFailed', () => {
@@ -79,20 +109,74 @@ export async function downloadFile({ fileHash, fileSize, totalChunks, chunkSize,
           reject(new Error('All peers failed'));
         }
       });
+      if (signal) {
+        onAbort = () => { swarm.abort(); resolve(); };
+        if (signal.aborted) onAbort();
+        else signal.addEventListener('abort', onAbort, { once: true });
+      }
     });
 
-    succeeded = true;
-    return { outputPath, fileSize, totalChunks };
+    if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+
+    if (signal && signal.aborted) {
+      await checkpoint();
+      return { outputPath, fileSize, totalChunks, status: 'paused', verifiedChunks: swarm.verifiedCount };
+    }
+
+    await deleteResumeState(outputPath);
+    return { outputPath, fileSize, totalChunks, status: 'complete' };
+  } catch (err) {
+    await checkpoint();
+    throw err;
   } finally {
+    if (checkpointTimer) clearTimeout(checkpointTimer);
     for (const conn of connections.values()) conn.close();
     await fileHandle.close().catch(() => {});
-    if (!succeeded) {
-      await unlink(outputPath).catch(() => {});
-    }
   }
 }
 
-export async function startDownloadSession({ fileHash, fileSize, totalChunks, chunkSize, merkleRoot, outputPath, bootstrapAddr, bootstrapPort }) {
+export async function downloadFileByHash({ fileHash, outputPath, dhtNode, signal }) {
+  const peers = await dhtNode.getPeersForFile(fileHash);
+  if (peers.length === 0) {
+    throw new Error('No peers found for this file');
+  }
+
+  let manifest = null;
+  const manifestErrors = [];
+
+  for (const peerInfo of peers) {
+    let conn = null;
+    try {
+      conn = new PeerConnection(peerInfo.addr, peerInfo.port);
+      await conn.connect();
+      manifest = await conn.waitForMetadata();
+      conn.close();
+      break;
+    } catch (e) {
+      manifestErrors.push(`${peerInfo.addr}:${peerInfo.port}: ${e.message}`);
+      if (conn) conn.close();
+    }
+  }
+
+  if (!manifest) {
+    throw new Error(`Could not retrieve file metadata from any peer. ${manifestErrors.join('; ')}`);
+  }
+
+  const resolvedOutputPath = outputPath || manifest.fileName;
+
+  return downloadFile({
+    fileHash,
+    fileSize: manifest.fileSize,
+    totalChunks: manifest.totalChunks,
+    chunkSize: manifest.chunkSize,
+    merkleRoot: manifest.merkleRoot,
+    outputPath: resolvedOutputPath,
+    dhtNode,
+    signal,
+  });
+}
+
+export async function startDownloadSession({ fileHash, fileSize, totalChunks, chunkSize, merkleRoot, outputPath, bootstrapAddr, bootstrapPort, signal }) {
   const dhtNode = new DHTNode();
   await dhtNode.listen();
 
@@ -101,7 +185,7 @@ export async function startDownloadSession({ fileHash, fileSize, totalChunks, ch
   }
 
   try {
-    return await downloadFile({ fileHash, fileSize, totalChunks, chunkSize, merkleRoot, outputPath, dhtNode });
+    return await downloadFile({ fileHash, fileSize, totalChunks, chunkSize, merkleRoot, outputPath, dhtNode, signal });
   } finally {
     await dhtNode.close();
   }

@@ -5,12 +5,15 @@ import { getMerkleProof } from './src/crypto.js';
 import { sendJSON, sendChunk, createFramer, parseMessage, MSG, TYPE } from './src/protocol.js';
 import { indexFile, readChunk, computeCacheSize } from './src/chunker.js';
 import { generateKeyPair, exportPublicKey, deriveSharedKey, encrypt } from './src/crypto.js';
+import { DHTNode } from './src/dht.js';
 
-const FILE_PATH = resolve(process.argv[2]);
-const PORT      = parseInt(process.argv[3] || '9000');
+const FILE_PATH       = resolve(process.argv[2]);
+const PORT             = parseInt(process.argv[3] || '9000');
+const BOOTSTRAP_HOST   = process.argv[4] || null;
+const BOOTSTRAP_PORT   = process.argv[5] ? parseInt(process.argv[5]) : null;
 
 if (!process.argv[2]) {
-  console.error('Usage: node sender.js <filepath> [port]');
+  console.error('Usage: node sender.js <filepath> [port] [bootstrapHost] [bootstrapPort]');
   process.exit(1);
 }
 
@@ -33,6 +36,17 @@ async function main() {
     }
     chunkCache.set(index, data);
     return data;
+  }
+
+  const dhtNode = new DHTNode();
+  await dhtNode.listen();
+  if (BOOTSTRAP_HOST && BOOTSTRAP_PORT) {
+    try {
+      await dhtNode.bootstrap(BOOTSTRAP_HOST, BOOTSTRAP_PORT);
+      console.log(`Bootstrapped into DHT via ${BOOTSTRAP_HOST}:${BOOTSTRAP_PORT}`);
+    } catch (e) {
+      console.warn(`DHT bootstrap failed: ${e.message}`);
+    }
   }
 
   const server = net.createServer((socket) => {
@@ -111,14 +125,25 @@ async function main() {
     });
   });
 
-  server.listen(PORT, '127.0.0.1', () => {
+  server.listen(PORT, '127.0.0.1', async () => {
     console.log(`Sender listening on 127.0.0.1:${PORT}`);
     console.log(`Run receiver: node packages/engine/receiver.js 127.0.0.1 ${PORT} ./received`);
+    try {
+      await dhtNode.announceFile(merkleRoot, PORT);
+      console.log(`Announced to DHT. File id: ${merkleRoot}`);
+    } catch (e) {
+      console.warn(`DHT announce failed: ${e.message}`);
+    }
   });
 
   server.on('error', (e) => {
     console.error('Server error:', e.message);
     process.exit(1);
+  });
+
+  process.on('SIGINT', async () => {
+    await dhtNode.close();
+    process.exit(0);
   });
 }
 
