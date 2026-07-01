@@ -43,9 +43,10 @@ export async function indexFiles(files) {
     ? await buildMerkleTree(allHashes)
     : { root: await sha256Hex(new ArrayBuffer(0)), levels: [] }
 
+  const folderLabel = files[0].webkitRelativePath?.split('/')[0] || files[0].relativePath?.split('/')[0]
   const rootName = files.length === 1
     ? files[0].name
-    : (files[0].webkitRelativePath?.split('/')[0] || files[0].relativePath?.split('/')[0] || 'folder')
+    : (folderLabel || `files-${new Date().toISOString().slice(0, 10)}`)
 
   return {
     fileName: rootName,

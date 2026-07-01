@@ -10,7 +10,7 @@ function CustomTooltip({ active, payload, label }) {
       <p className="mb-1 text-[var(--txt-secondary)]">{label}</p>
       {[...payload].reverse().map((entry, i) => (
         <p key={i} style={{ color: entry.color }}>
-          {entry.name}: {Number(entry.value).toFixed(1)} MB/s
+          {entry.name}: {Number(entry.value) < 0.01 ? '<0.01' : Number(entry.value).toFixed(2)} MB/s
         </p>
       ))}
     </div>
@@ -64,7 +64,7 @@ export default function SpeedChart({ data = [], peerCount = 1 }) {
           <span className="text-sm font-medium uppercase tracking-widest text-[var(--txt-secondary)]">
             Throughput
           </span>
-          <span className="text-xl font-bold text-amber-400">
+          <span className="text-xl font-bold text-[var(--accent)]">
             0.0{' '}
             <span className="text-sm font-normal text-[var(--txt-secondary)]">MB/s</span>
           </span>
@@ -87,8 +87,8 @@ export default function SpeedChart({ data = [], peerCount = 1 }) {
         <span className="text-sm font-medium uppercase tracking-widest text-[var(--txt-secondary)]">
           Throughput
         </span>
-        <span className="text-xl font-bold text-amber-400">
-          {total.toFixed(1)}{' '}
+        <span className="text-xl font-bold text-[var(--accent)]">
+          {total < 0.01 ? '<0.01' : total.toFixed(2)}{' '}
           <span className="text-sm font-normal text-[var(--txt-secondary)]">MB/s</span>
         </span>
       </div>

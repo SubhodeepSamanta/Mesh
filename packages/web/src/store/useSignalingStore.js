@@ -24,7 +24,9 @@ export const useSignalingStore = create((set, get) => ({
         set((s) => ({ peers: s.peers.filter((p) => p !== e.detail.peerId) }))
       })
       c.addEventListener('close', () => {
-        set({ client: null, status: 'idle', roomCode: null, peerId: null, peers: [] })
+        const s = get()
+        set({ client: null, status: 'disconnected', peerId: null, peers: [] })
+        if (!s.roomCode) set({ roomCode: null })
       })
       await c.connect()
       set({ client: c, status: 'connected' })

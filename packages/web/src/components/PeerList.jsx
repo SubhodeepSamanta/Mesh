@@ -1,10 +1,5 @@
 import Badge from './shared/Badge.jsx'
 
-function shortenPeerId(id) {
-  if (!id) return '\u2014'
-  return id.length > 16 ? `${id.slice(0, 16)}\u2026` : id
-}
-
 export default function PeerList({ peerStats = [] }) {
   return (
     <div>
@@ -20,18 +15,23 @@ export default function PeerList({ peerStats = [] }) {
         ) : (
           peerStats.map((peer) => {
             const connected = !peer.failed && (peer.consecutiveFailures || 0) < 3
+            const isSeeder = (peer.chunksServed || 0) > 0
             return (
               <div
                 key={peer.id}
-                className="flex items-center gap-3 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm"
+                className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm"
               >
                 <span
-                  className={`h-2.5 w-2.5 shrink-0 rounded-full ${connected ? 'bg-green-400' : 'bg-red-400'}`}
+                  className={`h-2 w-2 shrink-0 rounded-full ${connected ? 'bg-[var(--success)]' : 'bg-[var(--error)]'}`}
+                  title={connected ? 'Connected' : 'Disconnected'}
                 />
-                <span className="min-w-0 flex-1 font-mono text-[var(--txt-primary)] truncate">
-                  {shortenPeerId(peer.id)}
+                <span className="font-mono text-[var(--txt-primary)] break-all">
+                  {peer.id}
                 </span>
-                <span className="shrink-0 text-xs text-[var(--txt-secondary)]">
+                <Badge color={isSeeder ? 'amber' : 'gray'} dot={false}>
+                  {isSeeder ? 'SEED' : 'LEECH'}
+                </Badge>
+                <span className="text-xs text-[var(--txt-secondary)] whitespace-nowrap">
                   {peer.chunksServed || 0} chunks
                 </span>
                 {peer.failed && (

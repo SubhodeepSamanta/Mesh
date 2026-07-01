@@ -7,6 +7,7 @@ import Send from './pages/Send.jsx'
 import Receive from './pages/Receive.jsx'
 import Dashboard from './pages/Dashboard.jsx'
 import History from './pages/History.jsx'
+import NotFound from './pages/NotFound.jsx'
 import { useUIStore } from './store/useUIStore.js'
 
 function AnimatedPage({ children }) {
@@ -32,6 +33,7 @@ function App() {
           <Route path="/receive" element={<AnimatedPage><Receive /></AnimatedPage>} />
           <Route path="/dashboard" element={<AnimatedPage><Dashboard /></AnimatedPage>} />
           <Route path="/history" element={<AnimatedPage><History /></AnimatedPage>} />
+          <Route path="*" element={<AnimatedPage><NotFound /></AnimatedPage>} />
         </Routes>
       </AnimatePresence>
     </Layout>

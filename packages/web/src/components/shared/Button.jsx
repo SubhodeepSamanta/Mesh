@@ -1,8 +1,8 @@
 const VARIANTS = {
-  primary: 'bg-amber-500 text-black hover:bg-amber-400 font-medium',
+  primary: 'bg-[var(--accent)] text-black hover:bg-[var(--accent)] font-medium',
   secondary: 'border border-[var(--border-light)] text-[var(--txt-primary)] hover:bg-[var(--surface-hover)] font-medium',
   ghost: 'text-[var(--txt-secondary)] hover:text-[var(--txt-primary)] hover:bg-[var(--surface-hover)]',
-  danger: 'bg-red-600 text-white hover:bg-red-500 font-medium',
+  danger: 'bg-[var(--error)] text-white hover:bg-[var(--error)] font-medium',
 }
 
 export default function Button({ variant = 'primary', className = '', children, ...props }) {

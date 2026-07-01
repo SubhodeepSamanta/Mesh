@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { addHistoryEntry } from './useHistoryStore.js'
 
 const STORAGE_KEY = 'mesh-transfer-state'
 
@@ -11,6 +12,10 @@ const initial = {
   peerStats: [],
   speedHistory: [],
   error: null,
+  seeding: false,
+  saveMode: 'files',
+  startTime: null,
+  roomCode: '',
 }
 
 function loadSaved() {
@@ -40,10 +45,11 @@ export const useTransferStore = create((set) => {
     startAsSender: (fileMeta) => set({
       role: 'sender',
       status: 'waiting-for-peer',
+      seeding: true,
       fileMeta,
       chunkStates: new Array(fileMeta.totalChunks).fill('pending'),
       progress: { verified: 0, total: fileMeta.totalChunks, percent: 0 },
-      error: null,
+      error: null, startTime: Date.now(),
     }),
 
     startAsReceiver: () => set({
@@ -54,7 +60,7 @@ export const useTransferStore = create((set) => {
       chunkStates: [],
       peerStats: [],
       speedHistory: [],
-      error: null,
+      error: null, startTime: Date.now(),
     }),
 
     setIncomingFile: (fileMeta) => set({
@@ -75,13 +81,57 @@ export const useTransferStore = create((set) => {
 
     updatePeerStats: (peerStats) => set({ peerStats }),
 
-    recordSpeedSample: (mbps) => set((s) => ({
-      speedHistory: [...s.speedHistory.slice(-59), { t: Date.now(), mbps }],
-    })),
+    recordSpeedSample: (mbps) => set((s) => {
+      const clean = typeof mbps === 'number' && isFinite(mbps) && mbps >= 0 ? mbps : 0
+      return { speedHistory: [...s.speedHistory.slice(-59), { t: Date.now(), mbps: clean }] }
+    }),
 
-    setComplete: () => set({ status: 'complete' }),
+    setRoomCode: (roomCode) => set({ roomCode }),
+    setSeeding: (seeding) => set({ seeding }),
+    setSaveMode: (saveMode) => set({ saveMode }),
+
+    setComplete: () => set((s) => {
+      const meta = s.fileMeta
+      const fileCount = meta?.files?.length || 1
+      const totalChunks = meta?.totalChunks || s.progress.total
+      const avgMbps = s.speedHistory.length > 0
+        ? s.speedHistory.reduce((a, b) => a + b.mbps, 0) / s.speedHistory.length
+        : 0
+      addHistoryEntry({
+        role: s.role,
+        fileName: meta?.fileName || 'Unknown',
+        fileSize: meta?.fileSize || 0,
+        fileCount,
+        totalChunks,
+        chunkSize: meta?.chunkSize || 0,
+        merkleRoot: meta?.merkleRoot || '',
+        roomCode: s.roomCode || '',
+        status: 'complete',
+        duration: s.startTime ? Math.round((Date.now() - s.startTime) / 1000) : 0,
+        avgSpeed: avgMbps,
+        peers: s.peerStats.length,
+      })
+      return { status: 'complete', seeding: true }
+    }),
     setPaused: () => set({ status: 'paused' }),
-    setError: (message) => set({ status: 'error', error: message }),
+    setError: (message) => set((s) => {
+      const meta = s.fileMeta
+      addHistoryEntry({
+        role: s.role,
+        fileName: meta?.fileName || 'Unknown',
+        fileSize: meta?.fileSize || 0,
+        fileCount: meta?.files?.length || 1,
+        totalChunks: meta?.totalChunks || 0,
+        chunkSize: meta?.chunkSize || 0,
+        merkleRoot: meta?.merkleRoot || '',
+        roomCode: s.roomCode || '',
+        status: 'failed',
+        duration: s.startTime ? Math.round((Date.now() - s.startTime) / 1000) : 0,
+        avgSpeed: 0,
+        peers: s.peerStats.length,
+      })
+      return { status: 'error', error: message }
+    }),
 
     reset: () => {
       localStorage.removeItem(STORAGE_KEY)
@@ -105,6 +155,9 @@ useTransferStore.subscribe((state) => {
       peerStats: state.peerStats,
       speedHistory: state.speedHistory,
       error: state.error,
+      seeding: state.seeding,
+      saveMode: state.saveMode,
+      roomCode: state.roomCode,
     }
     localStorage.setItem(KEY, JSON.stringify(toSave))
   } catch { /* storage full */ }

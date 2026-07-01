@@ -14,7 +14,7 @@ function FileEntry({ file, depth = 0, checked, onToggle }) {
         type="checkbox"
         checked={checked}
         onChange={() => onToggle(file.path)}
-        className="h-4 w-4 rounded border-[var(--border-light)] bg-[var(--bg-secondary)] text-amber-500 focus:ring-amber-500/30"
+        className="h-4 w-4 rounded border-[var(--border-light)] bg-[var(--bg-secondary)] text-[var(--accent)] focus:ring-[var(--accent)]/30"
       />
       <span className="flex-1 truncate text-sm text-[var(--txt-primary)]">{file.name}</span>
       <span className="text-xs text-[var(--txt-secondary)]">{formatBytes(file.size)}</span>
@@ -91,7 +91,7 @@ export default function FileManifest({ fileMeta }) {
           <button
             type="button"
             onClick={() => setExpandedHash(!expandedHash)}
-            className="flex-1 cursor-pointer truncate rounded bg-[var(--bg-primary)] px-3 py-2 text-left font-mono text-xs text-[var(--txt-dim)] transition-colors hover:text-amber-400"
+            className="flex-1 cursor-pointer truncate rounded bg-[var(--bg-primary)] px-3 py-2 text-left font-mono text-xs text-[var(--txt-dim)] transition-colors hover:text-[var(--accent)]"
             title={rootHash}
           >
             {expandedHash ? rootHash : `${rootHash.slice(0, 24)}...`}
@@ -99,7 +99,7 @@ export default function FileManifest({ fileMeta }) {
           <button
             type="button"
             onClick={copyHash}
-            className="cursor-pointer rounded p-2 text-[var(--txt-secondary)] transition-colors hover:text-amber-400"
+            className="cursor-pointer rounded p-2 text-[var(--txt-secondary)] transition-colors hover:text-[var(--accent)]"
             title="Copy hash"
           >
             {hashCopied ? (
@@ -123,7 +123,7 @@ export default function FileManifest({ fileMeta }) {
               type="checkbox"
               checked={allSelected}
               onChange={toggleAll}
-              className="h-4 w-4 rounded border-[var(--border-light)] bg-[var(--bg-secondary)] text-amber-500 focus:ring-amber-500/30"
+              className="h-4 w-4 rounded border-[var(--border-light)] bg-[var(--bg-secondary)] text-[var(--accent)] focus:ring-[var(--accent)]/30"
             />
             <span className="text-xs font-medium uppercase tracking-widest text-[var(--txt-secondary)]">Content Manifest</span>
           </label>
@@ -131,9 +131,9 @@ export default function FileManifest({ fileMeta }) {
 
         {anySelected && (
           <p className="text-xs text-[var(--txt-secondary)]">
-            <span className="font-mono text-amber-400">{files.filter((f) => selectedFiles[f.path]).length}</span> of{' '}
+            <span className="font-mono text-[var(--accent)]">{files.filter((f) => selectedFiles[f.path]).length}</span> of{' '}
             <span className="font-mono">{files.length}</span> files selected —{' '}
-            <span className="font-mono text-amber-400">{formatBytes(totalSelected)}</span> / {formatBytes(totalSize)}
+            <span className="font-mono text-[var(--accent)]">{formatBytes(totalSelected)}</span> / {formatBytes(totalSize)}
           </p>
         )}
 

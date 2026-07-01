@@ -1,12 +1,24 @@
-import { useCallback } from 'react'
+import { useCallback, useEffect } from 'react'
 import { SwarmManager } from '../lib/swarmManager.js'
 import { transferManager as M } from '../lib/transferManager.js'
+import { WebRTCTransport } from '../lib/webrtc.js'
 import { MSG } from '../webrtc/protocol.js'
 import { readChunk, getFileForChunk } from '../lib/fileChunker.js'
-import { getMerkleProof } from '../lib/browserCrypto.js'
+import { sha256Hex, getMerkleProof } from '../lib/browserCrypto.js'
 import { useTransferStore } from '../store/useTransferStore.js'
 
 export function useTransfer() {
+  const transferStatus = useTransferStore((s) => s.status)
+
+  useEffect(() => {
+    const active = transferStatus === 'transferring' || transferStatus === 'file-offered' || transferStatus === 'waiting-for-peer' || transferStatus === 'waiting-for-file'
+    if (active) {
+      const handler = (e) => { e.preventDefault(); e.returnValue = '' }
+      window.addEventListener('beforeunload', handler)
+      return () => window.removeEventListener('beforeunload', handler)
+    }
+  }, [transferStatus])
+
   const startSending = useCallback(async (file, fileIndex, fileRefs) => {
     M.fileRef = file
     M.indexRef = fileIndex
@@ -33,6 +45,7 @@ export function useTransfer() {
     M.downloadGuard = false
     M.chunks = new Array(meta.totalChunks)
     M.streamHandle = null
+    M.receivedMeta = { files: meta.files, chunkSize: meta.chunkSize, totalChunks: meta.totalChunks, merkleRoot: meta.merkleRoot }
     useTransferStore.getState().setIncomingFile(meta)
 
     const swarm = new SwarmManager(meta.totalChunks, meta.merkleRoot, meta.chunkSize)
@@ -87,33 +100,44 @@ export function useTransfer() {
   }, [])
 
   const addSenderPeer = useCallback(async (transport, fileIndex) => {
-    M.servedRef = new Set()
+    if (!M.servedRef) M.servedRef = new Set()
     const total = fileIndex.totalChunks
-    transport.onJSON((msg) => {
+    transport.onJSON(async (msg) => {
       if (msg.type !== MSG.CHUNK_REQUEST) return
+      if (!useTransferStore.getState().seeding) return
+
       const file = M.fileRef
       const idx = M.indexRef
       const refs = M.fileRefs
-      if (!file || !idx || !refs) return
 
-      const entry = getFileForChunk(idx.files, msg.index)
-      if (!entry) return
-      const targetFile = refs[entry.fileEntry.path]
-      if (!targetFile) return
-
-      readChunk(targetFile, entry.localIndex, idx.chunkSize).then((buf) => {
-        const proof = getMerkleProof(idx.tree, msg.index)
-        transport.sendChunk(msg.index, idx.hashes[msg.index], proof, new Uint8Array(buf))
-        M.servedRef.add(msg.index)
-        useTransferStore.getState().updateProgress({
-          verified: M.servedRef.size,
-          total,
-          percent: (M.servedRef.size / total) * 100,
-        })
-        if (M.servedRef.size >= total) {
-          useTransferStore.getState().setComplete()
-        }
+      if (file && idx && refs) {
+        const entry = getFileForChunk(idx.files, msg.index)
+        if (!entry) return
+        const targetFile = refs[entry.fileEntry.path]
+        if (!targetFile) return
+        const buf = await (async () => {
+          const b = await readChunk(targetFile, entry.localIndex, idx.chunkSize)
+          const proof = getMerkleProof(idx.tree, msg.index)
+          transport.sendChunk(msg.index, idx.hashes[msg.index], proof, new Uint8Array(b))
+          return b
+        })()
+      } else if (M.chunks && M.chunks[msg.index]) {
+        const data = M.chunks[msg.index]
+        const arr = data instanceof Uint8Array ? data : new Uint8Array(data)
+        const hash = await sha256Hex(arr)
+        transport.sendChunk(msg.index, hash, null, arr)
+      } else {
+        return
+      }
+      M.servedRef.add(msg.index)
+      useTransferStore.getState().updateProgress({
+        verified: M.servedRef.size,
+        total,
+        percent: (M.servedRef.size / total) * 100,
       })
+      if (M.servedRef.size >= total) {
+        useTransferStore.getState().setComplete()
+      }
     })
     transport.sendJSON({
       type: MSG.FILE_OFFER,
@@ -123,6 +147,11 @@ export function useTransfer() {
       chunkSize: fileIndex.chunkSize,
       merkleRoot: fileIndex.merkleRoot,
       files: fileIndex.files,
+    })
+    transport.pc.addEventListener('connectionstatechange', () => {
+      if (transport.pc.connectionState === 'disconnected' || transport.pc.connectionState === 'failed') {
+        M.transports.delete(transport.remotePeerId)
+      }
     })
     M.transports.set(transport.remotePeerId, transport)
     useTransferStore.getState().setTransferring()
@@ -146,17 +175,71 @@ export function useTransfer() {
     })
 
     swarm.addPeer(transport.remotePeerId, requestFn)
+    transport.pc.addEventListener('connectionstatechange', () => {
+      if (transport.pc.connectionState === 'disconnected' || transport.pc.connectionState === 'failed') {
+        M.transports.delete(transport.remotePeerId)
+        swarm.removePeer(transport.remotePeerId)
+      }
+    })
     M.transports.set(transport.remotePeerId, transport)
     useTransferStore.getState().setTransferring()
+  }, [])
+
+  const blobForEntry = useCallback((entry) => {
+    const ordered = []
+    for (let i = 0; i < entry.chunkCount; i++) {
+      ordered.push(M.chunks[entry.startChunk + i])
+    }
+    return new Blob(ordered, { type: 'application/octet-stream' })
   }, [])
 
   const triggerDownload = useCallback(async () => {
     if (M.downloadGuard) return
     M.downloadGuard = true
     const meta = useTransferStore.getState().fileMeta
+    const saveMode = useTransferStore.getState().saveMode
     if (!meta || M.chunks.length === 0) return
 
     const files = meta.files || [{ path: meta.fileName, name: meta.fileName, size: meta.fileSize, startChunk: 0, chunkCount: meta.totalChunks }]
+    const isMulti = files.length > 1
+
+    if (isMulti && saveMode === 'auto') {
+      let wroteAny = false
+      try {
+        const dirHandle = await window.showDirectoryPicker?.({ mode: 'readwrite' })
+        if (dirHandle) {
+          for (const entry of files) {
+            const parts = entry.path.replace(/\\/g, '/').split('/')
+            let handle = dirHandle
+            for (let p = 0; p < parts.length - 1; p++) {
+              handle = await handle.getDirectoryHandle(parts[p], { create: true })
+            }
+            const fileHandle = await handle.getFileHandle(parts[parts.length - 1], { create: true })
+            const writable = await fileHandle.createWritable()
+            const blob = blobForEntry(entry)
+            await writable.write(blob)
+            await writable.close()
+            wroteAny = true
+          }
+          return
+        }
+      } catch {}
+      if (wroteAny) return
+    }
+
+    if (isMulti || saveMode === 'files') {
+      for (const entry of files) {
+        const blob = blobForEntry(entry)
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = entry.name
+        a.click()
+        URL.revokeObjectURL(url)
+        await new Promise(r => setTimeout(r, 200))
+      }
+      return
+    }
 
     try {
       const handle = await window.showSaveFilePicker?.({
@@ -164,33 +247,21 @@ export function useTransfer() {
         types: [{ accept: { 'application/octet-stream': [] } }],
       })
       if (handle) {
-        M.streamHandle = await handle.createWritable()
-        for (const entry of files) {
-          const ordered = []
-          for (let i = 0; i < entry.chunkCount; i++) {
-            ordered.push(M.chunks[entry.startChunk + i])
-          }
-          const blob = new Blob(ordered, { type: 'application/octet-stream' })
-          await M.streamHandle.write(blob)
-        }
-        await M.streamHandle.close()
-        M.streamHandle = null
+        const writable = await handle.createWritable()
+        await writable.write(blobForEntry(files[0]))
+        await writable.close()
         return
       }
     } catch {}
 
-    const ordered = []
-    for (let i = 0; i < meta.totalChunks; i++) {
-      ordered.push(M.chunks[i])
-    }
-    const blob = new Blob(ordered, { type: 'application/octet-stream' })
+    const blob = blobForEntry(files[0])
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
     a.download = meta.fileName
     a.click()
     URL.revokeObjectURL(url)
-  }, [])
+  }, [blobForEntry])
 
   const disconnectAll = useCallback(() => {
     if (M.swarm) {
@@ -208,12 +279,27 @@ export function useTransfer() {
     useTransferStore.getState().reset()
   }, [])
 
+  const stopSeeding = useCallback(() => {
+    useTransferStore.getState().setSeeding(false)
+  }, [])
+
+  const resumeSeeding = useCallback(() => {
+    useTransferStore.getState().setSeeding(true)
+  }, [])
+
+  const resetDownload = useCallback(() => {
+    M.downloadGuard = false
+  }, [])
+
   return {
     startSending,
     startReceiving,
     addSenderPeer,
     addReceiverPeer,
     triggerDownload,
+    resetDownload,
     disconnectAll,
+    stopSeeding,
+    resumeSeeding,
   }
 }

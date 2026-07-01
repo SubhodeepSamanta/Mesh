@@ -17,7 +17,7 @@ export default function MonoText({ text, copyable = false, className = '' }) {
       {copyable && (
         <button
           onClick={handleCopy}
-          className="cursor-pointer rounded p-1 text-[var(--txt-secondary)] transition-colors hover:text-amber-400 hover:bg-[var(--surface-hover)]"
+          className="cursor-pointer rounded p-1 text-[var(--txt-secondary)] transition-colors hover:text-[var(--accent)] hover:bg-[var(--surface-hover)]"
           title="Copy"
         >
           {copied ? (

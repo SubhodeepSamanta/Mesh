@@ -1,6 +1,7 @@
 import { sha256Hex, verifyChunk } from './browserCrypto.js';
 
 export const MAX_CONSECUTIVE_FAILURES = 5;
+const CHUNK_TIMEOUT = 30000;
 
 const P = 'pending';
 const R = 'requested';
@@ -20,6 +21,7 @@ export class SwarmManager extends EventTarget {
     this.peers = new Map();
     this.done = false;
     this.aborted = false;
+    this._chunkTimeouts = new Map();
 
     const vs = new Set(alreadyVerified);
     for (const idx of vs) {
@@ -56,6 +58,7 @@ export class SwarmManager extends EventTarget {
     const peer = this.peers.get(peerId);
     if (!peer) return;
     for (const ci of peer.pending) {
+      this._clearChunkTimeout(ci);
       if (this.chunkState[ci] === R) this._requeueChunk(ci);
     }
     this.peers.delete(peerId);
@@ -65,6 +68,8 @@ export class SwarmManager extends EventTarget {
 
   abort() {
     this.aborted = true;
+    for (const [ci, t] of this._chunkTimeouts) { clearTimeout(t); }
+    this._chunkTimeouts.clear();
   }
 
   _markPeerFailed(peerId) {
@@ -97,13 +102,25 @@ export class SwarmManager extends EventTarget {
       this.chunkState[i] = R;
       this.chunkPeer[i] = peerId;
       peer.pending.add(i);
+      this._chunkTimeouts.set(i, setTimeout(() => this._handleChunkTimeout(peerId, i), CHUNK_TIMEOUT));
       const p = peer.requestChunk(i)
       if (p && typeof p.catch === 'function') p.catch(() => this._handleChunkFailure(peerId, i))
     }
     this._compactQueue();
   }
 
+  _clearChunkTimeout(ci) {
+    const t = this._chunkTimeouts.get(ci);
+    if (t) { clearTimeout(t); this._chunkTimeouts.delete(ci); }
+  }
+
+  _handleChunkTimeout(peerId, ci) {
+    this._chunkTimeouts.delete(ci);
+    this._handleChunkFailure(peerId, ci);
+  }
+
   _handleChunkFailure(peerId, ci) {
+    this._clearChunkTimeout(ci);
     const peer = this.peers.get(peerId);
     if (peer) {
       peer.pending.delete(ci);
@@ -118,6 +135,8 @@ export class SwarmManager extends EventTarget {
   }
 
   async onChunkReceived(peerId, ci, data, expectedHash, proof) {
+    this._clearChunkTimeout(ci);
+    if (this.aborted) return false;
     const peer = this.peers.get(peerId);
     if (!peer) return false;
     peer.pending.delete(ci);
@@ -126,6 +145,7 @@ export class SwarmManager extends EventTarget {
       return true;
     }
     const actualHash = await sha256Hex(data);
+    if (this.aborted) return false;
     if (actualHash !== expectedHash) {
       peer.consecutiveFailures++;
       this.dispatchEvent(new CustomEvent('chunkFailed', { detail: { peerId, chunkIndex: ci, reason: 'hash_mismatch' } }));

@@ -3,12 +3,15 @@ import * as d3 from 'd3'
 
 const COLORS = { pending: '#3a3a3a', requested: '#f59e0b', verified: '#22c55e', failed: '#ef4444' }
 
-export default function PeerGraph({ className = '', chunkStates = [], role = null }) {
+export default function PeerGraph({ className = '', chunkStates = [], role = null, peerStats = [], seeding = false }) {
   const svgRef = useRef(null)
   const simRef = useRef(null)
   const nodeRef = useRef(null)
   const linkRef = useRef(null)
   const infoRef = useRef(null)
+
+  const allVerified = chunkStates.length > 0 && chunkStates.every(s => s === 'verified')
+  const youLabel = role === 'sender' ? 'YOU (Seeder)' : 'YOU (Leecher)'
 
   useEffect(() => {
     const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -22,7 +25,7 @@ export default function PeerGraph({ className = '', chunkStates = [], role = nul
     svg.selectAll('*').remove()
     svg.attr('width', width).attr('height', height)
 
-    const margin = { top: 28, right: 30, bottom: 28, left: 30 }
+    const margin = { top: 34, right: 30, bottom: 34, left: 30 }
     const innerW = width - margin.left - margin.right
     const innerH = height - margin.top - margin.bottom
     const centerY = margin.top + innerH / 2
@@ -43,17 +46,17 @@ export default function PeerGraph({ className = '', chunkStates = [], role = nul
 
     const sim = d3.forceSimulation(allNodes)
       .force('x', d3.forceX(d => {
-        if (d.id === 'sender') return role === 'sender' ? rightX : leftX
-        if (d.id === 'receiver') return role === 'sender' ? leftX : rightX
+        if (d.id === 'sender') return leftX
+        if (d.id === 'receiver') return rightX
         const s = chunkStates[d.idx]
-        if (s === 'verified') return rightX
+        if (allVerified || s === 'verified') return rightX
         if (s === 'requested') return margin.left + innerW / 2
         return leftX
       }).strength(d => d.id === 'sender' || d.id === 'receiver' ? 4 : 0.08))
       .force('y', d3.forceY(d => d.id === 'sender' || d.id === 'receiver' ? centerY : centerY + (Math.random() - 0.5) * innerH * 0.7).strength(d => d.id === 'sender' || d.id === 'receiver' ? 4 : 0.05))
       .force('charge', d3.forceManyBody().strength(d => d.id === 'sender' || d.id === 'receiver' ? -100 : -15))
       .force('collision', d3.forceCollide(d => d.id === 'sender' || d.id === 'receiver' ? 14 : 5))
-      .alpha(0.5).alphaDecay(0.015).alphaTarget(0.05).velocityDecay(0.35)
+      .alpha(0.5).alphaDecay(0.015).alphaTarget(allVerified ? 0 : 0.05).velocityDecay(0.35)
 
     const g = svg.append('g')
 
@@ -71,23 +74,29 @@ export default function PeerGraph({ className = '', chunkStates = [], role = nul
       .attr('stroke-width', 1)
 
     const label = g.append('g')
-    label.append('text').attr('text-anchor', 'middle').attr('font-family', 'monospace').attr('font-size', '11px').attr('fill', '#6b7280')
-      .attr('x', role === 'sender' ? rightX : leftX).attr('y', centerY + 26).text(role === 'sender' ? 'YOU' : 'SENDER')
-    label.append('text').attr('text-anchor', 'middle').attr('font-family', 'monospace').attr('font-size', '11px').attr('fill', '#6b7280')
-      .attr('x', role === 'sender' ? leftX : rightX).attr('y', centerY + 26).text(role === 'receiver' ? 'YOU' : 'RECEIVER')
+    const txt = (x, y, text, color = '#6b7280', bold = false) => {
+      const t = label.append('text').attr('text-anchor', 'middle').attr('font-family', 'monospace').attr('font-size', '10px').attr('fill', color).attr('x', x).attr('y', y)
+      if (bold) t.attr('font-weight', 'bold')
+      t.text(text)
+    }
+
+    txt(leftX, centerY + 20, role === 'sender' ? youLabel : 'SEEDER', role === 'sender' ? '#f59e0b' : '#6b7280', role === 'sender')
+    txt(rightX, centerY + 20, role === 'receiver' ? youLabel : 'LEECHER', role === 'receiver' ? '#22c55e' : '#6b7280', role === 'receiver')
+    if (seeding) {
+      txt(rightX, centerY + 32, '+ SEEDING', '#f59e0b', false)
+    }
 
     const verified = chunkStates.filter(s => s === 'verified').length
     const totalChunks = chunkStates.length
     if (totalChunks > 0) {
-      label.append('text').attr('font-family', 'monospace').attr('font-size', '11px').attr('fill', '#6b7280')
-        .attr('x', 14).attr('y', height - 14).text(`${verified}/${totalChunks} verified`)
+      txt(14, height - 14, allVerified ? '✓ Complete' : `${verified}/${totalChunks}`)
     }
 
     if (prefersReduced) {
       sim.stop()
       allNodes.forEach(d => {
-        if (d.id === 'sender') { d.x = (role === 'sender' ? rightX : leftX); d.y = centerY }
-        else if (d.id === 'receiver') { d.x = (role === 'sender' ? leftX : rightX); d.y = centerY }
+        if (d.id === 'sender') { d.x = leftX; d.y = centerY }
+        else if (d.id === 'receiver') { d.x = rightX; d.y = centerY }
         else { d.x = leftX + Math.random() * innerW * 0.7; d.y = centerY + (Math.random() - 0.5) * innerH * 0.5 }
       })
       sim.tick(50)
@@ -105,7 +114,7 @@ export default function PeerGraph({ className = '', chunkStates = [], role = nul
     infoRef.current = label
 
     return () => { sim.stop() }
-  }, [role, chunkStates.length])
+  }, [role, chunkStates.length, allVerified, seeding])
 
   useEffect(() => {
     const sim = simRef.current
@@ -116,20 +125,20 @@ export default function PeerGraph({ className = '', chunkStates = [], role = nul
       if (d.idx !== undefined && d.idx < total) d.state = chunkStates[d.idx]
     })
     if (nodeRef.current) {
-      nodeRef.current.attr('fill', d => {
+      nodeRef.current.transition().duration(400).attr('fill', d => {
         if (d.id === 'sender') return '#f59e0b'
         if (d.id === 'receiver') return '#22c55e'
         return COLORS[d.state] || '#3a3a3a'
-      }).attr('r', d => d.id === 'sender' || d.id === 'receiver' ? 12 : 5)
+      })
     }
     const verified = chunkStates.filter(s => s === 'verified').length
     if (infoRef.current && total > 0) {
       infoRef.current.selectAll('text').filter(function() {
         return d3.select(this).text().includes('/')
-      }).text(`${verified}/${total} verified`)
+      }).text(allVerified ? '✓ Complete' : `${verified}/${total}`)
     }
-    sim.alpha(0.3).restart()
-  }, [chunkStates, role])
+    sim.alpha(allVerified ? 0.8 : 0.5).restart()
+  }, [chunkStates, role, allVerified])
 
   return <svg ref={svgRef} className={className} />
 }

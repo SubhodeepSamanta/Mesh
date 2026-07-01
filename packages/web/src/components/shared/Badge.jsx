@@ -1,14 +1,14 @@
 const COLORS = {
-  green: 'bg-green-500/10 text-green-400 border-green-500/20',
-  amber: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
-  red: 'bg-red-500/10 text-red-400 border-red-500/20',
+  green: 'bg-[var(--success)]/10 text-[var(--success)] border-[var(--success)]/20',
+  amber: 'bg-[var(--accent)]/10 text-[var(--accent)] border-[var(--accent)]/20',
+  red: 'bg-[var(--error)]/10 text-[var(--error)] border-[var(--error)]/20',
   gray: 'bg-[var(--surface-hover)] text-[var(--txt-secondary)] border-[var(--border-light)]',
 }
 
 const DOTS = {
-  green: 'bg-green-400',
-  amber: 'bg-amber-400',
-  red: 'bg-red-400',
+  green: 'bg-[var(--success)]',
+  amber: 'bg-[var(--accent)]',
+  red: 'bg-[var(--error)]',
   gray: 'bg-[var(--txt-secondary)]',
 }
 

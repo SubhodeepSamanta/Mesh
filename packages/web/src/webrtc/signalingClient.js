@@ -17,6 +17,16 @@ export class SignalingClient extends EventTarget {
     this.peerId = null;
     this.roomCode = null;
     this._pending = null;
+    this._relayBuffer = [];
+  }
+
+  addEventListener(type, handler) {
+    super.addEventListener(type, handler);
+    if (type === 'relay' && this._relayBuffer.length > 0) {
+      for (const detail of this._relayBuffer) {
+        handler(new CustomEvent('relay', { detail }));
+      }
+    }
   }
 
   connect() {
@@ -73,15 +83,17 @@ export class SignalingClient extends EventTarget {
     }
 
     if (msg.type === MSG_TYPE.RELAY) {
-      this.dispatchEvent(new CustomEvent('relay', {
-        detail: { fromPeerId: msg.fromPeerId, payload: msg.payload },
-      }));
+      const detail = { fromPeerId: msg.fromPeerId, payload: msg.payload };
+      this._relayBuffer.push(detail);
+      if (this._relayBuffer.length > 20) this._relayBuffer.shift();
+      this.dispatchEvent(new CustomEvent('relay', { detail }));
       return;
     }
   }
 
   createRoom(password) {
     return new Promise((resolve, reject) => {
+      if (this._pending) this._pending.reject(new Error('Request cancelled'));
       this._pending = { resolve, reject };
       this._send({ type: MSG_TYPE.CREATE_ROOM, password });
     });
@@ -89,6 +101,7 @@ export class SignalingClient extends EventTarget {
 
   joinRoom(roomCode, password) {
     return new Promise((resolve, reject) => {
+      if (this._pending) this._pending.reject(new Error('Request cancelled'));
       this._pending = { resolve, reject };
       this._send({ type: MSG_TYPE.JOIN_ROOM, roomCode, password });
     });

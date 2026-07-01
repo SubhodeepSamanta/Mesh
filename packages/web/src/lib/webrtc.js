@@ -52,8 +52,8 @@ export class WebRTCTransport {
     this.channel.onmessage = (e) => {
       try {
         const msg = parseMessage(new Uint8Array(e.data));
-        if (msg.type === 0x00 && this.jsonHandler) this.jsonHandler(msg.data);
-        else if (msg.type === 0x01 && this.chunkHandler) this.chunkHandler(msg);
+        if (msg.type === 0x00 && this.jsonHandler) Promise.resolve(this.jsonHandler(msg.data)).catch(() => {});
+        else if (msg.type === 0x01 && this.chunkHandler) Promise.resolve(this.chunkHandler(msg)).catch(() => {});
       } catch (_) {}
     };
   }

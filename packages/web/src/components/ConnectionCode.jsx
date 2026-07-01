@@ -85,13 +85,13 @@ export default function ConnectionCode({ onJoin, joining = false, defaultValue =
           value={code}
           onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, '').slice(0, 9))}
           placeholder="e.g. WOLF-4821"
-          className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] px-4 py-3 font-mono text-lg tracking-widest text-[var(--txt-primary)] placeholder:text-[var(--txt-secondary)] outline-none transition-colors focus:border-amber-500/50"
+          className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] px-4 py-3 font-mono text-lg tracking-widest text-[var(--txt-primary)] placeholder:text-[var(--txt-secondary)] outline-none transition-colors focus:border-[var(--accent)]/50"
           maxLength={9}
         />
         <button
           type="button"
           onClick={scanning ? stopCamera : startCamera}
-          className="absolute right-2.5 top-1/2 -translate-y-1/2 cursor-pointer rounded-md p-1.5 text-[var(--txt-secondary)] transition-colors hover:text-amber-400"
+          className="absolute right-2.5 top-1/2 -translate-y-1/2 cursor-pointer rounded-md p-1.5 text-[var(--txt-secondary)] transition-colors hover:text-[var(--accent)]"
           title={scanning ? 'Close scanner' : 'Scan QR code'}
         >
           <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -110,13 +110,13 @@ export default function ConnectionCode({ onJoin, joining = false, defaultValue =
       </div>
 
       {scanning && (
-        <div className="relative overflow-hidden rounded-lg border border-amber-500/30 bg-black">
+        <div className="relative overflow-hidden rounded-lg border border-[var(--accent)]/30 bg-black">
           <video ref={videoRef} className="h-48 w-full object-cover" muted playsInline />
           <canvas ref={canvasRef} className="hidden" />
           <div className="absolute inset-0 flex items-center justify-center">
-            <div className="h-32 w-32 rounded-lg border-2 border-amber-400/60" />
+            <div className="h-32 w-32 rounded-lg border-2 border-[var(--accent)]/60" />
           </div>
-          <p className="absolute bottom-2 left-0 right-0 text-center text-xs text-amber-400/70">Align QR code within the frame</p>
+          <p className="absolute bottom-2 left-0 right-0 text-center text-xs text-[var(--accent)]/70">Align QR code within the frame</p>
         </div>
       )}
 

@@ -39,6 +39,14 @@
   --border: #1f1f1f;
   --border-light: #2a2a2a;
   --border-hover: #3a3a3a;
+  --accent: #f59e0b;
+  --accent-dim: #fbbf24;
+  --success: #22c55e;
+  --error: #ef4444;
+  --dot-online: #22c55e;
+  --dot-offline: #ef4444;
+  --badge-bg: rgba(245,158,11,0.1);
+  --badge-border: rgba(245,158,11,0.2);
 }
 
 :root:not(.dark) {
@@ -54,6 +62,14 @@
   --border: #e5e5e5;
   --border-light: #d1d5db;
   --border-hover: #9ca3af;
+  --accent: #d97706;
+  --accent-dim: #b45309;
+  --success: #16a34a;
+  --error: #dc2626;
+  --dot-online: #16a34a;
+  --dot-offline: #dc2626;
+  --badge-bg: rgba(217,119,6,0.1);
+  --badge-border: rgba(217,119,6,0.25);
 }
 
 html {
@@ -81,6 +97,9 @@ body {
   background-color: rgba(245, 158, 11, 0.3);
   color: #fff;
 }
+
+::-webkit-scrollbar { width: 0; height: 0; }
+* { scrollbar-width: none; -ms-overflow-style: none; }
 
 @keyframes blink {
   0%, 100% { opacity: 1; }
