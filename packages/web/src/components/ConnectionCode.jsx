@@ -41,7 +41,8 @@ export default function ConnectionCode({ onJoin, joining = false, defaultValue =
         setTimeout(resolve, 3000)
       })
 
-      videoRef.current?.play()
+      if (!videoRef.current) { stopCamera(); return }
+      try { await videoRef.current.play() } catch { stopCamera(); return }
       scanFrame()
     } catch {
       setScanning(false)
@@ -55,13 +56,15 @@ export default function ConnectionCode({ onJoin, joining = false, defaultValue =
     canvas.width = video.videoWidth
     canvas.height = video.videoHeight
     const ctx = canvas.getContext('2d')
+    if (!ctx) { stopCamera(); return }
+
     ctx.drawImage(video, 0, 0)
 
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
     const result = jsQR(imageData.data, imageData.width, imageData.height)
 
     if (result) {
-      const match = result.data.match(/[?&]code=([A-Z0-9]{6})/)
+      const match = result.data.match(/[?&]code=([A-Z0-9-]{6,9})/)
       if (match) {
         setCode(match[1])
         stopCamera()

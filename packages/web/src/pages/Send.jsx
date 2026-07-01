@@ -69,6 +69,7 @@ export default function Send() {
 
   useEffect(() => {
     if (st === 'transferring') navigate('/dashboard')
+    return () => M.stopSeederListener()
   }, [st, navigate])
 
   useEffect(() => {

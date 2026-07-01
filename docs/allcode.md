@@ -60,36 +60,48 @@ Excluded: node_modules, .git, package-lock.json, .env
 - packages/web/public/icons.svg
 - packages/web/README.md
 - packages/web/src/App.jsx
+- packages/web/src/components/ChunkGrid.jsx
+- packages/web/src/components/ConnectionCode.jsx
+- packages/web/src/components/FileDropZone.jsx
+- packages/web/src/components/FileManifest.jsx
+- packages/web/src/components/LandingGraph.jsx
 - packages/web/src/components/layout/Header.jsx
 - packages/web/src/components/layout/Layout.jsx
 - packages/web/src/components/layout/ThemeToggle.jsx
-- packages/web/src/components/receive/IncomingFileCard.jsx
-- packages/web/src/components/receive/RoomCodeInput.jsx
-- packages/web/src/components/send/ConnectionStatus.jsx
-- packages/web/src/components/send/DropZone.jsx
-- packages/web/src/components/send/RoomCodeDisplay.jsx
+- packages/web/src/components/PeerGraph.jsx
+- packages/web/src/components/PeerList.jsx
+- packages/web/src/components/RoomCode.jsx
+- packages/web/src/components/shared/Accordion.jsx
+- packages/web/src/components/shared/Badge.jsx
 - packages/web/src/components/shared/Button.jsx
 - packages/web/src/components/shared/Card.jsx
+- packages/web/src/components/shared/MonoText.jsx
 - packages/web/src/components/shared/ProgressBar.jsx
-- packages/web/src/hooks/useReceiveTransfer.js
-- packages/web/src/hooks/useSendTransfer.js
+- packages/web/src/components/SpeedChart.jsx
+- packages/web/src/components/StatusLog.jsx
+- packages/web/src/hooks/useSignaling.js
+- packages/web/src/hooks/useTransfer.js
+- packages/web/src/hooks/useWebRTC.js
 - packages/web/src/index.css
 - packages/web/src/lib/browserCrypto.js
 - packages/web/src/lib/fileChunker.js
 - packages/web/src/lib/format.js
+- packages/web/src/lib/swarmManager.js
+- packages/web/src/lib/transferManager.js
+- packages/web/src/lib/webrtc.js
 - packages/web/src/main.jsx
-- packages/web/src/pages/DashboardPage.jsx
-- packages/web/src/pages/HistoryPage.jsx
-- packages/web/src/pages/LandingPage.jsx
-- packages/web/src/pages/ReceivePage.jsx
-- packages/web/src/pages/SendPage.jsx
+- packages/web/src/pages/Dashboard.jsx
+- packages/web/src/pages/History.jsx
+- packages/web/src/pages/Landing.jsx
+- packages/web/src/pages/NotFound.jsx
+- packages/web/src/pages/Receive.jsx
+- packages/web/src/pages/Send.jsx
+- packages/web/src/store/useHistoryStore.js
 - packages/web/src/store/useSignalingStore.js
 - packages/web/src/store/useTransferStore.js
 - packages/web/src/store/useUIStore.js
-- packages/web/src/webrtc-test.html
 - packages/web/src/webrtc/protocol.js
 - packages/web/src/webrtc/signalingClient.js
-- packages/web/src/webrtc/webrtcPeer.js
 - packages/web/test/signalingClient.test.js
 - packages/web/test/webrtc.test.js
 - packages/web/test/webrtcProtocol.test.js
@@ -5549,6 +5561,7 @@ export default defineConfig([
     "@tailwindcss/vite": "^4.3.2",
     "d3": "^7.9.0",
     "framer-motion": "^12.42.0",
+    "jsqr": "^1.4.0",
     "qrcode.react": "^4.2.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
@@ -5605,32 +5618,44 @@ If you are developing a production application, we recommend using TypeScript wi
 ### packages/web/src/App.jsx
 
 ```text
-import { Routes, Route } from 'react-router-dom'
+import { Routes, Route, useLocation } from 'react-router-dom'
 import { useEffect } from 'react'
+import { AnimatePresence, motion } from 'framer-motion'
 import Layout from './components/layout/Layout.jsx'
-import LandingPage from './pages/LandingPage.jsx'
-import SendPage from './pages/SendPage.jsx'
-import ReceivePage from './pages/ReceivePage.jsx'
-import DashboardPage from './pages/DashboardPage.jsx'
-import HistoryPage from './pages/HistoryPage.jsx'
+import Landing from './pages/Landing.jsx'
+import Send from './pages/Send.jsx'
+import Receive from './pages/Receive.jsx'
+import Dashboard from './pages/Dashboard.jsx'
+import History from './pages/History.jsx'
+import NotFound from './pages/NotFound.jsx'
 import { useUIStore } from './store/useUIStore.js'
+
+function AnimatedPage({ children }) {
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.2 }}>
+      {children}
+    </motion.div>
+  )
+}
 
 function App() {
   const initTheme = useUIStore((s) => s.initTheme)
+  const location = useLocation()
 
-  useEffect(() => {
-    initTheme()
-  }, [initTheme])
+  useEffect(() => { initTheme() }, [initTheme])
 
   return (
     <Layout>
-      <Routes>
-        <Route path="/" element={<LandingPage />} />
-        <Route path="/send" element={<SendPage />} />
-        <Route path="/receive" element={<ReceivePage />} />
-        <Route path="/dashboard" element={<DashboardPage />} />
-        <Route path="/history" element={<HistoryPage />} />
-      </Routes>
+      <AnimatePresence mode="wait">
+        <Routes location={location} key={location.pathname}>
+          <Route path="/" element={<AnimatedPage><Landing /></AnimatedPage>} />
+          <Route path="/send" element={<AnimatedPage><Send /></AnimatedPage>} />
+          <Route path="/receive" element={<AnimatedPage><Receive /></AnimatedPage>} />
+          <Route path="/dashboard" element={<AnimatedPage><Dashboard /></AnimatedPage>} />
+          <Route path="/history" element={<AnimatedPage><History /></AnimatedPage>} />
+          <Route path="*" element={<AnimatedPage><NotFound /></AnimatedPage>} />
+        </Routes>
+      </AnimatePresence>
     </Layout>
   )
 }
@@ -5638,27 +5663,703 @@ function App() {
 export default App
 ```
 
+### packages/web/src/components/ChunkGrid.jsx
+
+```text
+import { useMemo, useRef, useEffect } from 'react'
+
+const CHUNK_COLORS = {
+  pending: 'bg-[var(--surface-hover)]',
+  requested: 'bg-[var(--accent)]/40',
+  verified: 'bg-[var(--success)]',
+  failed: 'bg-[var(--error)]',
+}
+
+export default function ChunkGrid({ chunkStates = [], transferStatus }) {
+  const scrollRef = useRef(null)
+  const atBottomRef = useRef(true)
+
+  const { displayStates, cols, completePercent } = useMemo(() => {
+    const total = chunkStates.length
+    if (total === 0) return { displayStates: [], cols: 0, completePercent: 0 }
+
+    let compressed = chunkStates
+    if (total > 1000) {
+      const ratio = total / 1000
+      compressed = []
+      for (let i = 0; i < 1000; i++) {
+        compressed.push(chunkStates[Math.floor(i * ratio)])
+      }
+    }
+
+    const sqrt = Math.ceil(Math.sqrt(compressed.length))
+    const verified = chunkStates.filter((s) => s === 'verified').length
+    const percent = total > 0 ? Math.round((verified / total) * 100) : 0
+
+    return { displayStates: compressed, cols: Math.min(sqrt, 50), completePercent: percent }
+  }, [chunkStates])
+
+  useEffect(() => {
+    if (scrollRef.current && atBottomRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+    }
+  }, [completePercent])
+
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const handleScroll = () => {
+      atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 30
+    }
+    el.addEventListener('scroll', handleScroll, { passive: true })
+    return () => el.removeEventListener('scroll', handleScroll)
+  }, [])
+
+  if (chunkStates.length === 0) {
+    return (
+      <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3">
+        <p className="py-8 text-center text-sm text-[var(--txt-secondary)]">No chunk data</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-sm font-medium uppercase tracking-widest text-[var(--txt-secondary)]">
+          Chunks
+        </span>
+        <span className="text-sm font-medium text-[var(--accent)]">
+          {completePercent}% COMPLETE
+        </span>
+      </div>
+      <div ref={scrollRef} className="max-h-[200px] overflow-y-auto">
+        <div
+          className="grid gap-[2px]"
+          style={{ gridTemplateColumns: `repeat(${cols}, 1fr)` }}
+        >
+          {displayStates.map((state, i) => (
+            <div
+              key={i}
+              className={`aspect-square rounded-sm ${CHUNK_COLORS[state] || CHUNK_COLORS.pending}`}
+              title={`Chunk ${i}: ${state}`}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+```
+
+### packages/web/src/components/ConnectionCode.jsx
+
+```text
+import { useState, useRef, useEffect } from 'react'
+import jsQR from 'jsqr'
+import Button from './shared/Button.jsx'
+
+export default function ConnectionCode({ onJoin, joining = false, defaultValue = '' }) {
+  const [code, setCode] = useState(defaultValue)
+  const [scanning, setScanning] = useState(false)
+  const videoRef = useRef(null)
+  const canvasRef = useRef(null)
+  const streamRef = useRef(null)
+  const animRef = useRef(null)
+
+  useEffect(() => {
+    return () => stopCamera()
+  }, [])
+
+  function stopCamera() {
+    cancelAnimationFrame(animRef.current)
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop())
+      streamRef.current = null
+    }
+    setScanning(false)
+  }
+
+  async function startCamera() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment' },
+      })
+      streamRef.current = stream
+      setScanning(true)
+
+      if (!videoRef.current) { stopCamera(); return }
+      videoRef.current.srcObject = stream
+      await new Promise((resolve, reject) => {
+        const v = videoRef.current
+        if (!v) { resolve(); return }
+        v.onloadedmetadata = resolve
+        v.onerror = reject
+        setTimeout(resolve, 3000)
+      })
+
+      if (!videoRef.current) { stopCamera(); return }
+      try { await videoRef.current.play() } catch { stopCamera(); return }
+      scanFrame()
+    } catch {
+      setScanning(false)
+    }
+  }
+
+  function scanFrame() {
+    if (!videoRef.current || !canvasRef.current) return
+    const video = videoRef.current
+    const canvas = canvasRef.current
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+    const ctx = canvas.getContext('2d')
+    if (!ctx) { stopCamera(); return }
+
+    ctx.drawImage(video, 0, 0)
+
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+    const result = jsQR(imageData.data, imageData.width, imageData.height)
+
+    if (result) {
+      const match = result.data.match(/[?&]code=([A-Z0-9-]{6,9})/)
+      if (match) {
+        setCode(match[1])
+        stopCamera()
+        return
+      }
+    }
+
+    animRef.current = requestAnimationFrame(scanFrame)
+  }
+
+  function handleSubmit(e) {
+    e.preventDefault()
+    const cleaned = code.trim().toUpperCase()
+    if (cleaned.length >= 6) onJoin(cleaned)
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="flex flex-col gap-3">
+      <div className="relative">
+        <input
+          value={code}
+          onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, '').slice(0, 9))}
+          placeholder="e.g. WOLF-4821"
+          className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] px-4 py-3 font-mono text-lg tracking-widest text-[var(--txt-primary)] placeholder:text-[var(--txt-secondary)] outline-none transition-colors focus:border-[var(--accent)]/50"
+          maxLength={9}
+        />
+        <button
+          type="button"
+          onClick={scanning ? stopCamera : startCamera}
+          className="absolute right-2.5 top-1/2 -translate-y-1/2 cursor-pointer rounded-md p-1.5 text-[var(--txt-secondary)] transition-colors hover:text-[var(--accent)]"
+          title={scanning ? 'Close scanner' : 'Scan QR code'}
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 7V5a2 2 0 0 1 2-2h2" />
+            <path d="M17 3h2a2 2 0 0 1 2 2v2" />
+            <path d="M21 17v2a2 2 0 0 1-2 2h-2" />
+            <path d="M7 21H5a2 2 0 0 1-2-2v-2" />
+            <rect x="7" y="7" width="5" height="5" rx="0.5" />
+            <rect x="12" y="12" width="5" height="5" rx="0.5" />
+            <line x1="7" y1="12" x2="7" y2="12" />
+            <line x1="17" y1="12" x2="17" y2="12" />
+            <line x1="12" y1="7" x2="12" y2="7" />
+            <line x1="12" y1="17" x2="12" y2="17" />
+          </svg>
+        </button>
+      </div>
+
+      {scanning && (
+        <div className="relative overflow-hidden rounded-lg border border-[var(--accent)]/30 bg-black">
+          <video ref={videoRef} className="h-48 w-full object-cover" muted playsInline />
+          <canvas ref={canvasRef} className="hidden" />
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="h-32 w-32 rounded-lg border-2 border-[var(--accent)]/60" />
+          </div>
+          <p className="absolute bottom-2 left-0 right-0 text-center text-xs text-[var(--accent)]/70">Align QR code within the frame</p>
+        </div>
+      )}
+
+      <Button type="submit" disabled={code.trim().length < 6 || joining} className="w-full">
+        {joining ? 'CONNECTING...' : 'ESTABLISH LINK'}
+      </Button>
+    </form>
+  )
+}
+```
+
+### packages/web/src/components/FileDropZone.jsx
+
+```text
+import { useCallback, useState, useRef } from 'react'
+import { useDropzone } from 'react-dropzone'
+import { indexFiles } from '../lib/fileChunker.js'
+
+const MODES = [
+  { key: 'single', label: 'File', icon: 'M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z M14 2v6h6 M12 18v-6 M9 15l3-3 3 3' },
+  { key: 'multiple', label: 'Files', icon: 'M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z M16 2v6h6' },
+  { key: 'folder', label: 'Folder', icon: 'M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z' },
+]
+
+export default function FileDropZone({ onFileReady }) {
+  const [mode, setMode] = useState('multiple')
+  const [indexing, setIndexing] = useState(false)
+  const [statusText, setStatusText] = useState('')
+  const fileRefs = useRef({})
+  const inputRef = useRef(null)
+
+  const traverseDir = useCallback(async (entry, path = '') => {
+    const reader = entry.createReader()
+    const files = []
+    const readBatch = () => new Promise((r) => reader.readEntries((e) => r(e)))
+    let batch = await readBatch()
+    while (batch.length > 0) {
+      for (const e of batch) {
+        const p = path ? `${path}/${e.name}` : e.name
+        if (e.isFile) {
+          const file = await new Promise((r) => e.file(r))
+          file.relativePath = p
+          files.push(file)
+        } else if (e.isDirectory) {
+          files.push(...await traverseDir(e, p))
+        }
+      }
+      batch = await readBatch()
+    }
+    return files
+  }, [])
+
+  const handleFiles = useCallback(async (files) => {
+    if (files.length === 0) return
+    setStatusText(`Indexing ${files.length} file${files.length > 1 ? 's' : ''}...`)
+    setIndexing(true)
+    try {
+      const fileMap = {}
+      files.forEach(f => { fileMap[f.relativePath || f.name] = f })
+      fileRefs.current = fileMap
+      const fileIndex = await indexFiles(files)
+      onFileReady(files[0], fileIndex, fileMap)
+    } finally {
+      setIndexing(false)
+      setStatusText('')
+    }
+  }, [onFileReady])
+
+  const onDrop = useCallback(async (accepted, rejections, event) => {
+    const item = event?.dataTransfer?.items?.[0]
+    const entry = item?.webkitGetAsEntry?.()
+    if (entry?.isDirectory) {
+      setStatusText('Reading folder...')
+      setIndexing(true)
+      try {
+        const files = await traverseDir(entry)
+        await handleFiles(files)
+      } finally {
+        setIndexing(false)
+      }
+    } else if (accepted.length > 0) {
+      await handleFiles(accepted)
+    }
+  }, [handleFiles, traverseDir])
+
+  const handleClick = useCallback(() => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    if (mode === 'folder') {
+      input.setAttribute('webkitdirectory', '')
+      input.setAttribute('directory', '')
+    } else if (mode === 'multiple') {
+      input.multiple = true
+    }
+    input.onchange = async () => {
+      const fileList = input.files
+      if (!fileList || fileList.length === 0) return
+      const files = Array.from(fileList)
+      if (mode === 'folder') {
+        files.forEach(f => { f.relativePath = f.webkitRelativePath || f.name })
+      }
+      await handleFiles(files)
+    }
+    input.click()
+  }, [mode, handleFiles])
+
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+    onDrop,
+    noClick: true,
+    noKeyboard: true,
+    multiple: mode === 'multiple' || mode === 'folder',
+  })
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex gap-2">
+        {MODES.map((m) => (
+          <button
+            key={m.key}
+            onClick={() => setMode(m.key)}
+            className={`flex flex-1 items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-xs font-medium uppercase tracking-wider transition-all cursor-pointer ${
+              mode === m.key
+                ? 'border-[var(--accent)]/40 bg-[var(--accent)]/10 text-[var(--accent)]'
+                : 'border-[var(--border-light)] text-[var(--txt-secondary)] hover:border-[var(--border-hover)] hover:text-[var(--txt-primary)]'
+            }`}
+          >
+            <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d={m.icon} />
+            </svg>
+            {m.label}
+          </button>
+        ))}
+      </div>
+
+      <div
+        {...getRootProps()}
+        onClick={handleClick}
+        className={`relative flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed p-10 text-center transition-all duration-200 ${
+          isDragActive
+            ? 'border-[var(--accent)]/60 bg-[var(--accent)]/5'
+            : 'border-[var(--border-light)] bg-[var(--bg-secondary)] hover:border-[var(--border-hover)]'
+        }`}
+      >
+        <input {...getInputProps()} />
+        <svg className="mb-3 h-10 w-10 text-[var(--accent)]/70" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+          {mode === 'folder'
+            ? <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+            : <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+          }
+        </svg>
+        {indexing ? (
+          <p className="text-sm text-[var(--accent)]/80">{statusText}</p>
+        ) : isDragActive ? (
+          <p className="text-sm font-medium text-[var(--accent)]">Drop here</p>
+        ) : (
+          <>
+            <p className="text-sm font-medium text-[var(--txt-primary)]">
+              {mode === 'single' ? 'Select a file or drag here' : mode === 'multiple' ? 'Select files or drag them here' : 'Select a folder or drag here'}
+            </p>
+            <p className="mt-1 text-xs text-[var(--txt-secondary)]">
+              {mode === 'single' ? 'Upload a single file' : mode === 'multiple' ? 'Upload multiple files at once' : 'Upload an entire folder with all contents'}
+            </p>
+          </>
+        )}
+        <span className="mt-4 inline-flex items-center gap-1.5 rounded-full border border-[var(--border-light)] bg-[var(--bg-secondary)] px-3 py-1 text-[11px] uppercase tracking-widest text-[var(--txt-secondary)]">
+          AES-256-GCM · E2E encrypted
+        </span>
+      </div>
+    </div>
+  )
+}
+```
+
+### packages/web/src/components/FileManifest.jsx
+
+```text
+import { useState, useCallback } from 'react'
+import { formatBytes } from '../lib/format.js'
+import Badge from './shared/Badge.jsx'
+import Card from './shared/Card.jsx'
+
+function FileEntry({ file, depth = 0, checked, onToggle }) {
+  const indent = depth * 20
+  return (
+    <label
+      className="flex cursor-pointer items-center gap-3 rounded-md px-3 py-2 transition-colors hover:bg-[var(--surface-hover)]"
+      style={{ paddingLeft: `${12 + indent}px` }}
+    >
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={() => onToggle(file.path)}
+        className="h-4 w-4 rounded border-[var(--border-light)] bg-[var(--bg-secondary)] text-[var(--accent)] focus:ring-[var(--accent)]/30"
+      />
+      <span className="flex-1 truncate text-sm text-[var(--txt-primary)]">{file.name}</span>
+      <span className="text-xs text-[var(--txt-secondary)]">{formatBytes(file.size)}</span>
+    </label>
+  )
+}
+
+export default function FileManifest({ fileMeta }) {
+  const [expandedHash, setExpandedHash] = useState(false)
+  const [selectedFiles, setSelectedFiles] = useState(() => {
+    const sel = {}
+    if (fileMeta?.files) {
+      fileMeta.files.forEach((f) => { sel[f.path] = true })
+    } else if (fileMeta?.fileName) {
+      sel[fileMeta.fileName] = true
+    }
+    return sel
+  })
+
+  if (!fileMeta) return null
+
+  const files = fileMeta.files || [{ path: fileMeta.fileName, name: fileMeta.fileName, size: fileMeta.fileSize }]
+  const allSelected = files.every((f) => selectedFiles[f.path])
+  const anySelected = files.some((f) => selectedFiles[f.path])
+
+  function toggleFile(path) {
+    setSelectedFiles((prev) => ({ ...prev, [path]: !prev[path] }))
+  }
+
+  function toggleAll() {
+    if (allSelected) {
+      const sel = {}; files.forEach((f) => { sel[f.path] = false }); setSelectedFiles(sel)
+    } else {
+      const sel = {}; files.forEach((f) => { sel[f.path] = true }); setSelectedFiles(sel)
+    }
+  }
+
+  const totalSelected = files.filter((f) => selectedFiles[f.path]).reduce((s, f) => s + f.size, 0)
+  const totalSize = files.reduce((s, f) => s + f.size, 0)
+  const isFolder = fileMeta.files && fileMeta.files.length > 1
+  const rootHash = fileMeta.merkleRoot || fileMeta.fileMerkleRoot || ''
+  const [hashCopied, setHashCopied] = useState(false)
+
+  const copyHash = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(rootHash)
+      setHashCopied(true)
+      setTimeout(() => setHashCopied(false), 1500)
+    } catch {}
+  }, [rootHash])
+
+  return (
+    <div className="flex flex-col gap-4">
+      <Card className="space-y-3">
+        <div className="flex items-center justify-between gap-4">
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-base font-medium text-[var(--txt-primary)]">{fileMeta.fileName}</p>
+            <p className="text-sm text-[var(--txt-secondary)]">{formatBytes(fileMeta.fileSize)}</p>
+          </div>
+          {fileMeta.senderId && <Badge color="amber">SENDER ID</Badge>}
+        </div>
+
+        {fileMeta.senderId && (
+          <p className="font-mono text-xs text-[var(--txt-dim)]">{fileMeta.senderId.length > 16 ? `${fileMeta.senderId.slice(0, 16)}...` : fileMeta.senderId}</p>
+        )}
+
+        <div className="flex items-center gap-4 text-xs text-[var(--txt-secondary)]">
+          <span className="font-mono">{fileMeta.totalChunks || '—'} CHUNKS</span>
+          <span className="text-[var(--border-light)]">|</span>
+          <span className="font-mono">MERKLE ROOT</span>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setExpandedHash(!expandedHash)}
+            className="flex-1 cursor-pointer truncate rounded bg-[var(--bg-primary)] px-3 py-2 text-left font-mono text-xs text-[var(--txt-dim)] transition-colors hover:text-[var(--accent)]"
+            title={rootHash}
+          >
+            {expandedHash ? rootHash : `${rootHash.slice(0, 24)}...`}
+          </button>
+          <button
+            type="button"
+            onClick={copyHash}
+            className="cursor-pointer rounded p-2 text-[var(--txt-secondary)] transition-colors hover:text-[var(--accent)]"
+            title="Copy hash"
+          >
+            {hashCopied ? (
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+            ) : (
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+              </svg>
+            )}
+          </button>
+        </div>
+      </Card>
+
+      <Card className="space-y-2">
+        <div className="flex items-center justify-between">
+          <label className="flex cursor-pointer items-center gap-2">
+            <input
+              type="checkbox"
+              checked={allSelected}
+              onChange={toggleAll}
+              className="h-4 w-4 rounded border-[var(--border-light)] bg-[var(--bg-secondary)] text-[var(--accent)] focus:ring-[var(--accent)]/30"
+            />
+            <span className="text-xs font-medium uppercase tracking-widest text-[var(--txt-secondary)]">Content Manifest</span>
+          </label>
+        </div>
+
+        {anySelected && (
+          <p className="text-xs text-[var(--txt-secondary)]">
+            <span className="font-mono text-[var(--accent)]">{files.filter((f) => selectedFiles[f.path]).length}</span> of{' '}
+            <span className="font-mono">{files.length}</span> files selected —{' '}
+            <span className="font-mono text-[var(--accent)]">{formatBytes(totalSelected)}</span> / {formatBytes(totalSize)}
+          </p>
+        )}
+
+        <div className="max-h-64 space-y-0.5 overflow-y-auto">
+          {files.map((file) => (
+            <FileEntry
+              key={file.path}
+              file={file}
+              depth={isFolder && file.path.includes('/') ? file.path.split('/').length - 1 : 0}
+              checked={!!selectedFiles[file.path]}
+              onToggle={toggleFile}
+            />
+          ))}
+        </div>
+      </Card>
+    </div>
+  )
+}
+```
+
+### packages/web/src/components/LandingGraph.jsx
+
+```text
+import { useEffect, useRef } from 'react'
+import * as d3 from 'd3'
+
+const NODES = 16
+const LINKS = [
+  [0,1],[1,2],[2,3],[3,4],[4,5],[5,6],[6,7],[7,8],[8,9],[9,10],[10,11],[11,12],[12,13],[13,14],[14,15],[15,0],
+  [0,4],[1,5],[2,6],[3,7],[8,12],[9,13],[10,14],[11,15],[4,8],[5,9],[6,10],[7,11],[0,8],[4,12],
+]
+
+export default function LandingGraph({ className = '' }) {
+  const svgRef = useRef(null)
+
+  useEffect(() => {
+    const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const el = svgRef.current
+    const parent = el.parentElement
+    const rect = parent.getBoundingClientRect()
+    let width = Math.max(rect.width, 300)
+    let height = Math.max(rect.height, 300)
+
+    const svg = d3.select(el)
+    svg.selectAll('*').remove()
+    svg.attr('width', width).attr('height', height)
+
+    const g = svg.append('g')
+
+    const linkData = LINKS.map(([s, t]) => ({ source: s, target: t }))
+    const nodeData = Array.from({ length: NODES }, (_, i) => ({
+      id: i, pulsing: i < 6,
+      z: Math.sin((i / NODES) * Math.PI * 2) * 50,
+    }))
+
+    const simulation = d3.forceSimulation(nodeData)
+      .force('link', d3.forceLink(linkData).distance(140).strength(0.12))
+      .force('charge', d3.forceManyBody().strength(-500))
+      .force('center', d3.forceCenter(width / 2, height / 2))
+      .force('collision', d3.forceCollide(35))
+      .alpha(0.6).alphaDecay(0.008).alphaTarget(0.1).velocityDecay(0.25)
+
+    const link = g.append('g').selectAll('line').data(linkData).join('line')
+      .attr('stroke', '#3a3a3a').attr('stroke-width', 1.2).attr('stroke-opacity', 0.35)
+
+    const linkFlow = g.append('g').selectAll('line').data(linkData).join('line')
+      .attr('stroke', '#f59e0b').attr('stroke-width', 1.8)
+      .attr('stroke-opacity', 0.5).attr('stroke-dasharray', '4 12')
+      .attr('stroke-linecap', 'round')
+
+    const node = g.append('g').selectAll('circle').data(nodeData).join('circle')
+      .attr('r', d => 7 + d.z / 30)
+      .attr('fill', d => d.pulsing ? '#fbbf24' : '#f59e0b')
+      .attr('opacity', d => 0.5 + (d.z + 50) / 100 * 0.5)
+
+    if (!prefersReduced) {
+      node.filter(d => d.pulsing).each(function () {
+        const el = d3.select(this)
+        ;(function pulse() {
+          el.transition().duration(1800).attr('r', 12).attr('opacity', 0.6)
+            .transition().duration(1800).attr('r', d => 7 + d.z / 30).attr('opacity', d => 0.5 + (d.z + 50) / 100 * 0.5)
+            .on('end', pulse)
+        })()
+      })
+
+      let mouseX = null, mouseY = null
+      svg.on('mousemove', e => {
+        const [mx, my] = d3.pointer(e)
+        mouseX = mx; mouseY = my
+      })
+      svg.on('mouseleave', () => { mouseX = null; mouseY = null })
+
+      const t0 = Date.now()
+      simulation.on('tick', () => {
+        const dt = (Date.now() - t0) / 1000
+        const driftX = Math.sin(dt * 0.15) * 0.18
+        const driftY = Math.cos(dt * 0.1) * 0.18
+        nodeData.forEach(d => { d.vx += driftX; d.vy += driftY })
+
+        if (mouseX !== null && mouseY !== null) {
+          const r = 140
+          nodeData.forEach(d => {
+            const dx = d.x - mouseX, dy = d.y - mouseY
+            const dist = Math.sqrt(dx * dx + dy * dy)
+            if (dist < r && dist > 0) {
+              const force = (r - dist) / r * 3.5
+              d.vx += (dx / dist) * force
+              d.vy += (dy / dist) * force
+            }
+          })
+        }
+
+        link.attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+          .attr('x2', d => d.target.x).attr('y2', d => d.target.y)
+        linkFlow.attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+          .attr('x2', d => d.target.x).attr('y2', d => d.target.y)
+        node.attr('cx', d => d.x).attr('cy', d => d.y)
+      })
+
+      d3.timer(elapsed => {
+        linkFlow.attr('stroke-dashoffset', -elapsed / 50)
+      })
+
+      let flowPhase = 0
+      setInterval(() => {
+        flowPhase = (flowPhase + 0.03) % (Math.PI * 2)
+        linkFlow.attr('stroke-opacity', 0.25 + 0.4 * (0.5 + 0.5 * Math.sin(flowPhase)))
+      }, 60)
+    }
+
+    function resize() {
+      const r = parent.getBoundingClientRect()
+      width = Math.max(r.width, 300)
+      height = Math.max(r.height, 300)
+      simulation.force('center', d3.forceCenter(width / 2, height / 2))
+      simulation.alpha(0.3).restart()
+    }
+    window.addEventListener('resize', resize)
+
+    return () => { simulation.stop(); window.removeEventListener('resize', resize) }
+  }, [])
+
+  return <svg ref={svgRef} className={className} />
+}
+```
+
 ### packages/web/src/components/layout/Header.jsx
 
 ```text
+import { useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
+import { motion, AnimatePresence } from 'framer-motion'
 import ThemeToggle from './ThemeToggle.jsx'
 
 const NAV_LINKS = [
   { to: '/send', label: 'Send' },
   { to: '/receive', label: 'Receive' },
+  { to: '/dashboard', label: 'Dashboard' },
   { to: '/history', label: 'History' },
 ]
 
 export default function Header() {
   const location = useLocation()
+  const [open, setOpen] = useState(false)
 
   return (
-    <header className="sticky top-0 z-40 border-b border-black/5 dark:border-white/5 bg-white/80 dark:bg-[#0e0e14]/80 backdrop-blur-md">
-      <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-        <Link to="/" className="flex items-center gap-2 text-lg font-semibold tracking-tight">
-          <span className="inline-block h-2.5 w-2.5 rounded-full bg-brand-500" />
-          Mesh
+    <header className="sticky top-0 z-40 border-b border-[var(--border)] bg-[var(--bg-primary)]/80 backdrop-blur-md">
+      <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3 sm:px-6">
+        <Link to="/" className="flex items-center gap-2 text-base font-semibold tracking-tight text-[var(--txt-primary)]">
+          <span className="inline-block h-2 w-2 rounded-full bg-[var(--accent)] shadow-[0_0_6px_rgba(245,158,11,0.5)]" />
+          mesh
         </Link>
 
         <nav className="hidden items-center gap-1 sm:flex">
@@ -5666,10 +6367,10 @@ export default function Header() {
             <Link
               key={link.to}
               to={link.to}
-              className={`rounded-full px-4 py-2 text-sm font-medium transition ${
+              className={`rounded-md px-3 py-1.5 text-xs font-medium tracking-wider uppercase transition-colors ${
                 location.pathname === link.to
-                  ? 'bg-brand-500 text-white'
-                  : 'text-black/70 hover:bg-black/5 dark:text-white/70 dark:hover:bg-white/10'
+                  ? 'text-[var(--accent)] bg-[var(--accent)]/10'
+                  : 'text-[var(--txt-secondary)] hover:text-[var(--txt-primary)] hover:bg-[var(--surface-hover)]'
               }`}
             >
               {link.label}
@@ -5677,8 +6378,52 @@ export default function Header() {
           ))}
         </nav>
 
-        <ThemeToggle />
+        <div className="flex items-center gap-2">
+          <ThemeToggle />
+          <button
+            onClick={() => setOpen(!open)}
+            aria-label="Menu"
+            className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-md border border-[var(--border-light)] text-sm text-[var(--txt-secondary)] transition-colors hover:text-[var(--accent)] hover:border-[var(--accent)]/30 sm:hidden"
+          >
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              {open ? (
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              ) : (
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+              )}
+            </svg>
+          </button>
+        </div>
       </div>
+
+      <AnimatePresence>
+        {open && (
+          <motion.nav
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="overflow-hidden border-t border-[var(--border)] sm:hidden"
+          >
+            <div className="flex flex-col px-4 py-2">
+              {NAV_LINKS.map((link) => (
+                <Link
+                  key={link.to}
+                  to={link.to}
+                  onClick={() => setOpen(false)}
+                  className={`rounded-md px-3 py-2.5 text-sm font-medium tracking-wider uppercase transition-colors ${
+                    location.pathname === link.to
+                      ? 'text-[var(--accent)] bg-[var(--accent)]/10'
+                      : 'text-[var(--txt-secondary)] hover:text-[var(--txt-primary)] hover:bg-[var(--surface-hover)]'
+                  }`}
+                >
+                  {link.label}
+                </Link>
+              ))}
+            </div>
+          </motion.nav>
+        )}
+      </AnimatePresence>
     </header>
   )
 }
@@ -5687,11 +6432,24 @@ export default function Header() {
 ### packages/web/src/components/layout/Layout.jsx
 
 ```text
+import { useEffect } from 'react'
+import { useTransferStore } from '../../store/useTransferStore.js'
 import Header from './Header.jsx'
 
 export default function Layout({ children }) {
+  const status = useTransferStore((s) => s.status)
+
+  useEffect(() => {
+    const active = status === 'transferring' || status === 'file-offered' || status === 'waiting-for-peer' || status === 'waiting-for-file'
+    if (active) {
+      const handler = (e) => { e.preventDefault(); e.returnValue = '' }
+      window.addEventListener('beforeunload', handler)
+      return () => window.removeEventListener('beforeunload', handler)
+    }
+  }, [status])
+
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="min-h-screen flex flex-col bg-[var(--bg-primary)]">
       <Header />
       <main className="flex-1">{children}</main>
     </div>
@@ -5712,156 +6470,295 @@ export default function ThemeToggle() {
     <button
       onClick={toggleTheme}
       aria-label="Toggle theme"
-      className="flex h-9 w-9 items-center justify-center rounded-full border border-black/10 dark:border-white/10 text-lg transition hover:bg-black/5 dark:hover:bg-white/10"
+      className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-md border border-[var(--border-light)] text-sm text-[var(--txt-secondary)] transition-colors hover:text-[var(--accent)] hover:border-[var(--accent)]/30"
     >
-      {theme === 'dark' ? '☀️' : '🌙'}
+      {theme === 'dark' ? (
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      ) : (
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+      )}
     </button>
   )
 }
 ```
 
-### packages/web/src/components/receive/IncomingFileCard.jsx
+### packages/web/src/components/PeerGraph.jsx
 
 ```text
-import { formatBytes } from '../../lib/format.js'
-import Card from '../shared/Card.jsx'
+import { useEffect, useRef } from 'react'
+import * as d3 from 'd3'
 
-export default function IncomingFileCard({ fileMeta }) {
-  if (!fileMeta) return null
-  return (
-    <Card className="w-full max-w-sm text-center">
-      <p className="text-sm text-black/50 dark:text-white/50">Incoming file</p>
-      <p className="mt-1 truncate text-lg font-medium">{fileMeta.fileName}</p>
-      <p className="mt-1 text-black/60 dark:text-white/60">{formatBytes(fileMeta.fileSize)}</p>
-    </Card>
-  )
+const COLORS = { pending: '#3a3a3a', requested: '#f59e0b', verified: '#22c55e', failed: '#ef4444' }
+
+export default function PeerGraph({ className = '', chunkStates = [], role = null, peerStats = [], seeding = false }) {
+  const svgRef = useRef(null)
+  const simRef = useRef(null)
+  const nodeRef = useRef(null)
+  const linkRef = useRef(null)
+  const infoRef = useRef(null)
+
+  const allVerified = chunkStates.length > 0 && chunkStates.every(s => s === 'verified')
+  const youLabel = role === 'sender' ? 'YOU (Seeder)' : 'YOU (Leecher)'
+
+  useEffect(() => {
+    const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const el = svgRef.current
+    const parent = el.parentElement
+    const rect = parent.getBoundingClientRect()
+    const width = Math.max(rect.width, 300)
+    const height = Math.max(rect.height, 200)
+
+    const svg = d3.select(el)
+    svg.selectAll('*').remove()
+    svg.attr('width', width).attr('height', height)
+
+    const margin = { top: 34, right: 30, bottom: 34, left: 30 }
+    const innerW = width - margin.left - margin.right
+    const innerH = height - margin.top - margin.bottom
+    const centerY = margin.top + innerH / 2
+    const leftX = margin.left + innerW * 0.12
+    const rightX = margin.left + innerW * 0.88
+
+    const total = Math.max(chunkStates.length, 10)
+    const displayCount = Math.min(total, 40)
+    const chunkNodes = Array.from({ length: displayCount }, (_, i) => {
+      const idx = total > displayCount ? Math.floor((i / displayCount) * total) : i
+      return { id: `c${i}`, idx, state: chunkStates[idx] || 'pending' }
+    })
+
+    const senderNode = { id: 'sender' }
+    const receiverNode = { id: 'receiver' }
+    const allNodes = [senderNode, receiverNode, ...chunkNodes]
+    const allLinks = chunkNodes.flatMap(d => [{ source: 'sender', target: d.id }, { source: d.id, target: 'receiver' }])
+
+    const sim = d3.forceSimulation(allNodes)
+      .force('x', d3.forceX(d => {
+        if (d.id === 'sender') return leftX
+        if (d.id === 'receiver') return rightX
+        const s = chunkStates[d.idx]
+        if (allVerified || s === 'verified') return rightX
+        if (s === 'requested') return margin.left + innerW / 2
+        return leftX
+      }).strength(d => d.id === 'sender' || d.id === 'receiver' ? 4 : 0.08))
+      .force('y', d3.forceY(d => d.id === 'sender' || d.id === 'receiver' ? centerY : centerY + (Math.random() - 0.5) * innerH * 0.7).strength(d => d.id === 'sender' || d.id === 'receiver' ? 4 : 0.05))
+      .force('charge', d3.forceManyBody().strength(d => d.id === 'sender' || d.id === 'receiver' ? -100 : -15))
+      .force('collision', d3.forceCollide(d => d.id === 'sender' || d.id === 'receiver' ? 14 : 5))
+      .alpha(0.5).alphaDecay(0.015).alphaTarget(allVerified ? 0 : 0.05).velocityDecay(0.35)
+
+    const g = svg.append('g')
+
+    const link = g.append('g').selectAll('line').data(allLinks).join('line')
+      .attr('stroke', '#2a2a2a').attr('stroke-width', 0.3).attr('stroke-opacity', 0.2)
+
+    const node = g.append('g').selectAll('circle').data(allNodes).join('circle')
+      .attr('r', d => d.id === 'sender' || d.id === 'receiver' ? 12 : 5)
+      .attr('fill', d => {
+        if (d.id === 'sender') return '#f59e0b'
+        if (d.id === 'receiver') return '#22c55e'
+        return COLORS[d.state] || '#3a3a3a'
+      })
+      .attr('stroke', d => d.id === 'sender' || d.id === 'receiver' ? 'none' : 'rgba(255,255,255,0.08)')
+      .attr('stroke-width', 1)
+
+    const label = g.append('g')
+    const txt = (x, y, text, color = '#6b7280', bold = false) => {
+      const t = label.append('text').attr('text-anchor', 'middle').attr('font-family', 'monospace').attr('font-size', '10px').attr('fill', color).attr('x', x).attr('y', y)
+      if (bold) t.attr('font-weight', 'bold')
+      t.text(text)
+    }
+
+    txt(leftX, centerY + 20, role === 'sender' ? youLabel : 'SEEDER', role === 'sender' ? '#f59e0b' : '#6b7280', role === 'sender')
+    txt(rightX, centerY + 20, role === 'receiver' ? youLabel : 'LEECHER', role === 'receiver' ? '#22c55e' : '#6b7280', role === 'receiver')
+    if (seeding) {
+      txt(rightX, centerY + 32, '+ SEEDING', '#f59e0b', false)
+    }
+
+    const verified = chunkStates.filter(s => s === 'verified').length
+    const totalChunks = chunkStates.length
+    if (totalChunks > 0) {
+      txt(14, height - 14, allVerified ? '✓ Complete' : `${verified}/${totalChunks}`)
+    }
+
+    if (prefersReduced) {
+      sim.stop()
+      allNodes.forEach(d => {
+        if (d.id === 'sender') { d.x = leftX; d.y = centerY }
+        else if (d.id === 'receiver') { d.x = rightX; d.y = centerY }
+        else { d.x = leftX + Math.random() * innerW * 0.7; d.y = centerY + (Math.random() - 0.5) * innerH * 0.5 }
+      })
+      sim.tick(50)
+    }
+
+    sim.on('tick', () => {
+      link.attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+        .attr('x2', d => d.target.x).attr('y2', d => d.target.y)
+      node.attr('cx', d => d.x).attr('cy', d => d.y)
+    })
+
+    simRef.current = sim
+    nodeRef.current = node
+    linkRef.current = link
+    infoRef.current = label
+
+    return () => { sim.stop() }
+  }, [role, chunkStates.length, allVerified, seeding])
+
+  useEffect(() => {
+    const sim = simRef.current
+    if (!sim) return
+    const nodes = sim.nodes()
+    const total = chunkStates.length
+    nodes.forEach(d => {
+      if (d.idx !== undefined && d.idx < total) d.state = chunkStates[d.idx]
+    })
+    if (nodeRef.current) {
+      nodeRef.current.transition().duration(400).attr('fill', d => {
+        if (d.id === 'sender') return '#f59e0b'
+        if (d.id === 'receiver') return '#22c55e'
+        return COLORS[d.state] || '#3a3a3a'
+      })
+    }
+    const verified = chunkStates.filter(s => s === 'verified').length
+    if (infoRef.current && total > 0) {
+      infoRef.current.selectAll('text').filter(function() {
+        return d3.select(this).text().includes('/')
+      }).text(allVerified ? '✓ Complete' : `${verified}/${total}`)
+    }
+    sim.alpha(allVerified ? 0.8 : 0.5).restart()
+  }, [chunkStates, role, allVerified])
+
+  return <svg ref={svgRef} className={className} />
 }
 ```
 
-### packages/web/src/components/receive/RoomCodeInput.jsx
+### packages/web/src/components/PeerList.jsx
 
 ```text
-import { useState } from 'react'
-import Button from '../shared/Button.jsx'
+import Badge from './shared/Badge.jsx'
 
-export default function RoomCodeInput({ onJoin, joining, defaultValue = '' }) {
-  const [code, setCode] = useState(defaultValue)
-
+export default function PeerList({ peerStats = [] }) {
   return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault()
-        if (code.trim().length === 6) onJoin(code.trim().toUpperCase())
-      }}
-      className="flex flex-col items-center gap-4"
-    >
-      <input
-        value={code}
-        onChange={(e) => setCode(e.target.value.toUpperCase().slice(0, 6))}
-        placeholder="ROOMCODE"
-        className="w-64 rounded-xl border border-black/10 bg-transparent px-4 py-3 text-center font-mono text-2xl tracking-[0.2em] outline-none focus:border-brand-500 dark:border-white/10"
-      />
-      <Button type="submit" disabled={code.length !== 6 || joining}>
-        {joining ? 'Joining…' : 'Join'}
-      </Button>
-    </form>
-  )
-}
-```
-
-### packages/web/src/components/send/ConnectionStatus.jsx
-
-```text
-const LABELS = {
-  idle: 'Idle',
-  'waiting-for-peer': 'Waiting for receiver…',
-  'file-offered': 'Sending file info…',
-  transferring: 'Transferring…',
-  complete: 'Complete',
-  paused: 'Paused',
-  error: 'Error',
-}
-
-export default function ConnectionStatus({ status }) {
-  const dotColor =
-    status === 'transferring' ? 'bg-green-500 animate-pulse'
-    : status === 'error' ? 'bg-red-500'
-    : status === 'complete' ? 'bg-green-500'
-    : 'bg-amber-500'
-
-  return (
-    <div className="inline-flex items-center gap-2 rounded-full bg-black/5 px-4 py-2 text-sm dark:bg-white/10">
-      <span className={`h-2 w-2 rounded-full ${dotColor}`} />
-      {LABELS[status] || status}
+    <div>
+      <div className="mb-3 flex items-center justify-between">
+        <span className="text-sm font-medium uppercase tracking-widest text-[var(--txt-secondary)]">
+          Active Peers
+        </span>
+        <span className="text-sm text-[var(--txt-secondary)]">{peerStats.length}</span>
+      </div>
+      <div className="max-h-96 space-y-1.5 overflow-y-auto pr-1">
+        {peerStats.length === 0 ? (
+          <p className="py-8 text-center text-sm text-[var(--txt-secondary)]">No peers connected</p>
+        ) : (
+          peerStats.map((peer) => {
+            const connected = !peer.failed && (peer.consecutiveFailures || 0) < 3
+            const isSeeder = (peer.chunksServed || 0) > 0
+            return (
+              <div
+                key={peer.id}
+                className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm"
+              >
+                <span
+                  className={`h-2 w-2 shrink-0 rounded-full ${connected ? 'bg-[var(--success)]' : 'bg-[var(--error)]'}`}
+                  title={connected ? 'Connected' : 'Disconnected'}
+                />
+                <span className="font-mono text-[var(--txt-primary)] break-all">
+                  {peer.id}
+                </span>
+                <Badge color={isSeeder ? 'amber' : 'gray'} dot={false}>
+                  {isSeeder ? 'SEED' : 'LEECH'}
+                </Badge>
+                <span className="text-xs text-[var(--txt-secondary)] whitespace-nowrap">
+                  {peer.chunksServed || 0} chunks
+                </span>
+                {peer.failed && (
+                  <Badge color="red" dot={false}>FAILED</Badge>
+                )}
+              </div>
+            )
+          })
+        )}
+      </div>
     </div>
   )
 }
 ```
 
-### packages/web/src/components/send/DropZone.jsx
-
-```text
-import { useCallback, useState } from 'react'
-import { useDropzone } from 'react-dropzone'
-
-export default function DropZone({ onFileReady }) {
-  const [indexing, setIndexing] = useState(false)
-
-  const onDrop = useCallback(async (accepted) => {
-    const file = accepted[0]
-    if (!file) return
-    setIndexing(true)
-    const { indexFile } = await import('../../lib/fileChunker.js')
-    const fileIndex = await indexFile(file)
-    setIndexing(false)
-    onFileReady(file, fileIndex)
-  }, [onFileReady])
-
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({ onDrop, multiple: false })
-
-  return (
-    <div
-      {...getRootProps()}
-      className={`flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed p-16 text-center transition ${
-        isDragActive
-          ? 'border-brand-500 bg-brand-50 dark:bg-brand-900/20'
-          : 'border-black/15 dark:border-white/15'
-      }`}
-    >
-      <input {...getInputProps()} />
-      {indexing ? (
-        <p className="text-black/60 dark:text-white/60">Indexing file…</p>
-      ) : isDragActive ? (
-        <p className="font-medium text-brand-500">Drop it here</p>
-      ) : (
-        <>
-          <p className="font-medium">Drag a file here, or click to browse</p>
-          <p className="mt-1 text-sm text-black/50 dark:text-white/50">Any file, any size</p>
-        </>
-      )}
-    </div>
-  )
-}
-```
-
-### packages/web/src/components/send/RoomCodeDisplay.jsx
+### packages/web/src/components/RoomCode.jsx
 
 ```text
 import { QRCodeSVG } from 'qrcode.react'
+import MonoText from './shared/MonoText.jsx'
+import Badge from './shared/Badge.jsx'
 
-export default function RoomCodeDisplay({ roomCode }) {
+export default function RoomCode({ roomCode }) {
   const shareUrl = `${window.location.origin}/receive?code=${roomCode}`
 
   return (
     <div className="flex flex-col items-center gap-4">
-      <div className="rounded-xl bg-white p-3">
-        <QRCodeSVG value={shareUrl} size={140} />
+      <Badge color="gray" dot={false}>ROOM CODE</Badge>
+      <div className="rounded-xl bg-[var(--bg-secondary)] p-4">
+        <QRCodeSVG value={shareUrl} size={180} bgColor="transparent" fgColor="#ffffff" />
       </div>
-      <div className="text-center">
-        <p className="text-sm text-black/50 dark:text-white/50">Room code</p>
-        <p className="font-mono text-4xl font-semibold tracking-[0.2em]">{roomCode}</p>
+      <MonoText text={roomCode} copyable className="text-2xl tracking-[0.2em]" />
+    </div>
+  )
+}
+```
+
+### packages/web/src/components/shared/Accordion.jsx
+
+```text
+import { useState } from 'react'
+
+export default function Accordion({ title, defaultOpen = false, children }) {
+  const [open, setOpen] = useState(defaultOpen)
+  return (
+    <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] overflow-hidden">
+      <button
+        onClick={() => setOpen(!open)}
+        className="flex w-full items-center justify-between px-4 py-3 text-left text-sm font-medium text-[var(--txt-primary)] transition-colors hover:bg-[var(--surface-hover)] cursor-pointer"
+      >
+        {title}
+        <svg
+          className={`h-4 w-4 shrink-0 text-[var(--txt-secondary)] transition-transform duration-200 ${open ? 'rotate-180' : ''}`}
+          fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+      <div className={`overflow-hidden transition-all duration-200 ${open ? 'max-h-96 opacity-100' : 'max-h-0 opacity-0'}`}>
+        <div className="border-t border-[var(--border)] px-4 py-3 text-sm leading-relaxed text-[var(--txt-secondary)]">
+          {children}
+        </div>
       </div>
     </div>
+  )
+}
+```
+
+### packages/web/src/components/shared/Badge.jsx
+
+```text
+const COLORS = {
+  green: 'bg-[var(--success)]/10 text-[var(--success)] border-[var(--success)]/20',
+  amber: 'bg-[var(--accent)]/10 text-[var(--accent)] border-[var(--accent)]/20',
+  red: 'bg-[var(--error)]/10 text-[var(--error)] border-[var(--error)]/20',
+  gray: 'bg-[var(--surface-hover)] text-[var(--txt-secondary)] border-[var(--border-light)]',
+}
+
+const DOTS = {
+  green: 'bg-[var(--success)]',
+  amber: 'bg-[var(--accent)]',
+  red: 'bg-[var(--error)]',
+  gray: 'bg-[var(--txt-secondary)]',
+}
+
+export default function Badge({ color = 'gray', dot = true, children }) {
+  return (
+    <span className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium tracking-wide uppercase ${COLORS[color]}`}>
+      {dot && <span className={`h-1.5 w-1.5 rounded-full ${DOTS[color]}`} />}
+      {children}
+    </span>
   )
 }
 ```
@@ -5870,16 +6767,16 @@ export default function RoomCodeDisplay({ roomCode }) {
 
 ```text
 const VARIANTS = {
-  primary: 'bg-brand-500 text-white hover:bg-brand-600 shadow-sm shadow-brand-500/20',
-  secondary:
-    'bg-black/5 text-black hover:bg-black/10 dark:bg-white/10 dark:text-white dark:hover:bg-white/15',
-  ghost: 'text-black/70 hover:bg-black/5 dark:text-white/70 dark:hover:bg-white/10',
+  primary: 'bg-[var(--accent)] text-black hover:bg-[var(--accent)] font-medium',
+  secondary: 'border border-[var(--border-light)] text-[var(--txt-primary)] hover:bg-[var(--surface-hover)] font-medium',
+  ghost: 'text-[var(--txt-secondary)] hover:text-[var(--txt-primary)] hover:bg-[var(--surface-hover)]',
+  danger: 'bg-[var(--error)] text-white hover:bg-[var(--error)] font-medium',
 }
 
 export default function Button({ variant = 'primary', className = '', children, ...props }) {
   return (
     <button
-      className={`inline-flex items-center justify-center gap-2 rounded-full px-6 py-3 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-40 ${VARIANTS[variant]} ${className}`}
+      className={`inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg px-5 py-2.5 text-sm transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-40 ${VARIANTS[variant]} ${className}`}
       {...props}
     >
       {children}
@@ -5891,13 +6788,56 @@ export default function Button({ variant = 'primary', className = '', children, 
 ### packages/web/src/components/shared/Card.jsx
 
 ```text
-export default function Card({ className = '', children }) {
+export default function Card({ className = '', children, ...props }) {
   return (
     <div
-      className={`rounded-2xl border border-black/5 bg-white p-6 shadow-sm dark:border-white/5 dark:bg-white/[0.03] ${className}`}
+      className={`rounded-lg border border-[var(--border)] bg-[var(--surface)] p-5 ${className}`}
+      {...props}
     >
       {children}
     </div>
+  )
+}
+```
+
+### packages/web/src/components/shared/MonoText.jsx
+
+```text
+import { useState } from 'react'
+
+export default function MonoText({ text, copyable = false, className = '' }) {
+  const [copied, setCopied] = useState(false)
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch { /* clipboard denied */ }
+  }
+
+  return (
+    <span className={`inline-flex items-center gap-2 font-mono tracking-wide ${className}`}>
+      <span className="text-[var(--txt-dim)]">{text}</span>
+      {copyable && (
+        <button
+          onClick={handleCopy}
+          className="cursor-pointer rounded p-1 text-[var(--txt-secondary)] transition-colors hover:text-[var(--accent)] hover:bg-[var(--surface-hover)]"
+          title="Copy"
+        >
+          {copied ? (
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+          ) : (
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+              <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+            </svg>
+          )}
+        </button>
+      )}
+    </span>
   )
 }
 ```
@@ -5907,7 +6847,7 @@ export default function Card({ className = '', children }) {
 ```text
 export default function ProgressBar({ percent }) {
   return (
-    <div className="h-2 w-full overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
+    <div className="h-2 w-full overflow-hidden rounded-full bg-[var(--surface-hover)]">
       <div
         className="h-full rounded-full bg-brand-500 transition-all duration-300"
         style={{ width: `${Math.min(100, percent)}%` }}
@@ -5917,191 +6857,540 @@ export default function ProgressBar({ percent }) {
 }
 ```
 
-### packages/web/src/hooks/useReceiveTransfer.js
+### packages/web/src/components/SpeedChart.jsx
 
 ```text
-import { useCallback, useRef } from 'react'
-import { WebRTCPeer } from '../webrtc/webrtcPeer.js'
-import { MSG } from '../webrtc/protocol.js'
-import { verifyChunk } from '../lib/browserCrypto.js'
-import { useTransferStore } from '../store/useTransferStore.js'
+import { useMemo } from 'react'
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 
-const PIPELINE_DEPTH = 8
+const AMBER_SHADES = ['#f59e0b', '#d97706', '#b45309', '#a16207', '#fbbf24']
 
-export function useReceiveTransfer() {
-  const chunksRef = useRef([])
-  const metaRef = useRef(null)
-  const nextRequestRef = useRef(0)
-  const inFlightRef = useRef(0)
-  const startTimeRef = useRef(0)
-  const bytesReceivedRef = useRef(0)
+function CustomTooltip({ active, payload, label }) {
+  if (!active || !payload?.length) return null
+  return (
+    <div className="rounded-md border border-[var(--border-light)] bg-[var(--surface)] px-3 py-2 text-xs text-[var(--txt-primary)] shadow-lg">
+      <p className="mb-1 text-[var(--txt-secondary)]">{label}</p>
+      {[...payload].reverse().map((entry, i) => (
+        <p key={i} style={{ color: entry.color }}>
+          {entry.name}: {Number(entry.value) < 0.01 ? '<0.01' : Number(entry.value).toFixed(2)} MB/s
+        </p>
+      ))}
+    </div>
+  )
+}
 
-  const fillPipeline = useCallback((peer) => {
-    const meta = metaRef.current
-    while (inFlightRef.current < PIPELINE_DEPTH && nextRequestRef.current < meta.totalChunks) {
-      inFlightRef.current++
-      peer.sendJSON({ type: MSG.CHUNK_REQUEST, index: nextRequestRef.current })
-      nextRequestRef.current++
+export default function SpeedChart({ data = [], peerCount = 1 }) {
+  const total = useMemo(() => {
+    if (data.length === 0) return 0
+    const last = data[data.length - 1]
+    if (last.peers) {
+      return last.peers.reduce((s, p) => s + (p.mbps || 0), 0)
     }
-  }, [])
+    return last.mbps || 0
+  }, [data])
 
-  const requestOne = useCallback((peer, index) => {
-    inFlightRef.current++
-    peer.sendJSON({ type: MSG.CHUNK_REQUEST, index })
-  }, [])
-
-  const handleChunk = useCallback(async (peer, msg) => {
-    const meta = metaRef.current
-    inFlightRef.current--
-
-    const view = msg.chunkData
-    const buf = view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength)
-    const valid = await verifyChunk(buf, msg.proof, meta.merkleRoot)
-
-    if (!valid) {
-      requestOne(peer, msg.chunkIndex)
-      return
-    }
-
-    chunksRef.current[msg.chunkIndex] = view
-    bytesReceivedRef.current += view.byteLength
-
-    const verifiedCount = chunksRef.current.filter(Boolean).length
-    useTransferStore.getState().updateProgress({
-      verified: verifiedCount,
-      total: meta.totalChunks,
-      percent: (verifiedCount / meta.totalChunks) * 100,
-    })
-
-    const elapsedSec = (Date.now() - startTimeRef.current) / 1000
-    if (elapsedSec > 0.2) {
-      useTransferStore.getState().recordSpeedSample(bytesReceivedRef.current / 1024 / 1024 / elapsedSec)
-    }
-
-    if (verifiedCount === meta.totalChunks) {
-      useTransferStore.getState().setComplete()
-      return
-    }
-
-    fillPipeline(peer)
-  }, [fillPipeline, requestOne])
-
-  const connectToPeer = useCallback(async (client, remotePeerId) => {
-    const peer = new WebRTCPeer(client, remotePeerId, { initiator: false })
-
-    peer.addEventListener('jsonMessage', (e) => {
-      if (e.detail.type === MSG.FILE_OFFER) {
-        metaRef.current = e.detail
-        chunksRef.current = new Array(e.detail.totalChunks)
-        useTransferStore.getState().setIncomingFile(e.detail)
+  const chartData = useMemo(() => {
+    return data.map((d, i) => {
+      const label =
+        i % 10 === 0 || i === data.length - 1
+          ? new Date(d.t).toLocaleTimeString('en-US', { minute: '2-digit', second: '2-digit' })
+          : ''
+      const entry = { t: label }
+      if (d.peers) {
+        d.peers.forEach((p, j) => {
+          entry[`peer_${j}`] = p.mbps || 0
+        })
+      } else {
+        entry.total = d.mbps || 0
       }
+      return entry
     })
-    peer.addEventListener('chunkMessage', (e) => handleChunk(peer, e.detail))
-    peer.addEventListener('close', () => {
-      if (useTransferStore.getState().status !== 'complete') {
-        useTransferStore.getState().setError('Connection closed')
-      }
-    })
+  }, [data])
 
-    await peer.connect()
-    return peer
-  }, [handleChunk])
+  const bars = useMemo(() => {
+    if (data.length === 0) return []
+    if (data[0].peers) {
+      return data[0].peers.map((_, j) => ({
+        dataKey: `peer_${j}`,
+        fill: AMBER_SHADES[j % AMBER_SHADES.length],
+        stackId: 'speed',
+      }))
+    }
+    return [{ dataKey: 'total', fill: '#f59e0b', stackId: 'speed' }]
+  }, [data])
 
-  const startDownload = useCallback((peer) => {
-    startTimeRef.current = Date.now()
-    bytesReceivedRef.current = 0
-    nextRequestRef.current = 0
-    useTransferStore.getState().setTransferring()
-    fillPipeline(peer)
-  }, [fillPipeline])
+  if (data.length === 0) {
+    return (
+      <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3">
+        <div className="mb-2 flex items-center justify-between">
+          <span className="text-sm font-medium uppercase tracking-widest text-[var(--txt-secondary)]">
+            Throughput
+          </span>
+          <span className="text-xl font-bold text-[var(--accent)]">
+            0.0{' '}
+            <span className="text-sm font-normal text-[var(--txt-secondary)]">MB/s</span>
+          </span>
+        </div>
+        <div className="flex h-48 items-center justify-center">
+          <div className="flex flex-col items-center gap-2">
+            <svg className="h-8 w-8 text-[var(--txt-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3 4.5h18M3 9h18M3 13.5h18M3 18h18" />
+            </svg>
+            <p className="text-sm text-[var(--txt-secondary)]">Waiting for data...</p>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
-  const getAssembledBlob = useCallback(() => {
-    return new Blob(chunksRef.current, { type: 'application/octet-stream' })
-  }, [])
-
-  return { connectToPeer, startDownload, getAssembledBlob }
+  return (
+    <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-sm font-medium uppercase tracking-widest text-[var(--txt-secondary)]">
+          Throughput
+        </span>
+        <span className="text-xl font-bold text-[var(--accent)]">
+          {total < 0.01 ? '<0.01' : total.toFixed(2)}{' '}
+          <span className="text-sm font-normal text-[var(--txt-secondary)]">MB/s</span>
+        </span>
+      </div>
+      <div className="h-48">
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={chartData} margin={{ top: 4, right: 4, left: 0, bottom: 0 }} barCategoryGap={1}>
+            <XAxis
+              dataKey="t"
+              tick={{ fill: '#6b7280', fontSize: 10 }}
+              axisLine={{ stroke: '#2a2a2a' }}
+              tickLine={false}
+              interval={0}
+            />
+            <YAxis
+              tick={{ fill: '#6b7280', fontSize: 10 }}
+              axisLine={false}
+              tickLine={false}
+              width={32}
+            />
+            <Tooltip content={<CustomTooltip />} cursor={{ fill: '#1a1a1a' }} />
+            {bars.map((bar) => (
+              <Bar
+                key={bar.dataKey}
+                dataKey={bar.dataKey}
+                fill={bar.fill}
+                stackId={bar.stackId}
+                radius={[1, 1, 0, 0]}
+              />
+            ))}
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  )
 }
 ```
 
-### packages/web/src/hooks/useSendTransfer.js
+### packages/web/src/components/StatusLog.jsx
 
 ```text
-import { useCallback, useRef } from 'react'
-import { WebRTCPeer } from '../webrtc/webrtcPeer.js'
-import { MSG } from '../webrtc/protocol.js'
-import { readChunk } from '../lib/fileChunker.js'
-import { getMerkleProof } from '../lib/browserCrypto.js'
+import { useEffect, useRef } from 'react'
+
+export default function StatusLog({ lines = [], blinking = false }) {
+  const bottomRef = useRef(null)
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [lines])
+
+  return (
+    <div className="max-h-48 overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-3 font-mono text-sm text-[var(--txt-dim)]">
+      {lines.map((line, i) => (
+        <div key={i} className="leading-5">
+          <span className="text-[var(--accent)]">[SYS]</span> {line}
+        </div>
+      ))}
+      {blinking && (
+        <span className="inline-block animate-blink text-[var(--accent)]">▌</span>
+      )}
+      <div ref={bottomRef} />
+    </div>
+  )
+}
+```
+
+### packages/web/src/hooks/useSignaling.js
+
+```text
+import { useCallback } from 'react'
 import { useSignalingStore } from '../store/useSignalingStore.js'
+
+export function useSignaling() {
+  const status = useSignalingStore((s) => s.status)
+  const roomCode = useSignalingStore((s) => s.roomCode)
+  const peerId = useSignalingStore((s) => s.peerId)
+  const peers = useSignalingStore((s) => s.peers)
+  const error = useSignalingStore((s) => s.error)
+  const client = useSignalingStore((s) => s.client)
+
+  const connect = useSignalingStore((s) => s.connect)
+  const createRoom = useSignalingStore((s) => s.createRoom)
+  const joinRoom = useSignalingStore((s) => s.joinRoom)
+  const disconnect = useSignalingStore((s) => s.disconnect)
+  const reset = useSignalingStore((s) => s.reset)
+
+  const createAndWait = useCallback(async (password) => {
+    const result = await createRoom(password)
+    return result
+  }, [createRoom])
+
+  return {
+    client, status, roomCode, peerId, peers, error,
+    connect, createRoom: createAndWait, joinRoom, disconnect, reset,
+  }
+}
+```
+
+### packages/web/src/hooks/useTransfer.js
+
+```text
+import { useCallback } from 'react'
+import { SwarmManager } from '../lib/swarmManager.js'
+import { transferManager as M } from '../lib/transferManager.js'
+import { WebRTCTransport } from '../lib/webrtc.js'
+import { MSG } from '../webrtc/protocol.js'
+import { readChunk, getFileForChunk } from '../lib/fileChunker.js'
+import { sha256Hex, getMerkleProof } from '../lib/browserCrypto.js'
 import { useTransferStore } from '../store/useTransferStore.js'
 
-export function useSendTransfer() {
-  const fileRef = useRef(null)
-  const indexRef = useRef(null)
-  const servedRef = useRef(new Set())
-
-  const startSending = useCallback(async (file, fileIndex) => {
-    fileRef.current = file
-    indexRef.current = fileIndex
-    servedRef.current = new Set()
-    useTransferStore.getState().startAsSender({
+export function useTransfer() {
+  const startSending = useCallback(async (file, fileIndex, fileRefs) => {
+    M.fileRef = file
+    M.indexRef = fileIndex
+    M.fileRefs = fileRefs || null
+    M.downloadGuard = false
+    M.servedRef = new Set()
+    M.streamHandle = null
+    const meta = {
       fileName: fileIndex.fileName,
       fileSize: fileIndex.fileSize,
       totalChunks: fileIndex.totalChunks,
       chunkSize: fileIndex.chunkSize,
       merkleRoot: fileIndex.merkleRoot,
-    })
+      files: fileIndex.files,
+    }
+    useTransferStore.getState().startAsSender(meta)
+    if (meta.totalChunks === 0) {
+      useTransferStore.getState().setComplete()
+    }
+    return meta
   }, [])
 
-  const handleChunkRequest = useCallback(async (peer, index) => {
-    const file = fileRef.current
-    const idx = indexRef.current
-    const buf = await readChunk(file, index, idx.chunkSize)
-    const proof = getMerkleProof(idx.tree, index)
-    peer.sendChunk(index, idx.hashes[index], proof, new Uint8Array(buf))
+  const startReceiving = useCallback(async (meta) => {
+    M.downloadGuard = false
+    M.chunks = new Array(meta.totalChunks)
+    M.streamHandle = null
+    M.receivedMeta = { files: meta.files, chunkSize: meta.chunkSize, totalChunks: meta.totalChunks, merkleRoot: meta.merkleRoot }
+    useTransferStore.getState().setIncomingFile(meta)
 
-    servedRef.current.add(index)
-    const total = idx.totalChunks
-    useTransferStore.getState().updateProgress({
-      verified: servedRef.current.size,
-      total,
-      percent: (servedRef.current.size / total) * 100,
+    const swarm = new SwarmManager(meta.totalChunks, meta.merkleRoot, meta.chunkSize)
+    M.swarm = swarm
+
+    let speedBytes = 0
+    let speedTime = Date.now()
+    const chunkSize = meta.chunkSize
+
+    swarm.addEventListener('chunkVerified', async (e) => {
+      const { chunkIndex, chunkData, verified, total } = e.detail
+      M.chunks[chunkIndex] = chunkData
+
+      if (M.streamHandle) {
+        try {
+          await M.streamHandle.write(chunkData)
+        } catch {}
+      }
+
+      useTransferStore.getState().updateChunkState(chunkIndex, 'verified')
+      useTransferStore.getState().updateProgress({ verified, total, percent: (verified / total) * 100 })
+      useTransferStore.getState().updatePeerStats(swarm.getPeerStats())
+
+      speedBytes += chunkSize || chunkData.byteLength || 0
+      const now = Date.now()
+      const elapsed = (now - speedTime) / 1000
+      if (elapsed >= 0.5) {
+        const mbps = (speedBytes / elapsed) / (1024 * 1024)
+        useTransferStore.getState().recordSpeedSample(mbps)
+        speedBytes = 0
+        speedTime = now
+      }
     })
-    if (servedRef.current.size === total) {
+
+    swarm.addEventListener('chunkFailed', (e) => {
+      useTransferStore.getState().updateChunkState(e.detail.chunkIndex, 'pending')
+    })
+
+    swarm.addEventListener('complete', async () => {
+      if (M.streamHandle) {
+        try { await M.streamHandle.close() } catch {}
+        M.streamHandle = null
+      }
       useTransferStore.getState().setComplete()
+    })
+
+    swarm.addEventListener('peerFailed', () => {
+      useTransferStore.getState().updatePeerStats(swarm.getPeerStats())
+    })
+
+    return swarm
+  }, [])
+
+  const addSenderPeer = useCallback(async (transport, fileIndex) => {
+    if (!M.servedRef) M.servedRef = new Set()
+    const total = fileIndex.totalChunks
+    transport.onJSON(async (msg) => {
+      if (msg.type !== MSG.CHUNK_REQUEST) return
+      if (!useTransferStore.getState().seeding) return
+
+      const file = M.fileRef
+      const idx = M.indexRef
+      const refs = M.fileRefs
+
+      if (file && idx && refs) {
+        const entry = getFileForChunk(idx.files, msg.index)
+        if (!entry) return
+        const targetFile = refs[entry.fileEntry.path]
+        if (!targetFile) return
+        const buf = await (async () => {
+          const b = await readChunk(targetFile, entry.localIndex, idx.chunkSize)
+          const proof = getMerkleProof(idx.tree, msg.index)
+          transport.sendChunk(msg.index, idx.hashes[msg.index], proof, new Uint8Array(b))
+          return b
+        })()
+      } else if (M.chunks && M.chunks[msg.index]) {
+        const data = M.chunks[msg.index]
+        const arr = data instanceof Uint8Array ? data : new Uint8Array(data)
+        const hash = await sha256Hex(arr)
+        transport.sendChunk(msg.index, hash, null, arr)
+      } else {
+        return
+      }
+      M.servedRef.add(msg.index)
+      useTransferStore.getState().updateProgress({
+        verified: M.servedRef.size,
+        total,
+        percent: (M.servedRef.size / total) * 100,
+      })
+      if (M.servedRef.size >= total) {
+        useTransferStore.getState().setComplete()
+      }
+    })
+    transport.sendJSON({
+      type: MSG.FILE_OFFER,
+      fileName: fileIndex.fileName,
+      fileSize: fileIndex.fileSize,
+      totalChunks: fileIndex.totalChunks,
+      chunkSize: fileIndex.chunkSize,
+      merkleRoot: fileIndex.merkleRoot,
+      files: fileIndex.files,
+    })
+    transport.pc.addEventListener('connectionstatechange', () => {
+      if (transport.pc.connectionState === 'disconnected' || transport.pc.connectionState === 'failed') {
+        M.transports.delete(transport.remotePeerId)
+      }
+    })
+    M.transports.set(transport.remotePeerId, transport)
+    useTransferStore.getState().setTransferring()
+  }, [])
+
+  const addReceiverPeer = useCallback(async (transport, swarm) => {
+    const requestFn = (index) => {
+      transport.sendJSON({ type: MSG.CHUNK_REQUEST, index })
+      return Promise.resolve()
+    }
+
+    transport.onChunk(async (msg) => {
+      if (!M.swarm || M.swarm.isComplete()) return
+      await M.swarm.onChunkReceived(
+        transport.remotePeerId,
+        msg.chunkIndex,
+        msg.chunkData,
+        msg.chunkHash,
+        msg.proof
+      )
+    })
+
+    swarm.addPeer(transport.remotePeerId, requestFn)
+    transport.pc.addEventListener('connectionstatechange', () => {
+      if (transport.pc.connectionState === 'disconnected' || transport.pc.connectionState === 'failed') {
+        M.transports.delete(transport.remotePeerId)
+        swarm.removePeer(transport.remotePeerId)
+      }
+    })
+    M.transports.set(transport.remotePeerId, transport)
+    useTransferStore.getState().setTransferring()
+  }, [])
+
+  const blobForEntry = useCallback((entry) => {
+    const ordered = []
+    for (let i = 0; i < entry.chunkCount; i++) {
+      ordered.push(M.chunks[entry.startChunk + i])
+    }
+    return new Blob(ordered, { type: 'application/octet-stream' })
+  }, [])
+
+  const triggerDownload = useCallback(async () => {
+    if (M.downloadGuard) return
+    M.downloadGuard = true
+    const meta = useTransferStore.getState().fileMeta
+    const saveMode = useTransferStore.getState().saveMode
+    if (!meta || M.chunks.length === 0) return
+
+    const files = meta.files || [{ path: meta.fileName, name: meta.fileName, size: meta.fileSize, startChunk: 0, chunkCount: meta.totalChunks }]
+    const isMulti = files.length > 1
+
+    if (isMulti && saveMode === 'auto') {
+      let wroteAny = false
+      try {
+        const dirHandle = await window.showDirectoryPicker?.({ mode: 'readwrite' })
+        if (dirHandle) {
+          for (const entry of files) {
+            const parts = entry.path.replace(/\\/g, '/').split('/')
+            let handle = dirHandle
+            for (let p = 0; p < parts.length - 1; p++) {
+              handle = await handle.getDirectoryHandle(parts[p], { create: true })
+            }
+            const fileHandle = await handle.getFileHandle(parts[parts.length - 1], { create: true })
+            const writable = await fileHandle.createWritable()
+            const blob = blobForEntry(entry)
+            await writable.write(blob)
+            await writable.close()
+            wroteAny = true
+          }
+          return
+        }
+      } catch {}
+      if (wroteAny) return
+    }
+
+    if (isMulti || saveMode === 'files') {
+      for (const entry of files) {
+        const blob = blobForEntry(entry)
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = entry.name
+        a.click()
+        URL.revokeObjectURL(url)
+        await new Promise(r => setTimeout(r, 200))
+      }
+      return
+    }
+
+    try {
+      const handle = await window.showSaveFilePicker?.({
+        suggestedName: meta.fileName,
+        types: [{ accept: { 'application/octet-stream': [] } }],
+      })
+      if (handle) {
+        const writable = await handle.createWritable()
+        await writable.write(blobForEntry(files[0]))
+        await writable.close()
+        return
+      }
+    } catch {}
+
+    const blob = blobForEntry(files[0])
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = meta.fileName
+    a.click()
+    URL.revokeObjectURL(url)
+  }, [blobForEntry])
+
+  const disconnectAll = useCallback(() => {
+    if (M.swarm) {
+      M.swarm.abort()
+      M.swarm = null
+    }
+    for (const [id, t] of M.transports) {
+      t.close()
+    }
+    if (M.streamHandle) {
+      try { M.streamHandle.close() } catch {}
+      M.streamHandle = null
+    }
+    M.reset()
+    useTransferStore.getState().reset()
+  }, [])
+
+  const stopSeeding = useCallback(() => {
+    useTransferStore.getState().setSeeding(false)
+  }, [])
+
+  const resumeSeeding = useCallback(() => {
+    useTransferStore.getState().setSeeding(true)
+  }, [])
+
+  const resetDownload = useCallback(() => {
+    M.downloadGuard = false
+  }, [])
+
+  return {
+    startSending,
+    startReceiving,
+    addSenderPeer,
+    addReceiverPeer,
+    triggerDownload,
+    resetDownload,
+    disconnectAll,
+    stopSeeding,
+    resumeSeeding,
+  }
+}
+```
+
+### packages/web/src/hooks/useWebRTC.js
+
+```text
+import { useRef, useCallback } from 'react'
+import { WebRTCTransport } from '../lib/webrtc.js'
+
+export function useWebRTC(signalingClient) {
+  const transports = useRef(new Map())
+
+  const createTransport = useCallback(async (remotePeerId, initiator) => {
+    const existing = transports.current.get(remotePeerId)
+    if (existing) return existing
+
+    const t = new WebRTCTransport(signalingClient, remotePeerId, { initiator })
+    try {
+      await t.connect()
+      transports.current.set(remotePeerId, t)
+      return t
+    } catch (err) {
+      t.close()
+      throw err
+    }
+  }, [signalingClient])
+
+  const getTransport = useCallback((peerId) => {
+    return transports.current.get(peerId)
+  }, [])
+
+  const destroyTransport = useCallback((peerId) => {
+    const t = transports.current.get(peerId)
+    if (t) {
+      t.close()
+      transports.current.delete(peerId)
     }
   }, [])
 
-  const connectToPeer = useCallback(async (remotePeerId) => {
-    const client = useSignalingStore.getState().client
-    const peer = new WebRTCPeer(client, remotePeerId, { initiator: true })
+  const destroyAll = useCallback(() => {
+    for (const [id, t] of transports.current) {
+      t.close()
+    }
+    transports.current.clear()
+  }, [])
 
-    peer.addEventListener('jsonMessage', (e) => {
-      if (e.detail.type === MSG.CHUNK_REQUEST) {
-        handleChunkRequest(peer, e.detail.index)
-      }
-    })
-    peer.addEventListener('close', () => {
-      if (useTransferStore.getState().status !== 'complete') {
-        useTransferStore.getState().setError('Connection closed')
-      }
-    })
-
-    await peer.connect()
-
-    const idx = indexRef.current
-    peer.sendJSON({
-      type: MSG.FILE_OFFER,
-      fileName: idx.fileName,
-      fileSize: idx.fileSize,
-      totalChunks: idx.totalChunks,
-      chunkSize: idx.chunkSize,
-      merkleRoot: idx.merkleRoot,
-    })
-    useTransferStore.getState().setTransferring()
-    return peer
-  }, [handleChunkRequest])
-
-  return { startSending, connectToPeer }
+  return { createTransport, getTransport, destroyTransport, destroyAll }
 }
 ```
 
@@ -6116,44 +7405,117 @@ export function useSendTransfer() {
   --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;
 
-  --color-brand-50: #f0f4ff;
-  --color-brand-100: #dfe7ff;
-  --color-brand-200: #c2d0ff;
-  --color-brand-300: #9caeff;
-  --color-brand-400: #7885ff;
-  --color-brand-500: #6060f5;
-  --color-brand-600: #4f42dd;
-  --color-brand-700: #4234b3;
-  --color-brand-800: #362d8f;
-  --color-brand-900: #2e2872;
+  --color-brand-50: #fffbeb;
+  --color-brand-100: #fef3c7;
+  --color-brand-200: #fde68a;
+  --color-brand-300: #fcd34d;
+  --color-brand-400: #fbbf24;
+  --color-brand-500: #f59e0b;
+  --color-brand-600: #d97706;
+  --color-brand-700: #b45309;
+  --color-brand-800: #92400e;
+  --color-brand-900: #78350f;
 
-  --color-surface-light: #ffffff;
-  --color-surface-dark: #0e0e14;
+  --color-amber-400: #fbbf24;
+  --color-amber-500: #f59e0b;
+  --color-amber-600: #d97706;
+
+  --color-success: #22c55e;
+  --color-error: #ef4444;
+  --color-pending: #f59e0b;
+}
+
+:root {
+  --txt-primary: #e5e5e5;
+  --txt-dim: #a3a3a3;
+  --txt-secondary: #6b7280;
+  --txt-tertiary: #9ca3af;
+  --txt-muted: #4b5563;
+  --bg-primary: #0a0a0a;
+  --bg-secondary: #0d0d0d;
+  --surface: #111111;
+  --surface-hover: #1a1a1a;
+  --border: #1f1f1f;
+  --border-light: #2a2a2a;
+  --border-hover: #3a3a3a;
+  --accent: #f59e0b;
+  --accent-dim: #fbbf24;
+  --success: #22c55e;
+  --error: #ef4444;
+  --dot-online: #22c55e;
+  --dot-offline: #ef4444;
+  --badge-bg: rgba(245,158,11,0.1);
+  --badge-border: rgba(245,158,11,0.2);
+}
+
+:root:not(.dark) {
+  --txt-primary: #171717;
+  --txt-dim: #4b5563;
+  --txt-secondary: #6b7280;
+  --txt-tertiary: #6b7280;
+  --txt-muted: #9ca3af;
+  --bg-primary: #fafafa;
+  --bg-secondary: #f5f5f5;
+  --surface: #ffffff;
+  --surface-hover: #f3f4f6;
+  --border: #e5e5e5;
+  --border-light: #d1d5db;
+  --border-hover: #9ca3af;
+  --accent: #d97706;
+  --accent-dim: #b45309;
+  --success: #16a34a;
+  --error: #dc2626;
+  --dot-online: #16a34a;
+  --dot-offline: #dc2626;
+  --badge-bg: rgba(217,119,6,0.1);
+  --badge-border: rgba(217,119,6,0.25);
 }
 
 html {
-  color-scheme: light;
+  color-scheme: dark;
+  background-color: var(--bg-primary);
 }
 
-html.dark {
-  color-scheme: dark;
+html:not(.dark) {
+  color-scheme: light;
 }
 
 body {
   margin: 0;
   font-family: var(--font-sans);
-  background: var(--color-surface-light);
-  color: #16161f;
-  transition: background-color 0.2s ease, color 0.2s ease;
-}
-
-html.dark body {
-  background: var(--color-surface-dark);
-  color: #e8e8f0;
+  background-color: var(--bg-primary);
+  color: var(--txt-primary);
+  -webkit-font-smoothing: antialiased;
 }
 
 * {
   box-sizing: border-box;
+}
+
+::selection {
+  background-color: rgba(245, 158, 11, 0.3);
+  color: #fff;
+}
+
+::-webkit-scrollbar { width: 0; height: 0; }
+* { scrollbar-width: none; -ms-overflow-style: none; }
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.animate-blink {
+  animation: blink 1s step-end infinite;
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 4px rgba(245, 158, 11, 0.2); }
+  50% { box-shadow: 0 0 12px rgba(245, 158, 11, 0.4); }
+}
+
+.animate-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
 }
 ```
 
@@ -6240,37 +7602,71 @@ export function computeChunkSize(fileSize) {
   return size
 }
 
-export async function indexFile(file) {
-  const chunkSize = computeChunkSize(file.size)
-  const totalChunks = file.size === 0 ? 0 : Math.ceil(file.size / chunkSize)
-  const hashes = []
+export async function indexFiles(files) {
+  const totalSize = files.reduce((s, f) => s + f.size, 0)
+  const chunkSize = computeChunkSize(totalSize)
+  const allHashes = []
+  const fileEntries = []
+  let globalIdx = 0
 
-  for (let i = 0; i < totalChunks; i++) {
-    const start = i * chunkSize
-    const end = Math.min(start + chunkSize, file.size)
-    const buf = await file.slice(start, end).arrayBuffer()
-    hashes.push(await sha256Hex(buf))
+  for (const file of files) {
+    const fileChunks = file.size === 0 ? 0 : Math.ceil(file.size / chunkSize)
+    const hashes = []
+    for (let i = 0; i < fileChunks; i++) {
+      const start = i * chunkSize
+      const end = Math.min(start + chunkSize, file.size)
+      const buf = await file.slice(start, end).arrayBuffer()
+      hashes.push(await sha256Hex(buf))
+    }
+    fileEntries.push({
+      path: file.relativePath || file.webkitRelativePath || file.name,
+      name: file.name,
+      size: file.size,
+      startChunk: globalIdx,
+      chunkCount: fileChunks,
+    })
+    allHashes.push(...hashes)
+    globalIdx += fileChunks
   }
 
-  const tree = totalChunks > 0
-    ? await buildMerkleTree(hashes)
+  const tree = allHashes.length > 0
+    ? await buildMerkleTree(allHashes)
     : { root: await sha256Hex(new ArrayBuffer(0)), levels: [] }
 
+  const folderLabel = files[0].webkitRelativePath?.split('/')[0] || files[0].relativePath?.split('/')[0]
+  const rootName = files.length === 1
+    ? files[0].name
+    : (folderLabel || `files-${new Date().toISOString().slice(0, 10)}`)
+
   return {
-    fileName: file.name,
-    fileSize: file.size,
+    fileName: rootName,
+    fileSize: totalSize,
     chunkSize,
-    totalChunks,
-    hashes,
+    totalChunks: allHashes.length,
+    hashes: allHashes,
     tree,
     merkleRoot: tree.root,
+    files: fileEntries,
   }
+}
+
+export async function indexFile(file) {
+  return indexFiles([file])
 }
 
 export async function readChunk(file, index, chunkSize) {
   const start = index * chunkSize
   const end = Math.min(start + chunkSize, file.size)
   return file.slice(start, end).arrayBuffer()
+}
+
+export function getFileForChunk(fileEntries, globalIndex) {
+  for (const entry of fileEntries) {
+    if (globalIndex >= entry.startChunk && globalIndex < entry.startChunk + entry.chunkCount) {
+      return { fileEntry: entry, localIndex: globalIndex - entry.startChunk }
+    }
+  }
+  return null
 }
 ```
 
@@ -6305,6 +7701,429 @@ export function formatEta(bytesRemaining, mbpsCurrent) {
 }
 ```
 
+### packages/web/src/lib/swarmManager.js
+
+```text
+import { sha256Hex, verifyChunk } from './browserCrypto.js';
+
+export const MAX_CONSECUTIVE_FAILURES = 5;
+const CHUNK_TIMEOUT = 30000;
+
+const P = 'pending';
+const R = 'requested';
+const V = 'verified';
+const COMPACT_THRESHOLD = 1000;
+
+export class SwarmManager extends EventTarget {
+  constructor(totalChunks, merkleRoot, chunkSize, alreadyVerified = []) {
+    super();
+    this.totalChunks = totalChunks;
+    this.merkleRoot = merkleRoot;
+    this.chunkSize = chunkSize;
+    this.pipelineSize = 4;
+    this.chunkState = new Array(totalChunks).fill(P);
+    this.chunkPeer = new Array(totalChunks).fill(null);
+    this.verifiedCount = 0;
+    this.peers = new Map();
+    this.done = false;
+    this.aborted = false;
+    this._chunkTimeouts = new Map();
+
+    const vs = new Set(alreadyVerified);
+    for (const idx of vs) {
+      if (idx >= 0 && idx < totalChunks && this.chunkState[idx] !== V) {
+        this.chunkState[idx] = V;
+        this.verifiedCount++;
+      }
+    }
+
+    this.pendingQueue = [];
+    for (let i = 0; i < totalChunks; i++) {
+      if (this.chunkState[i] !== V) this.pendingQueue.push(i);
+    }
+    this.queueHead = 0;
+
+    if (totalChunks > 0 && this.verifiedCount === totalChunks) {
+      this.done = true;
+    }
+  }
+
+  addPeer(peerId, requestChunkFn) {
+    this.peers.set(peerId, {
+      id: peerId,
+      requestChunk: requestChunkFn,
+      pending: new Set(),
+      failed: false,
+      consecutiveFailures: 0,
+      chunksServed: 0,
+    });
+    this._fillPipeline(peerId);
+  }
+
+  removePeer(peerId) {
+    const peer = this.peers.get(peerId);
+    if (!peer) return;
+    for (const ci of peer.pending) {
+      this._clearChunkTimeout(ci);
+      if (this.chunkState[ci] === R) this._requeueChunk(ci);
+    }
+    this.peers.delete(peerId);
+    this.dispatchEvent(new CustomEvent('peerRemoved', { detail: peerId }));
+    for (const id of this.peers.keys()) this._fillPipeline(id);
+  }
+
+  abort() {
+    this.aborted = true;
+    for (const [ci, t] of this._chunkTimeouts) { clearTimeout(t); }
+    this._chunkTimeouts.clear();
+  }
+
+  _markPeerFailed(peerId) {
+    const peer = this.peers.get(peerId);
+    if (!peer || peer.failed) return;
+    peer.failed = true;
+    this.removePeer(peerId);
+    this.dispatchEvent(new CustomEvent('peerFailed', { detail: { peerId, reason: 'too_many_consecutive_failures' } }));
+  }
+
+  _requeueChunk(idx) {
+    this.chunkState[idx] = P;
+    this.chunkPeer[idx] = null;
+    this.pendingQueue.push(idx);
+  }
+
+  _compactQueue() {
+    if (this.queueHead > COMPACT_THRESHOLD && this.queueHead > this.pendingQueue.length / 2) {
+      this.pendingQueue = this.pendingQueue.slice(this.queueHead);
+      this.queueHead = 0;
+    }
+  }
+
+  _fillPipeline(peerId) {
+    const peer = this.peers.get(peerId);
+    if (!peer || peer.failed || this.done || this.aborted) return;
+    while (peer.pending.size < this.pipelineSize && this.queueHead < this.pendingQueue.length) {
+      const i = this.pendingQueue[this.queueHead++];
+      if (this.chunkState[i] !== P) continue;
+      this.chunkState[i] = R;
+      this.chunkPeer[i] = peerId;
+      peer.pending.add(i);
+      this._chunkTimeouts.set(i, setTimeout(() => this._handleChunkTimeout(peerId, i), CHUNK_TIMEOUT));
+      const p = peer.requestChunk(i)
+      if (p && typeof p.catch === 'function') p.catch(() => this._handleChunkFailure(peerId, i))
+    }
+    this._compactQueue();
+  }
+
+  _clearChunkTimeout(ci) {
+    const t = this._chunkTimeouts.get(ci);
+    if (t) { clearTimeout(t); this._chunkTimeouts.delete(ci); }
+  }
+
+  _handleChunkTimeout(peerId, ci) {
+    this._chunkTimeouts.delete(ci);
+    this._handleChunkFailure(peerId, ci);
+  }
+
+  _handleChunkFailure(peerId, ci) {
+    this._clearChunkTimeout(ci);
+    const peer = this.peers.get(peerId);
+    if (peer) {
+      peer.pending.delete(ci);
+      peer.consecutiveFailures++;
+    }
+    if (this.chunkState[ci] === R) this._requeueChunk(ci);
+    if (peer && peer.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+      this._markPeerFailed(peerId);
+      return;
+    }
+    if (peer) this._fillPipeline(peerId);
+  }
+
+  async onChunkReceived(peerId, ci, data, expectedHash, proof) {
+    this._clearChunkTimeout(ci);
+    if (this.aborted) return false;
+    const peer = this.peers.get(peerId);
+    if (!peer) return false;
+    peer.pending.delete(ci);
+    if (this.chunkState[ci] === V) {
+      this._fillPipeline(peerId);
+      return true;
+    }
+    const actualHash = await sha256Hex(data);
+    if (this.aborted) return false;
+    if (actualHash !== expectedHash) {
+      peer.consecutiveFailures++;
+      this.dispatchEvent(new CustomEvent('chunkFailed', { detail: { peerId, chunkIndex: ci, reason: 'hash_mismatch' } }));
+      this._requeueChunk(ci);
+      if (peer.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        this._markPeerFailed(peerId);
+      } else {
+        this._fillPipeline(peerId);
+      }
+      return false;
+    }
+    if (proof && !(await verifyChunk(data, proof, this.merkleRoot))) {
+      peer.consecutiveFailures++;
+      this.dispatchEvent(new CustomEvent('chunkFailed', { detail: { peerId, chunkIndex: ci, reason: 'proof_invalid' } }));
+      this._requeueChunk(ci);
+      if (peer.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        this._markPeerFailed(peerId);
+      } else {
+        this._fillPipeline(peerId);
+      }
+      return false;
+    }
+    peer.consecutiveFailures = 0;
+    this.chunkState[ci] = V;
+    this.verifiedCount++;
+    peer.chunksServed++;
+    this.dispatchEvent(new CustomEvent('chunkVerified', {
+      detail: { peerId, chunkIndex: ci, chunkData: data, total: this.totalChunks, verified: this.verifiedCount }
+    }));
+    if (this.verifiedCount === this.totalChunks) {
+      this.done = true;
+      this.dispatchEvent(new CustomEvent('complete'));
+    } else {
+      this._fillPipeline(peerId);
+    }
+    return true;
+  }
+
+  progress() {
+    return {
+      verified: this.verifiedCount,
+      total: this.totalChunks,
+      percent: this.totalChunks > 0 ? (this.verifiedCount / this.totalChunks) * 100 : 100,
+    };
+  }
+
+  getVerifiedChunkIndices() {
+    const out = [];
+    for (let i = 0; i < this.totalChunks; i++) {
+      if (this.chunkState[i] === V) out.push(i);
+    }
+    return out;
+  }
+
+  getPeerStats() {
+    return [...this.peers.values()].map(p => ({
+      id: p.id,
+      pending: p.pending.size,
+      chunksServed: p.chunksServed,
+      failed: p.failed,
+      consecutiveFailures: p.consecutiveFailures,
+    }));
+  }
+
+  isComplete() {
+    return this.done;
+  }
+}
+```
+
+### packages/web/src/lib/transferManager.js
+
+```text
+import { WebRTCTransport } from './webrtc.js'
+import { MSG } from '../webrtc/protocol.js'
+
+export const transferManager = {
+  swarm: null,
+  transports: new Map(),
+  chunks: [],
+  fileRef: null,
+  indexRef: null,
+  fileRefs: null,
+  servedRef: new Set(),
+  downloadGuard: false,
+  receivedMeta: null,
+  streamHandle: null,
+  _relayHandler: null,
+  _relayClient: null,
+
+  startSeederListener(client, onOffer) {
+    this.stopSeederListener()
+    if (!client) return
+    this._relayClient = client
+    this._relayHandler = (event) => {
+      const { fromPeerId, payload } = event.detail
+      if (payload.kind !== 'offer') return
+      if (this.transports.has(fromPeerId)) return
+      onOffer(fromPeerId)
+    }
+    client.addEventListener('relay', this._relayHandler)
+  },
+
+  stopSeederListener() {
+    if (this._relayClient && this._relayHandler) {
+      this._relayClient.removeEventListener('relay', this._relayHandler)
+    }
+    this._relayClient = null
+    this._relayHandler = null
+  },
+
+  reset() {
+    this.stopSeederListener()
+    this.swarm = null
+    this.transports.clear()
+    this.chunks = []
+    this.fileRef = null
+    this.indexRef = null
+    this.fileRefs = null
+    this.servedRef = new Set()
+    this.downloadGuard = false
+    this.receivedMeta = null
+    this.streamHandle = null
+  },
+}
+```
+
+### packages/web/src/lib/webrtc.js
+
+```text
+import { buildJSONBody, buildChunkBody, parseMessage } from '../webrtc/protocol.js';
+
+export const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
+export const CONNECT_TIMEOUT_MS = 15000;
+
+export class WebRTCTransport {
+  constructor(signalingClient, remotePeerId, { initiator }) {
+    this.signalingClient = signalingClient;
+    this.remotePeerId = remotePeerId;
+    this.initiator = initiator;
+    this.pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    this.channel = null;
+    this.jsonHandler = null;
+    this.chunkHandler = null;
+    this._pendingIce = [];
+    this._remoteDescSet = false;
+    this._closed = false;
+    this._resolve = null;
+    this._reject = null;
+
+    this.pc.onicecandidate = (e) => {
+      if (!e.candidate) return;
+      this.signalingClient.relay(this.remotePeerId, {
+        kind: 'ice-candidate',
+        candidate: e.candidate.toJSON(),
+      });
+    };
+
+    this._relayHandler = (event) => this._handleSignal(event.detail);
+    this.signalingClient.addEventListener('relay', this._relayHandler);
+
+    if (initiator) {
+      this.channel = this.pc.createDataChannel('mesh');
+      this.channel.binaryType = 'arraybuffer';
+      this._bindChannel();
+    } else {
+      this.pc.ondatachannel = (e) => {
+        this.channel = e.channel;
+        this.channel.binaryType = 'arraybuffer';
+        this._bindChannel();
+      };
+    }
+  }
+
+  _bindChannel() {
+    this.channel.onopen = () => {
+      if (this._resolve) {
+        this._resolve();
+        this._resolve = null;
+      }
+    };
+    this.channel.onmessage = (e) => {
+      try {
+        const msg = parseMessage(new Uint8Array(e.data));
+        if (msg.type === 0x00 && this.jsonHandler) Promise.resolve(this.jsonHandler(msg.data)).catch(() => {});
+        else if (msg.type === 0x01 && this.chunkHandler) Promise.resolve(this.chunkHandler(msg)).catch(() => {});
+      } catch (_) {}
+    };
+  }
+
+  async _handleSignal(detail) {
+    if (detail.fromPeerId !== this.remotePeerId || this._closed) return;
+    const p = detail.payload;
+    if (p.kind === 'offer') {
+      await this.pc.setRemoteDescription({ type: 'offer', sdp: p.sdp });
+      this._remoteDescSet = true;
+      await this._flushIce();
+      const answer = await this.pc.createAnswer();
+      await this.pc.setLocalDescription(answer);
+      this.signalingClient.relay(this.remotePeerId, { kind: 'answer', sdp: answer.sdp });
+    } else if (p.kind === 'answer') {
+      await this.pc.setRemoteDescription({ type: 'answer', sdp: p.sdp });
+      this._remoteDescSet = true;
+      await this._flushIce();
+    } else if (p.kind === 'ice-candidate') {
+      if (this._remoteDescSet) {
+        await this.pc.addIceCandidate(p.candidate).catch(() => {});
+      } else {
+        this._pendingIce.push(p.candidate);
+      }
+    }
+  }
+
+  async _flushIce() {
+    const cs = this._pendingIce;
+    this._pendingIce = [];
+    for (const c of cs) {
+      await this.pc.addIceCandidate(c).catch(() => {});
+    }
+  }
+
+  connect() {
+    return new Promise((resolve, reject) => {
+      this._resolve = resolve;
+      this._reject = reject;
+      const timeout = setTimeout(() => {
+        if (this._reject) {
+          this._reject(new Error('Connection timeout'));
+          this._reject = null;
+          this.close();
+        }
+      }, CONNECT_TIMEOUT_MS);
+      const orig = this._resolve;
+      this._resolve = () => { clearTimeout(timeout); orig(); };
+      if (this.initiator) {
+        this.pc.createOffer().then((offer) => {
+          this.pc.setLocalDescription(offer);
+          this.signalingClient.relay(this.remotePeerId, { kind: 'offer', sdp: offer.sdp });
+        });
+      }
+    });
+  }
+
+  sendJSON(obj) {
+    if (this.channel && this.channel.readyState === 'open') {
+      this.channel.send(buildJSONBody(obj));
+    }
+  }
+
+  sendChunk(index, hashHex, proof, data) {
+    if (this.channel && this.channel.readyState === 'open') {
+      this.channel.send(buildChunkBody(index, hashHex, proof, data));
+    }
+  }
+
+  onJSON(handler) { this.jsonHandler = handler; }
+  onChunk(handler) { this.chunkHandler = handler; }
+
+  close() {
+    if (this._closed) return;
+    this._closed = true;
+    this.signalingClient.removeEventListener('relay', this._relayHandler);
+    if (this.channel) this.channel.close();
+    this.pc.close();
+    if (this._reject) {
+      this._reject(new Error('Transport closed'));
+      this._reject = null;
+    }
+  }
+}
+```
+
 ### packages/web/src/main.jsx
 
 ```text
@@ -6323,236 +8142,1465 @@ createRoot(document.getElementById('root')).render(
 )
 ```
 
-### packages/web/src/pages/DashboardPage.jsx
+### packages/web/src/pages/Dashboard.jsx
 
 ```text
-export default function DashboardPage() {
-  return (
-    <div className="mx-auto max-w-6xl px-6 py-16">
-      <h1 className="text-3xl font-semibold">Transfer Dashboard</h1>
-      <p className="mt-2 text-black/60 dark:text-white/60">Peer graph, chunk grid, speed chart coming next.</p>
-    </div>
-  )
-}
-```
-
-### packages/web/src/pages/HistoryPage.jsx
-
-```text
-export default function HistoryPage() {
-  return (
-    <div className="mx-auto max-w-3xl px-6 py-16">
-      <h1 className="text-3xl font-semibold">History</h1>
-      <p className="mt-2 text-black/60 dark:text-white/60">Past transfers coming later.</p>
-    </div>
-  )
-}
-```
-
-### packages/web/src/pages/LandingPage.jsx
-
-```text
-import { Link } from 'react-router-dom'
+import { useState, useEffect, useRef, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { useSignalingStore } from '../store/useSignalingStore.js'
+import { useTransferStore } from '../store/useTransferStore.js'
+import { useTransfer } from '../hooks/useTransfer.js'
+import { transferManager as M } from '../lib/transferManager.js'
+import { WebRTCTransport } from '../lib/webrtc.js'
 import Button from '../components/shared/Button.jsx'
+import Badge from '../components/shared/Badge.jsx'
+import Card from '../components/shared/Card.jsx'
+import PeerList from '../components/PeerList.jsx'
+import ChunkGrid from '../components/ChunkGrid.jsx'
+import SpeedChart from '../components/SpeedChart.jsx'
+import PeerGraph from '../components/PeerGraph.jsx'
 
-export default function LandingPage() {
+export default function Dashboard() {
+  const navigate = useNavigate()
+  const roomCode = useSignalingStore((s) => s.roomCode)
+  const { role, peerStats, chunkStates, speedHistory, status, fileMeta, progress, seeding } = useTransferStore()
+  const { disconnectAll, triggerDownload, stopSeeding, resumeSeeding, addSenderPeer } = useTransfer()
+  const downloadFired = useRef(false)
+  const [elapsed, setElapsed] = useState(0)
+  const startRef = useRef(null)
+  const timerRef = useRef(null)
+
+  useEffect(() => {
+    if (status !== 'idle') return
+    try {
+      const raw = localStorage.getItem('mesh-transfer-state')
+      if (!raw) { navigate('/', { replace: true }); return }
+      const saved = JSON.parse(raw)
+      if (!saved || !saved.fileMeta || saved.status === 'idle') { navigate('/', { replace: true }); return }
+      const store = useTransferStore.getState()
+      if (store.status !== 'idle') return
+      const chunks = saved.progress?.total ? new Array(saved.progress.total).fill('pending') : []
+      if (saved.progress?.verified > 0) {
+        for (let i = 0; i < saved.progress.verified && i < chunks.length; i++) chunks[i] = 'verified'
+      }
+      useTransferStore.setState({ ...saved, chunkStates: chunks })
+    } catch { navigate('/', { replace: true }) }
+  }, [status])
+
+  useEffect(() => {
+    if (status === 'transferring' && !startRef.current) {
+      startRef.current = Date.now()
+    }
+    if (status === 'transferring') {
+      timerRef.current = setInterval(() => {
+        setElapsed(Math.floor((Date.now() - startRef.current) / 1000))
+      }, 1000)
+    }
+    if (status === 'complete' || status === 'idle' || status === 'error') {
+      if (timerRef.current) clearInterval(timerRef.current)
+    }
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current)
+    }
+  }, [status])
+
+  useEffect(() => {
+    if (status === 'idle') {
+      startRef.current = null
+      setElapsed(0)
+    }
+  }, [status])
+
+  useEffect(() => {
+    if (status === 'complete' && role === 'receiver' && !downloadFired.current) {
+      downloadFired.current = true
+      triggerDownload()
+    }
+  }, [status, role, triggerDownload])
+
+  useEffect(() => {
+    const c = useSignalingStore.getState().client
+    if (!c || !fileMeta) return
+    const hasData = M.indexRef || (M.receivedMeta && M.chunks.length > 0)
+    if (!hasData) return
+    const idx = M.indexRef || {
+      totalChunks: M.receivedMeta.totalChunks,
+      chunkSize: M.receivedMeta.chunkSize,
+      merkleRoot: M.receivedMeta.merkleRoot,
+      files: M.receivedMeta.files,
+      fileName: fileMeta.fileName,
+      fileSize: fileMeta.fileSize,
+    }
+    M.startSeederListener(c, (fromPeerId) => {
+      if (M.transports.has(fromPeerId)) return
+      const t = new WebRTCTransport(c, fromPeerId, { initiator: false })
+      t.connect().then(() => addSenderPeer(t, idx)).catch(() => {})
+    })
+    return () => M.stopSeederListener()
+  }, [fileMeta, addSenderPeer])
+
+  const handleDismiss = useCallback(() => {
+    const currentRole = useTransferStore.getState().role
+    M.stopSeederListener()
+    try {
+      const signal = useSignalingStore.getState()
+      if (signal.client) signal.disconnect()
+    } catch {}
+    try { disconnectAll() } catch {}
+    startRef.current = null
+    setElapsed(0)
+    navigate(currentRole === 'sender' ? '/send' : '/receive')
+  }, [disconnectAll, navigate])
+
+  const mmss = `${String(Math.floor(elapsed / 60)).padStart(2, '0')}:${String(elapsed % 60).padStart(2, '0')}`
+  const fileCount = fileMeta?.files?.length || 1
+  const totalChunks = progress.total || 0
+  const verifiedChunks = progress.verified || 0
+  const percent = totalChunks > 0 ? (verifiedChunks / totalChunks) * 100 : 0
+  const speed = speedHistory.length > 0 ? speedHistory[speedHistory.length - 1].mbps || 0 : 0
+  const done = status === 'complete' || status === 'error'
+
+  if (status === 'idle') {
+    return (
+      <div className="mx-auto max-w-2xl px-6 py-16">
+        <div className="flex flex-col items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--surface)] px-8 py-16">
+          <svg className="mb-4 h-12 w-12 text-[var(--txt-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+          </svg>
+          <p className="text-lg font-medium text-[var(--txt-primary)]">No Active Transfer</p>
+          <p className="mt-1 text-sm text-[var(--txt-secondary)] text-center max-w-sm">
+            Start a new transfer from the Send page, or join one from the Receive page.
+          </p>
+          <div className="mt-6 flex gap-3">
+            <Button variant="primary" onClick={() => navigate('/send')}>
+              SEND A FILE
+            </Button>
+            <Button variant="secondary" onClick={() => navigate('/receive')}>
+              RECEIVE
+            </Button>
+          </div>
+        </div>
+        <div className="mt-6 grid gap-4 sm:grid-cols-3">
+          <Card className="text-center">
+            <p className="text-2xl font-bold text-[var(--accent)]">0</p>
+            <p className="mt-1 text-xs text-[var(--txt-secondary)] uppercase tracking-wider">Active Transfers</p>
+          </Card>
+          <Card className="text-center">
+            <p className="text-2xl font-bold text-[var(--txt-primary)]">—</p>
+            <p className="mt-1 text-xs text-[var(--txt-secondary)] uppercase tracking-wider">Peers Connected</p>
+          </Card>
+          <Card className="text-center">
+            <p className="text-2xl font-bold text-[var(--txt-primary)]">—</p>
+            <p className="mt-1 text-xs text-[var(--txt-secondary)] uppercase tracking-wider">Data Transferred</p>
+          </Card>
+        </div>
+      </div>
+    )
+  }
+
   return (
-    <div className="mx-auto flex max-w-4xl flex-col items-center px-6 py-24 text-center">
-      <span className="mb-4 rounded-full border border-black/10 px-3 py-1 text-xs font-medium text-black/60 dark:border-white/10 dark:text-white/60">
-        Peer-to-peer · Encrypted · No server storage
-      </span>
-      <h1 className="text-5xl font-semibold tracking-tight sm:text-6xl">
-        Send files, directly.
-      </h1>
-      <p className="mt-6 max-w-xl text-lg text-black/60 dark:text-white/60">
-        Mesh moves files straight between browsers over an encrypted connection.
-        Nothing is ever uploaded to a server in between.
-      </p>
-      <div className="mt-10 flex flex-col gap-3 sm:flex-row">
-        <Link to="/send">
-          <Button variant="primary" className="w-48">Send a file</Button>
-        </Link>
-        <Link to="/receive">
-          <Button variant="secondary" className="w-48">Receive a file</Button>
-        </Link>
+    <div className="mx-auto flex min-h-screen max-w-7xl flex-col gap-4 px-6 py-6">
+      <div className="flex items-center justify-between rounded-lg border border-[var(--border)] bg-[var(--surface)] px-6 py-4">
+        <div className="flex items-center gap-4">
+          <span className="text-lg font-bold tracking-wider text-[var(--accent)]">mesh</span>
+          <Badge color="amber">{roomCode || '\u2014\u2014'}</Badge>
+          {fileMeta && (
+            <span className="hidden items-center gap-2 text-sm sm:flex">
+              <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
+                role === 'sender' ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'bg-[var(--success)]/10 text-[var(--success)]'
+              }`}>
+                {role === 'sender' ? 'SENDER' : 'RECEIVER'}
+              </span>
+              <span className="text-[var(--txt-secondary)]">{fileMeta.fileName} · {fileCount} file{fileCount > 1 ? 's' : ''}</span>
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-4">
+          <span className="font-mono text-2xl font-bold tracking-wider text-[var(--txt-primary)]">{mmss}</span>
+          <div className="hidden items-center gap-1 text-xs text-[var(--txt-secondary)] sm:flex">
+            <span>{verifiedChunks}/{totalChunks} chunks</span>
+            <span className="text-[var(--txt-dim)]">·</span>
+            <span className={speed > 0 ? 'text-[var(--accent)]' : ''}>{speed.toFixed(1)} MB/s</span>
+          </div>
+          {!done && role === 'sender' && (
+            <Button variant="secondary" onClick={seeding ? stopSeeding : resumeSeeding}>
+              {seeding ? 'STOP SEED' : 'RESUME SEED'}
+            </Button>
+          )}
+          <Button variant={done ? 'primary' : 'danger'} onClick={handleDismiss}>
+            {done ? 'DISMISS' : 'ABORT'}
+          </Button>
+        </div>
+      </div>
+
+      <div className="flex flex-1 gap-4">
+        <div className="w-80 shrink-0">
+          <Card className="h-full">
+            <PeerList peerStats={peerStats} />
+            <div className="mt-4 border-t border-[var(--border)] pt-4 space-y-3">
+              <div className="space-y-2 text-xs text-[var(--txt-secondary)]">
+                <div className="flex justify-between">
+                  <span>Role</span>
+                  <span className={`font-mono ${role === 'sender' ? 'text-[var(--accent)]' : 'text-[var(--success)]'}`}>
+                    {role === 'sender' ? 'Seeder' : 'Leecher'}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Files</span>
+                  <span className="font-mono text-[var(--txt-primary)]">{fileCount}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Size</span>
+                  <span className="font-mono text-[var(--txt-primary)]">{fileMeta ? (fileMeta.fileSize / 1e6).toFixed(1) : '—'} MB</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Chunks</span>
+                  <span className="font-mono text-[var(--txt-primary)]">{totalChunks}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Speed</span>
+                  <span className="font-mono text-[var(--accent)]">{speed.toFixed(1)} MB/s</span>
+                </div>
+              </div>
+              <div className="border-t border-[var(--border)] pt-3 space-y-1.5 text-[10px] leading-relaxed text-[var(--txt-muted)]">
+                <p>🔐 <span className="text-[var(--txt-secondary)]">DTLS 1.3 encrypted · P2P channel</span></p>
+                <p>🧩 <span className="text-[var(--txt-secondary)]">{fileMeta?.chunkSize || '—'} bytes per chunk · Merkle verified</span></p>
+                <p>📡 <span className="text-[var(--txt-secondary)]">{roomCode ? `Room ${roomCode}` : 'Direct connection'}</span></p>
+                {verifiedChunks > 0 && (
+                  <p>📊 <span className="text-[var(--txt-secondary)]">{((verifiedChunks * (fileMeta?.chunkSize || 0)) / 1e6).toFixed(1)} MB verified so far</span></p>
+                )}
+              </div>
+            </div>
+          </Card>
+        </div>
+
+        <div className="flex flex-1 flex-col gap-4">
+          <Card>
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-xs uppercase tracking-widest text-[var(--txt-secondary)]">
+                {role === 'sender' ? 'Upload Progress' : 'Download Progress'}
+              </span>
+              <span className="font-mono text-sm font-bold text-[var(--accent)]">{Math.round(percent)}%</span>
+            </div>
+            <div className="h-3 w-full overflow-hidden rounded-full bg-[var(--surface-hover)]">
+              <div
+                className="h-full rounded-full bg-[var(--accent)] transition-all duration-500 ease-out"
+                style={{ width: `${Math.min(100, percent)}%` }}
+              />
+            </div>
+            <div className="mt-1 flex justify-between text-[10px] text-[var(--txt-muted)]">
+              <span>0%</span>
+              <span>{verifiedChunks} / {totalChunks} chunks</span>
+              <span>100%</span>
+            </div>
+          </Card>
+
+          <ChunkGrid chunkStates={chunkStates} transferStatus={status} />
+
+          <Card className="flex-1">
+            <PeerGraph className="h-80 w-full" chunkStates={chunkStates} role={role} peerStats={peerStats} seeding={seeding} />
+            <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2 text-sm text-[var(--txt-secondary)]">
+              {role === 'sender' ? (
+                <>
+                  <span>
+                    SENT:{' '}
+                    <span className="font-mono text-[var(--accent)]">{verifiedChunks}</span>
+                    <span className="text-[var(--txt-dim)]"> / {totalChunks} chunks</span>
+                  </span>
+                  <span>
+                    SEEDING:{' '}
+                    <span className={`font-mono ${seeding ? 'text-[var(--success)]' : 'text-[var(--error)]'}`}>
+                      {seeding ? 'ACTIVE' : 'PAUSED'}
+                    </span>
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span>
+                    RECEIVED:{' '}
+                    <span className="font-mono text-[var(--success)]">{verifiedChunks}</span>
+                    <span className="text-[var(--txt-dim)]"> / {totalChunks} chunks</span>
+                  </span>
+                  <span>
+                    FILES:{' '}
+                    <span className="font-mono text-[var(--accent)]">{fileCount}</span>
+                  </span>
+                </>
+              )}
+              <span>
+                PEERS:{' '}
+                <span className="font-mono text-[var(--accent)]">{peerStats.length}</span>
+              </span>
+              <span>
+                SIZE:{' '}
+                <span className="font-mono text-[var(--txt-primary)]">
+                  {fileMeta ? (fileMeta.fileSize / 1e6).toFixed(1) : 0} MB
+                </span>
+              </span>
+            </div>
+          </Card>
+
+          <SpeedChart data={speedHistory} peerCount={peerStats.length} />
+        </div>
       </div>
     </div>
   )
 }
 ```
 
-### packages/web/src/pages/ReceivePage.jsx
+### packages/web/src/pages/History.jsx
 
 ```text
-import { useEffect, useRef, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
-import RoomCodeInput from '../components/receive/RoomCodeInput.jsx'
-import IncomingFileCard from '../components/receive/IncomingFileCard.jsx'
-import ProgressBar from '../components/shared/ProgressBar.jsx'
+import { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import Button from '../components/shared/Button.jsx'
+import Badge from '../components/shared/Badge.jsx'
 import Card from '../components/shared/Card.jsx'
+import { getHistory, clearHistory, removeHistoryEntry } from '../store/useHistoryStore.js'
+import { formatBytes, formatDuration } from '../lib/format.js'
+
+const STATUS_META = {
+  complete: { color: 'green', label: 'Complete' },
+  failed: { color: 'red', label: 'Failed' },
+  partial: { color: 'amber', label: 'Partial' },
+}
+
+export default function History() {
+  const [entries, setEntries] = useState([])
+  const navigate = useNavigate()
+
+  useEffect(() => {
+    setEntries(getHistory())
+    const handler = () => setEntries(getHistory())
+    window.addEventListener('storage', handler)
+    return () => window.removeEventListener('storage', handler)
+  }, [])
+
+  function handleClear() {
+    if (!window.confirm('Clear all transfer history?')) return
+    setEntries(clearHistory())
+  }
+
+  function handleRejoin(e) {
+    if (!e.roomCode) return
+    navigate(`/receive?code=${e.roomCode}`)
+  }
+
+  function handleRemove(id) {
+    setEntries(removeHistoryEntry(id))
+  }
+
+  function roleLabel(role) {
+    return role === 'sender' ? 'Sent' : 'Received'
+  }
+
+  if (entries.length === 0) {
+    return (
+      <div className="mx-auto max-w-6xl px-6 py-16">
+        <div className="mb-8">
+          <p className="text-xs tracking-widest uppercase text-[var(--accent)]">History</p>
+          <h1 className="text-2xl font-bold text-[var(--txt-primary)]">Transfer History</h1>
+        </div>
+        <div className="flex flex-col items-center py-24">
+          <svg className="mb-4 h-12 w-12 text-[var(--txt-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <p className="text-lg text-[var(--txt-secondary)]">No transfer history yet</p>
+          <p className="mt-1 text-sm text-[var(--txt-secondary)]">Completed transfers will appear here</p>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="mx-auto max-w-6xl px-6 py-16">
+      <div className="mb-8 flex items-center justify-between">
+        <div>
+          <p className="text-xs tracking-widest uppercase text-[var(--accent)]">History</p>
+          <h1 className="text-2xl font-bold text-[var(--txt-primary)]">Transfer History</h1>
+        </div>
+        <Button variant="ghost" className="text-xs text-[var(--txt-muted)] hover:text-[var(--error)]" onClick={handleClear}>
+          Clear all
+        </Button>
+      </div>
+
+      <div className="space-y-3">
+        {entries.map((e) => {
+          const meta = STATUS_META[e.status] || STATUS_META.failed
+          return (
+            <Card key={e.id} className="group transition-all hover:border-[var(--border-hover)]">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-3">
+                    <Badge color={meta.color}>{meta.label}</Badge>
+                    <span className="text-xs uppercase tracking-wider text-[var(--txt-muted)]">
+                      {roleLabel(e.role)}
+                    </span>
+                  </div>
+                  <div className="mt-2">
+                    <p className="truncate font-mono text-sm font-medium text-[var(--txt-primary)]">
+                      {e.fileName}
+                    </p>
+                    <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[var(--txt-secondary)]">
+                      <span>{formatBytes(e.fileSize)}</span>
+                      {e.fileCount > 1 && <span>{e.fileCount} files</span>}
+                      <span>{e.totalChunks} chunks</span>
+                      <span>·</span>
+                      <span>{formatDuration(e.duration)}</span>
+                      {e.avgSpeed > 0 && (
+                        <>
+                          <span>·</span>
+                          <span className="text-[var(--accent)]">{e.avgSpeed.toFixed(1)} MB/s</span>
+                        </>
+                      )}
+                      {e.peers > 0 && (
+                        <>
+                          <span>·</span>
+                          <span>{e.peers} peer{e.peers > 1 ? 's' : ''}</span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  <p className="mt-1.5 text-[11px] text-[var(--txt-muted)]">
+                    {new Date(e.date).toLocaleString()}
+                  </p>
+                </div>
+
+                <div className="flex shrink-0 items-center gap-2">
+                  {e.roomCode && (
+                    <Button
+                      variant="secondary"
+                      className="text-xs px-3 py-1.5"
+                      onClick={() => handleRejoin(e)}
+                    >
+                      Rejoin room
+                    </Button>
+                  )}
+                  <button
+                    onClick={() => handleRemove(e.id)}
+                    className="cursor-pointer rounded-md p-1.5 text-[var(--txt-muted)] opacity-0 transition-opacity hover:text-[var(--error)] group-hover:opacity-100"
+                    title="Remove from history"
+                  >
+                    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            </Card>
+          )
+        })}
+      </div>
+
+      {entries.length > 0 && (
+        <p className="mt-4 text-center text-[10px] text-[var(--txt-muted)]">
+          {entries.length} transfer{entries.length > 1 ? 's' : ''} · Oldest entries are automatically removed
+        </p>
+      )}
+    </div>
+  )
+}
+```
+
+### packages/web/src/pages/Landing.jsx
+
+```text
+import { Link } from 'react-router-dom'
+import { motion } from 'framer-motion'
+import Button from '../components/shared/Button.jsx'
+import Badge from '../components/shared/Badge.jsx'
+import LandingGraph from '../components/LandingGraph.jsx'
+
+const fadeUp = {
+  initial: { opacity: 0, y: 20 },
+  animate: { opacity: 1, y: 0, transition: { duration: 0.6 } },
+}
+
+export default function Landing() {
+  return (
+    <div className="flex min-h-[calc(100vh-57px)] flex-col sm:min-h-[calc(100vh-65px)]">
+      <div className="flex flex-1 flex-col lg:flex-row">
+        <div className="flex flex-col justify-center gap-6 px-6 pt-12 pb-6 sm:px-8 sm:pt-16 sm:pb-8 lg:w-2/5 lg:px-16 lg:py-16">
+          <motion.div {...fadeUp} className="flex flex-col gap-1">
+            <h1 className="text-4xl font-bold tracking-tight text-[var(--txt-primary)] sm:text-5xl lg:text-7xl">Decentralized.</h1>
+            <h1 className="text-4xl font-bold tracking-tight text-[var(--txt-primary)] sm:text-5xl lg:text-7xl">Unstoppable.</h1>
+            <h1 className="text-4xl font-bold tracking-tight text-[var(--accent)] sm:text-5xl lg:text-7xl">Data Transfer.</h1>
+          </motion.div>
+
+          <motion.p {...fadeUp} className="max-w-md text-sm leading-relaxed text-[var(--txt-secondary)] sm:text-base">
+            Mesh moves files straight between browsers over an encrypted P2P connection. Nothing touches a server.
+          </motion.p>
+
+          <motion.div {...fadeUp} className="flex flex-wrap gap-3">
+            <Link to="/send"><Button variant="primary" className="w-36 sm:w-40">Start Transfer</Button></Link>
+            <Link to="/receive"><Button variant="secondary" className="w-36 sm:w-40">Receive File</Button></Link>
+          </motion.div>
+
+          <motion.div {...fadeUp} className="flex flex-wrap gap-2">
+            <Badge color="green">6 PEERS ACTIVE</Badge>
+            <Badge color="amber">132 GB TRANSFERRED</Badge>
+            <Badge color="gray" dot={false}>AES-256-GCM E2EE</Badge>
+          </motion.div>
+        </div>
+
+        <div className="relative min-h-[300px] sm:min-h-[400px] lg:min-h-auto lg:w-3/5">
+          <LandingGraph className="absolute inset-0 h-full w-full" />
+        </div>
+      </div>
+
+      <footer className="flex items-center justify-between border-t border-[var(--border)] px-6 py-4 text-xs text-[var(--txt-muted)] sm:px-8">
+        <span>MESH v0.1.0</span>
+        <span>&copy; {new Date().getFullYear()} Mesh</span>
+      </footer>
+    </div>
+  )
+}
+```
+
+### packages/web/src/pages/NotFound.jsx
+
+```text
+import { useEffect, useRef } from 'react'
+import { Link } from 'react-router-dom'
+import { motion } from 'framer-motion'
+import Button from '../components/shared/Button.jsx'
+
+const LINKS = [
+  { to: '/', label: 'Home' },
+  { to: '/send', label: 'Send' },
+  { to: '/receive', label: 'Receive' },
+  { to: '/dashboard', label: 'Dashboard' },
+  { to: '/history', label: 'History' },
+]
+
+export default function NotFound() {
+  const canvasRef = useRef(null)
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    let animId
+    const dots = Array.from({ length: 60 }, () => ({
+      x: Math.random() * canvas.width,
+      y: Math.random() * canvas.height,
+      vx: (Math.random() - 0.5) * 0.4,
+      vy: (Math.random() - 0.5) * 0.4,
+      r: Math.random() * 2 + 0.5,
+    }))
+
+    function resize() {
+      canvas.width = window.innerWidth
+      canvas.height = window.innerHeight
+    }
+    resize()
+    window.addEventListener('resize', resize)
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height)
+      for (const d of dots) {
+        d.x += d.vx
+        d.y += d.vy
+        if (d.x < 0 || d.x > canvas.width) d.vx *= -1
+        if (d.y < 0 || d.y > canvas.height) d.vy *= -1
+        ctx.beginPath()
+        ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2)
+        ctx.fillStyle = 'rgba(245, 158, 11, 0.15)'
+        ctx.fill()
+      }
+      for (let i = 0; i < dots.length; i++) {
+        for (let j = i + 1; j < dots.length; j++) {
+          const dx = dots[i].x - dots[j].x
+          const dy = dots[i].y - dots[j].y
+          const dist = Math.sqrt(dx * dx + dy * dy)
+          if (dist < 120) {
+            ctx.beginPath()
+            ctx.moveTo(dots[i].x, dots[i].y)
+            ctx.lineTo(dots[j].x, dots[j].y)
+            ctx.strokeStyle = `rgba(245, 158, 11, ${(1 - dist / 120) * 0.1})`
+            ctx.lineWidth = 0.5
+            ctx.stroke()
+          }
+        }
+      }
+      animId = requestAnimationFrame(draw)
+    }
+    draw()
+
+    return () => {
+      cancelAnimationFrame(animId)
+      window.removeEventListener('resize', resize)
+    }
+  }, [])
+
+  return (
+    <div className="relative flex min-h-[calc(100vh-57px)] flex-col items-center justify-center overflow-hidden px-6 sm:min-h-[calc(100vh-65px)]">
+      <canvas ref={canvasRef} className="absolute inset-0 pointer-events-none" />
+
+      <motion.div
+        initial={{ opacity: 0, scale: 0.8 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{ duration: 0.5 }}
+        className="relative z-10 flex flex-col items-center gap-6 text-center"
+      >
+        <div className="relative">
+          <span className="text-[clamp(6rem,20vw,12rem)] font-black leading-none tracking-tighter text-[var(--txt-primary)]/5 select-none">
+            404
+          </span>
+          <motion.span
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.3, duration: 0.5 }}
+            className="absolute inset-0 flex items-center justify-center text-[clamp(3rem,10vw,6rem)] font-black leading-none tracking-tighter text-[var(--accent)]"
+          >
+            404
+          </motion.span>
+        </div>
+
+        <motion.p
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.5, duration: 0.4 }}
+          className="text-sm text-[var(--txt-secondary)] sm:text-base"
+        >
+          This page wandered off the mesh.
+        </motion.p>
+
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.7, duration: 0.4 }}
+          className="flex flex-wrap justify-center gap-3"
+        >
+          {LINKS.map((link) => (
+            <Link key={link.to} to={link.to}>
+              <Button variant={link.to === '/' ? 'primary' : 'secondary'} className="text-xs px-4 py-2">
+                {link.label}
+              </Button>
+            </Link>
+          ))}
+        </motion.div>
+      </motion.div>
+    </div>
+  )
+}
+```
+
+### packages/web/src/pages/Receive.jsx
+
+```text
+import { useState, useEffect, useRef, useCallback } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useSignalingStore } from '../store/useSignalingStore.js'
 import { useTransferStore } from '../store/useTransferStore.js'
-import { useReceiveTransfer } from '../hooks/useReceiveTransfer.js'
+import { useTransfer } from '../hooks/useTransfer.js'
+import { WebRTCTransport } from '../lib/webrtc.js'
+import { MSG } from '../webrtc/protocol.js'
+import { motion, AnimatePresence } from 'framer-motion'
+import Button from '../components/shared/Button.jsx'
+import Badge from '../components/shared/Badge.jsx'
+import Card from '../components/shared/Card.jsx'
+import Accordion from '../components/shared/Accordion.jsx'
+import ProgressBar from '../components/shared/ProgressBar.jsx'
+import ConnectionCode from '../components/ConnectionCode.jsx'
+import FileManifest from '../components/FileManifest.jsx'
 
-export default function ReceivePage() {
+export default function Receive() {
+  const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const [joining, setJoining] = useState(false)
-  const peerRef = useRef(null)
+  const [joinError, setJoinError] = useState(null)
+  const [roomClosed, setRoomClosed] = useState(false)
+  const swarmRef = useRef(null)
+  const transportsRef = useRef([])
+  const downloadGuardRef = useRef(false)
 
   const joinRoom = useSignalingStore((s) => s.joinRoom)
+  const roomCode = useSignalingStore((s) => s.roomCode)
+  const signalingStatus = useSignalingStore((s) => s.status)
+  const signalingPeers = useSignalingStore((s) => s.peers)
 
-  const status = useTransferStore((s) => s.status)
   const fileMeta = useTransferStore((s) => s.fileMeta)
+  const status = useTransferStore((s) => s.status)
   const progress = useTransferStore((s) => s.progress)
-  const startAsReceiver = useTransferStore((s) => s.startAsReceiver)
+  const saveMode = useTransferStore((s) => s.saveMode)
+  const setSaveMode = useTransferStore((s) => s.setSaveMode)
+  const setComplete = useTransferStore((s) => s.setComplete)
 
-  const { connectToPeer, startDownload, getAssembledBlob } = useReceiveTransfer()
+  const { startReceiving, addReceiverPeer, triggerDownload, resetDownload, disconnectAll } = useTransfer()
 
   async function handleJoin(code) {
     setJoining(true)
-    startAsReceiver()
+    setJoinError(null)
     try {
       const result = await joinRoom(code)
-      if (result.existingPeers.length > 0) {
-        peerRef.current = await connectToPeer(useSignalingStore.getState().client, result.existingPeers[0])
+      useTransferStore.getState().setRoomCode(code.toUpperCase())
+      useTransferStore.getState().startAsReceiver()
+      for (const peerId of result.existingPeers || []) {
+        const client = useSignalingStore.getState().client
+        const transport = new WebRTCTransport(client, peerId, { initiator: true })
+        transport.onJSON(async (msg) => {
+          if (msg.type === MSG.FILE_OFFER && !swarmRef.current) {
+            swarmRef.current = await startReceiving(msg)
+          }
+        })
+        await transport.connect()
+        transportsRef.current.push(transport)
       }
+    } catch (err) {
+      setJoinError(err.message || 'Failed to join room')
     } finally {
       setJoining(false)
     }
   }
 
-  useEffect(() => {
-    if (status === 'complete' && fileMeta) {
-      const blob = getAssembledBlob()
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = fileMeta.fileName
-      a.click()
-      URL.revokeObjectURL(url)
+  function handleBeginTransfer() {
+    if (!swarmRef.current) return
+    for (const transport of transportsRef.current) {
+      addReceiverPeer(transport, swarmRef.current)
     }
-  }, [status, fileMeta, getAssembledBlob])
+  }
+
+  function handleDismiss() {
+    try { useSignalingStore.getState().disconnect() } catch {}
+    disconnectAll()
+    swarmRef.current = null
+    transportsRef.current = []
+    downloadGuardRef.current = false
+    setRoomClosed(false)
+    navigate('/receive')
+  }
+
+  useEffect(() => {
+    if (status === 'transferring') navigate('/dashboard')
+  }, [status, navigate])
+
+  useEffect(() => {
+    if (status === 'complete' && fileMeta && !downloadGuardRef.current) {
+      downloadGuardRef.current = true
+      triggerDownload()
+    }
+  }, [status, fileMeta, triggerDownload])
+
+  useEffect(() => {
+    if (!roomCode) return
+    const unsub = useSignalingStore.subscribe((s, prev) => {
+      if (prev.peers.length > 0 && s.peers.length === 0 && status !== 'complete') {
+        setRoomClosed(true)
+      }
+      if (prev.status === 'connected' && s.status === 'disconnected' && status !== 'complete') {
+        setRoomClosed(true)
+      }
+    })
+    return unsub
+  }, [roomCode, status])
 
   const prefillCode = searchParams.get('code') || ''
+  const showFileMeta = !!fileMeta
 
-  if (status === 'idle') {
-    return (
-      <div className="mx-auto max-w-2xl px-6 py-16 text-center">
-        <h1 className="text-3xl font-semibold">Receive a file</h1>
-        <p className="mt-2 text-black/60 dark:text-white/60">Enter the room code from the sender.</p>
-        <div className="mt-8">
-          <RoomCodeInput onJoin={handleJoin} joining={joining} defaultValue={prefillCode} />
+  const accordionsBefore = (
+    <div className="mt-8 space-y-2">
+      <Accordion title="How to receive a file">
+        <ol className="list-inside list-decimal space-y-1.5">
+          <li>Ask the sender for their room code (a 6-character code like <span className="font-mono text-[var(--txt-primary)]">WOLF482</span>).</li>
+          <li>Type it in above, or scan the QR code directly from their screen.</li>
+          <li>Once linked, your browser connects directly to theirs — no middlemen.</li>
+          <li>When they send a file offer, review what's being shared and hit "Begin Transfer".</li>
+          <li>Your browser downloads chunks, verifies each one, and saves the file.</li>
+        </ol>
+      </Accordion>
+      <Accordion title="Is it secure?">
+        <p>Yes. The signaling server only helps establish the connection — it never sees your data. After that, everything flows through a direct encrypted channel between browsers.</p>
+        <ul className="mt-2 space-y-1">
+          <li className="flex items-start gap-2">
+            <span className="mt-1 h-1 w-1 shrink-0 rounded-full bg-[var(--success)]" />
+            <span><strong className="text-[var(--txt-primary)]">Direct peer-to-peer</strong> — no data touches any server</span>
+          </li>
+          <li className="flex items-start gap-2">
+            <span className="mt-1 h-1 w-1 shrink-0 rounded-full bg-[var(--success)]" />
+            <span><strong className="text-[var(--txt-primary)]">Encrypted in transit</strong> via WebRTC DTLS (same encryption as HTTPS)</span>
+          </li>
+          <li className="flex items-start gap-2">
+            <span className="mt-1 h-1 w-1 shrink-0 rounded-full bg-[var(--success)]" />
+            <span><strong className="text-[var(--txt-primary)]">Integrity checked</strong> — every chunk is verified against a Merkle tree</span>
+          </li>
+        </ul>
+      </Accordion>
+      <Accordion title="QR scanning tips">
+        <p>Click the QR icon in the input field to open your camera. Point it at the sender's QR code — the room code fills in automatically.</p>
+        <p className="mt-2 text-xs text-[var(--txt-dim)]">Works best on devices with rear-facing cameras. If the scanner doesn't start, you can always type the code manually.</p>
+      </Accordion>
+    </div>
+  )
+
+  const accordionsAfter = (
+    <div className="mt-6 space-y-2">
+      <Accordion title="What happens next?" defaultOpen>
+        <p>You're linked to the sender and waiting for them to offer a file. As soon as they do, you'll see the file details here. You can then choose to begin receiving.</p>
+        <p className="mt-2 text-xs text-[var(--txt-dim)]">Make sure both browsers stay open and connected. If the connection drops, you'll need a new room code.</p>
+      </Accordion>
+    </div>
+  )
+
+  const accordionsTransfer = (
+    <div className="mt-6 space-y-2">
+      <Accordion title="What's happening right now?">
+        <p>Your browser is downloading chunks from the sender. Each chunk is checked against the file's Merkle tree to make sure it hasn't been tampered with. Once all chunks arrive and verify, the file is reconstructed and saved.</p>
+        <p className="mt-2 text-xs text-[var(--txt-dim)]">For larger files, you may be asked where to save — this lets the browser stream data directly to disk instead of holding it all in memory.</p>
+      </Accordion>
+    </div>
+  )
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className={`mx-auto min-h-[calc(100vh-4rem)] px-6 ${
+        showFileMeta ? 'py-12 lg:flex lg:flex-row lg:gap-8 max-w-6xl' : 'max-w-2xl pt-16 pb-8'
+      }`}
+    >
+      <div className={`flex flex-col gap-6 ${showFileMeta ? 'lg:w-[35%]' : 'w-full'}`}>
+        <div>
+          <p className="mb-1 text-xs uppercase tracking-widest text-[var(--accent)]">Secure Peer-to-Peer</p>
+          <h1 className="text-3xl font-bold text-[var(--txt-primary)]">Receive a File</h1>
+          <p className="mt-2 text-base text-[var(--txt-secondary)]">
+            {!showFileMeta
+              ? 'Enter the room code from the sender to link up. Once connected, you can download files directly from their browser — no servers involved.'
+              : fileMeta?.fileName
+                ? `Ready to receive "${fileMeta.fileName}"`
+                : 'You\'ve linked to the sender. Waiting for them to offer a file...'}
+          </p>
         </div>
+
+        {!roomCode && !showFileMeta && (
+          <>
+            <ConnectionCode onJoin={handleJoin} joining={joining} defaultValue={prefillCode} />
+            <AnimatePresence>
+              {joinError && (
+                <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} className="flex items-center gap-2 rounded-lg border border-[var(--error)]/20 bg-[var(--error)]/5 px-4 py-3">
+                  <svg className="h-4 w-4 shrink-0 text-[var(--error)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <p className="text-xs text-[var(--error)]">{joinError}</p>
+                </motion.div>
+              )}
+              {joining && (
+                <div className="flex items-center gap-2 rounded-lg border border-[var(--accent)]/10 bg-[var(--accent)]/5 px-4 py-3">
+                  <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--accent)]" />
+                  <span className="text-xs text-[var(--accent)]/80">Joining room...</span>
+                </div>
+              )}
+            </AnimatePresence>
+          </>
+        )}
+
+        {roomCode && !showFileMeta && (
+          <>
+            <AnimatePresence>
+              {roomClosed && (
+                <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
+                  <div className="rounded-lg border border-[var(--error)]/20 bg-[var(--error)]/5 px-4 py-4 text-center">
+                    <div className="mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-full bg-[var(--error)]/10">
+                      <svg className="h-5 w-5 text-[var(--error)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                      </svg>
+                    </div>
+                    <p className="text-sm font-medium text-[var(--error)]">Connection Lost</p>
+                    <p className="mt-1 text-xs text-[var(--error)]/70">The sender has disconnected or the room was closed.</p>
+                    <button onClick={handleDismiss} className="mt-4 inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-[var(--error)]/20 px-3 py-1.5 text-xs font-medium text-[var(--error)] transition-colors hover:bg-[var(--error)]/5">
+                      Leave Room
+                    </button>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+            <Card className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Badge color="green" dot>LINK ESTABLISHED</Badge>
+                  <span className="text-xs text-[var(--txt-secondary)]">via relay</span>
+                </div>
+                <button onClick={handleDismiss} className="flex cursor-pointer items-center gap-1.5 rounded-md border border-[var(--border-light)] px-2.5 py-1.5 text-xs font-medium text-[var(--txt-secondary)] transition-colors hover:border-[var(--error)]/40 hover:text-[var(--error)] hover:bg-[var(--error)]/5">
+                  <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                  Dismiss
+                </button>
+              </div>
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--success)]/10">
+                  <svg className="h-5 w-5 text-[var(--success)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                  </svg>
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-[var(--txt-primary)]">Connected to room</p>
+                  <p className="font-mono text-xs text-[var(--txt-dim)]">{roomCode}</p>
+                </div>
+              </div>
+              <p className="text-sm leading-relaxed text-[var(--txt-secondary)]">
+                You're in the room. Once the sender offers a file, you'll see the details and can start the transfer. No action needed right now.
+              </p>
+            </Card>
+            <div className="flex items-center gap-2 rounded-lg border border-[var(--accent)]/10 bg-[var(--accent)]/5 px-4 py-3">
+              <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--accent)]" />
+              <span className="text-xs text-[var(--accent)]/80">Listening for file offer...</span>
+            </div>
+            <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-4 py-3">
+              <p className="mb-2 text-xs uppercase tracking-widest text-[var(--txt-secondary)]">Save preference</p>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setSaveMode('auto')}
+                  className={`flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-md border px-3 py-2 text-xs font-medium uppercase tracking-wider transition-all ${
+                    saveMode === 'auto'
+                      ? 'border-[var(--accent)]/40 bg-[var(--accent)]/10 text-[var(--accent)]'
+                      : 'border-[var(--border-light)] text-[var(--txt-secondary)] hover:border-[var(--border-hover)]'
+                  }`}
+                >
+                  <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                  </svg>
+                      Specific folder
+                    </button>
+                <button
+                  onClick={() => setSaveMode('files')}
+                  className={`flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-md border px-3 py-2 text-xs font-medium uppercase tracking-wider transition-all ${
+                    saveMode === 'files'
+                      ? 'border-[var(--accent)]/40 bg-[var(--accent)]/10 text-[var(--accent)]'
+                      : 'border-[var(--border-light)] text-[var(--txt-secondary)] hover:border-[var(--border-hover)]'
+                  }`}
+                >
+                  <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                  Files
+                </button>
+              </div>
+              <p className="mt-2 text-xs text-[var(--txt-secondary)]">
+                {saveMode === 'auto' ? 'Saved to a folder you pick — all files together in one place' : 'Each file downloaded individually to your default downloads location'}
+              </p>
+            </div>
+            {accordionsAfter}
+          </>
+        )}
+      </div>
+
+      {showFileMeta && (
+        <div className={`flex-1 ${roomCode ? 'lg:w-[65%]' : ''}`}>
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="flex flex-col gap-6"
+          >
+            <AnimatePresence>
+              {roomClosed && (
+                <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
+                  <div className="rounded-lg border border-[var(--error)]/20 bg-[var(--error)]/5 px-4 py-4 text-center">
+                    <div className="mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-full bg-[var(--error)]/10">
+                      <svg className="h-5 w-5 text-[var(--error)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                      </svg>
+                    </div>
+                    <p className="text-sm font-medium text-[var(--error)]">Connection Lost</p>
+                    <p className="mt-1 text-xs text-[var(--error)]/70">The sender has disconnected or the room was closed.</p>
+                    <button onClick={handleDismiss} className="mt-4 inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-[var(--error)]/20 px-3 py-1.5 text-xs font-medium text-[var(--error)] transition-colors hover:bg-[var(--error)]/5">
+                      Leave Room
+                    </button>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+            <Card>
+              <div className="mb-3 flex items-center gap-2">
+                <Badge color={status === 'complete' ? 'green' : 'amber'} dot>
+                  {status === 'complete' ? 'RECEIVED' : status === 'transferring' ? 'DOWNLOADING' : 'OFFERED'}
+                </Badge>
+                <span className="text-xs text-[var(--txt-secondary)]">
+                  {status === 'complete' ? 'Done!' : status === 'transferring' ? 'In progress' : 'Review and accept'}
+                </span>
+              </div>
+              <FileManifest fileMeta={fileMeta} />
+            </Card>
+
+            {status === 'file-offered' && (
+              <div className="space-y-3">
+                <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-4 py-3">
+                  <p className="mb-2 text-xs uppercase tracking-widest text-[var(--txt-secondary)]">Save as</p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setSaveMode('auto')}
+                      className={`flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-md border px-3 py-2 text-xs font-medium uppercase tracking-wider transition-all ${
+                        saveMode === 'auto'
+                          ? 'border-[var(--accent)]/40 bg-[var(--accent)]/10 text-[var(--accent)]'
+                          : 'border-[var(--border-light)] text-[var(--txt-secondary)] hover:border-[var(--border-hover)]'
+                      }`}
+                    >
+                    <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                      </svg>
+                      Specific folder
+                    </button>
+                    <button
+                      onClick={() => setSaveMode('files')}
+                      className={`flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-md border px-3 py-2 text-xs font-medium uppercase tracking-wider transition-all ${
+                        saveMode === 'files'
+                          ? 'border-[var(--accent)]/40 bg-[var(--accent)]/10 text-[var(--accent)]'
+                          : 'border-[var(--border-light)] text-[var(--txt-secondary)] hover:border-[var(--border-hover)]'
+                      }`}
+                    >
+                      <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                      </svg>
+                      Files
+                    </button>
+                  </div>
+                  <p className="mt-2 text-xs text-[var(--txt-secondary)]">
+                    {saveMode === 'auto'
+                      ? 'Saved to a folder you pick — all files together in one place'
+                      : 'Each file downloaded individually to your default downloads location'}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4">
+                  <Button onClick={handleBeginTransfer} className="w-full py-3.5 text-sm font-bold tracking-widest uppercase">
+                    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                    </svg>
+                    Begin Transfer
+                  </Button>
+                  <div className="mt-3 flex items-center justify-between">
+                    <p className="text-xs text-[var(--txt-dim)]">Files transferred directly peer-to-peer. Browser must stay open.</p>
+                    <button onClick={handleDismiss} className="flex cursor-pointer items-center gap-1.5 rounded-md border border-[var(--border-light)] px-2.5 py-1 text-xs font-medium text-[var(--txt-secondary)] transition-colors hover:border-[var(--error)]/40 hover:text-[var(--error)] hover:bg-[var(--error)]/5">
+                      <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {status === 'transferring' && (
+              <Card className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--accent)]" />
+                    <span className="text-sm font-medium text-[var(--txt-primary)]">Downloading...</span>
+                  </div>
+                  <span className="font-mono text-sm text-[var(--txt-dim)]">
+                    {progress.verified} / {progress.total} chunks
+                  </span>
+                </div>
+                <ProgressBar percent={progress.percent || 0} />
+                <p className="text-xs text-[var(--txt-dim)]">
+                  Each chunk is verified against the Merkle tree before being accepted.
+                </p>
+              </Card>
+            )}
+
+            {status === 'complete' && (
+              <motion.div
+                initial={{ scale: 0.95 }}
+                animate={{ scale: 1 }}
+                className="rounded-lg border border-[var(--success)]/20 bg-[var(--success)]/5 px-6 py-5 text-center"
+              >
+                <svg className="mx-auto mb-2 h-8 w-8 text-[var(--success)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <p className="text-lg font-medium text-[var(--success)]">Download Complete</p>
+                <p className="mt-1 text-sm text-[var(--success)]/60">{progress.verified} chunks verified and saved</p>
+                <p className="mt-3 text-xs text-[var(--txt-dim)]">
+                  File has been saved to your downloads. You can close this page.
+                </p>
+                <div className="mt-5 flex gap-3">
+                  <Button onClick={() => { resetDownload(); triggerDownload() }} variant="secondary" className="flex-1 py-3 text-sm font-semibold">
+                    RECEIVE AGAIN
+                  </Button>
+                  <Button onClick={handleDismiss} variant="primary" className="flex-1 py-3 text-sm font-semibold">
+                    RECEIVE ANOTHER FILE
+                  </Button>
+                </div>
+              </motion.div>
+            )}
+
+            {status === 'error' && (
+              <Card className="border-[var(--error)]/20 bg-[var(--error)]/5 text-center">
+                <svg className="mx-auto mb-2 h-8 w-8 text-[var(--error)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <p className="text-lg font-medium text-[var(--error)]">Transfer Failed</p>
+                <p className="mt-1 text-sm text-[var(--error)]/60">Something went wrong — the connection may have dropped or a chunk failed verification.</p>
+                <div className="mt-5 flex gap-3">
+                  <Button onClick={() => { resetDownload(); triggerDownload() }} variant="secondary" className="flex-1 py-3 text-sm font-semibold">
+                    RETRY
+                  </Button>
+                  <Button onClick={handleDismiss} variant="primary" className="flex-1 py-3 text-sm font-semibold">
+                    RECEIVE ANOTHER FILE
+                  </Button>
+                </div>
+              </Card>
+            )}
+
+            {status === 'transferring' && accordionsTransfer}
+
+            {status === 'file-offered' && (
+              <div className="space-y-2">
+                <Accordion title="What am I agreeing to?">
+                  <p>By clicking Begin Transfer, your browser will receive encrypted chunks directly from the sender. Each chunk is verified for integrity. Once all chunks arrive, the file is reconstructed and saved automatically.</p>
+                  <p className="mt-2 text-xs text-[var(--txt-dim)]">The sender will see that you've started receiving. You can close your browser at any time to cancel.</p>
+                </Accordion>
+              </div>
+            )}
+          </motion.div>
+        </div>
+      )}
+
+      {!roomCode && !showFileMeta && accordionsBefore}
+    </motion.div>
+  )
+}
+```
+
+### packages/web/src/pages/Send.jsx
+
+```text
+import { useState, useEffect, useRef } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { useSignalingStore } from '../store/useSignalingStore.js'
+import { useTransferStore } from '../store/useTransferStore.js'
+import { useTransfer } from '../hooks/useTransfer.js'
+import { transferManager as M } from '../lib/transferManager.js'
+import { WebRTCTransport } from '../lib/webrtc.js'
+import Card from '../components/shared/Card.jsx'
+import Badge from '../components/shared/Badge.jsx'
+import Accordion from '../components/shared/Accordion.jsx'
+import FileDropZone from '../components/FileDropZone.jsx'
+import RoomCode from '../components/RoomCode.jsx'
+import StatusLog from '../components/StatusLog.jsx'
+
+export default function Send() {
+  const navigate = useNavigate()
+  const [fileIndex, setFileIndex] = useState(null)
+  const [lines, setLines] = useState([])
+  const startRef = useRef(null)
+  const fileIdxRef = useRef(null)
+
+  const roomCode = useSignalingStore((s) => s.roomCode)
+  const peers = useSignalingStore((s) => s.peers)
+  const createRoom = useSignalingStore((s) => s.createRoom)
+  const client = useSignalingStore((s) => s.client)
+
+  const st = useTransferStore((s) => s.status)
+  const prog = useTransferStore((s) => s.progress)
+  const meta = useTransferStore((s) => s.fileMeta)
+
+  const { startSending, addSenderPeer, disconnectAll } = useTransfer()
+
+  function addLine(t) { setLines((p) => [...p, t]) }
+
+  async function handleFileReady(file, index, fileRefs) {
+    fileIdxRef.current = index
+    setFileIndex(index)
+    addLine(`${index.files.length > 1 ? index.files.length + ' files' : index.fileName} (${(index.fileSize / 1e6).toFixed(1)} MB)`)
+    addLine('Indexing & hashing chunks for verification...')
+    await startSending(file, index, fileRefs)
+    addLine('Creating encrypted relay room...')
+    const room = await createRoom()
+    useTransferStore.getState().setRoomCode(room.roomCode)
+    addLine(`Room active: ${room.roomCode}`)
+    startRef.current = Date.now()
+    M.startSeederListener(useSignalingStore.getState().client, (fromPeerId) => {
+      addLine(`Peer connected: ${fromPeerId.slice(0, 12)}...`)
+      addLine('Establishing WebRTC data channel...')
+      const c = useSignalingStore.getState().client
+      if (!c) return
+      const t = new WebRTCTransport(c, fromPeerId, { initiator: false })
+      t.connect().then(() => {
+        addLine('Channel open — encrypted')
+        addLine('Sending file offer...')
+        addSenderPeer(t, fileIdxRef.current)
+        addLine('Transfer started!')
+      }).catch((e) => {
+        addLine(`Connection error: ${e.message}`)
+      })
+    })
+    addLine('Waiting for someone to join with your room code...')
+  }
+
+  useEffect(() => {
+    if (peers.length > 0) {
+      addLine(`${peers.length} peer${peers.length > 1 ? 's' : ''} in room`)
+    }
+  }, [peers.length])
+
+  useEffect(() => {
+    if (st === 'transferring') navigate('/dashboard')
+    return () => M.stopSeederListener()
+  }, [st, navigate])
+
+  useEffect(() => {
+    if (st === 'complete') { addLine('All chunks sent and verified'); addLine('Transfer complete!') }
+    else if (st === 'error') { addLine(`Error: ${useTransferStore.getState().error}`) }
+  }, [st])
+
+  function handleCancel() {
+    M.stopSeederListener()
+    useSignalingStore.getState().disconnect()
+    disconnectAll(); startRef.current = null; fileIdxRef.current = null
+    setFileIndex(null); setLines([])
+  }
+
+  const done = st === 'complete'
+  const xfer = st === 'transferring'
+  const hp = peers.length > 0
+  const secs = startRef.current ? Math.floor((Date.now() - startRef.current) / 1000) : 0
+  const uptime = secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${secs % 60}s`
+  const fileCount = fileIndex?.files?.length || 1
+  const totalSize = fileIndex?.fileSize || 0
+
+  const infoAccordions = (
+    <div className="mt-8 space-y-2">
+      <Accordion title="How it works">
+        <ol className="list-inside list-decimal space-y-1.5">
+          <li>Pick the file or folder you want to send.</li>
+          <li>Mesh splits it into encrypted chunks and creates a unique room code.</li>
+          <li>Share the code with your friend — it also works as a QR code.</li>
+          <li>When they join, a direct WebRTC connection forms between you two.</li>
+          <li>Your browser sends chunks peer-to-peer. No servers see your data.</li>
+          <li>Done! The receiver can download right from their browser.</li>
+        </ol>
+        <p className="mt-3 text-xs text-[var(--txt-dim)]">Everything stays in-browser. Nothing is stored on any server.</p>
+      </Accordion>
+      <Accordion title="Security & encryption">
+        <p>Your file never touches any server. The signaling relay only helps peers find each other — after that, it's a direct encrypted WebRTC connection.</p>
+        <ul className="mt-2 space-y-1">
+          <li className="flex items-start gap-2">
+            <span className="mt-1 h-1 w-1 shrink-0 rounded-full bg-[var(--success)]" />
+            <span><strong className="text-[var(--txt-primary)]">End-to-end encrypted</strong> — DTLS keys negotiated peer-to-peer</span>
+          </li>
+          <li className="flex items-start gap-2">
+            <span className="mt-1 h-1 w-1 shrink-0 rounded-full bg-[var(--success)]" />
+            <span><strong className="text-[var(--txt-primary)]">Chunk verification</strong> — each piece is SHA-256 checked against the Merkle root</span>
+          </li>
+          <li className="flex items-start gap-2">
+            <span className="mt-1 h-1 w-1 shrink-0 rounded-full bg-[var(--success)]" />
+            <span><strong className="text-[var(--txt-primary)]">No account needed</strong> — no sign-up, no tracking, no data collection</span>
+          </li>
+        </ul>
+      </Accordion>
+      <Accordion title="Tips & limits">
+        <ul className="space-y-1.5">
+          <li>Both devices need to stay online during the transfer.</li>
+          <li>For large files (&gt;2 GB), the receiver may be prompted to pick a save location.</li>
+          <li>Folders with multiple files are sent as one batch — all files arrive together.</li>
+          <li>Room codes expire after the transfer ends for security.</li>
+        </ul>
+      </Accordion>
+    </div>
+  )
+
+  if (!fileIndex) {
+    return (
+      <div className="mx-auto max-w-2xl px-6 py-16">
+        <p className="mb-1 text-xs uppercase tracking-[0.15em] text-[var(--accent)]">Secure Peer-to-Peer</p>
+        <h1 className="text-3xl font-bold text-[var(--txt-primary)]">Send a File</h1>
+        <p className="mt-2 mb-8 text-base text-[var(--txt-secondary)]">
+          Drop any file or folder below to start sharing. Mesh creates a private room and gives you a code — share it with anyone to begin the transfer.
+        </p>
+        <FileDropZone onFileReady={handleFileReady} />
+        {infoAccordions}
       </div>
     )
   }
 
   return (
-    <div className="mx-auto max-w-2xl px-6 py-16">
-      <Card className="flex flex-col items-center gap-6">
-        {status === 'waiting-for-file' && <p className="text-black/60 dark:text-white/60">Connecting…</p>}
+    <div className="mx-auto max-w-4xl px-6 py-12">
+      <div className="mb-8">
+        <p className="mb-1 text-xs uppercase tracking-[0.15em] text-[var(--accent)]">Secure Peer-to-Peer</p>
+        <h1 className="text-3xl font-bold text-[var(--txt-primary)]">Sending...</h1>
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <Badge color="amber" dot>{fileCount > 1 ? `${fileCount} files` : fileIndex.fileName}</Badge>
+          <span className="text-sm text-[var(--txt-secondary)]">{(totalSize / 1e6).toFixed(1)} MB</span>
+          <Badge color="gray" dot={false}>{fileIndex.totalChunks} chunks</Badge>
+        </div>
+      </div>
 
-        {fileMeta && <IncomingFileCard fileMeta={fileMeta} />}
-
-        {status === 'file-offered' && (
-          <Button onClick={() => startDownload(peerRef.current)}>Accept and download</Button>
-        )}
-
-        {status === 'transferring' && (
-          <div className="w-full">
-            <ProgressBar percent={progress.percent} />
-            <p className="mt-2 text-center text-sm text-black/50 dark:text-white/50">
-              {progress.verified} / {progress.total} chunks received
-            </p>
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Card className="flex flex-col items-center justify-center py-8">
+          {roomCode ? (
+            <>
+              <p className="mb-3 text-xs uppercase tracking-widest text-[var(--txt-secondary)]">Share this code</p>
+              <RoomCode roomCode={roomCode} />
+              <p className="mt-4 text-center text-xs text-[var(--txt-dim)]">
+                Share the code or let them scan the QR
+              </p>
+            </>
+          ) : (
+            <div className="flex flex-col items-center gap-3 py-8">
+              <div className="h-8 w-8 animate-spin rounded-full border-2 border-[var(--accent)]/30 border-t-amber-400" />
+              <p className="text-sm text-[var(--txt-secondary)]">Creating room...</p>
+            </div>
+          )}
+        </Card>
+        <Card>
+          <div className="mb-2 flex items-center gap-2">
+            <Badge color="amber" dot={!done && hp}>{done ? 'COMPLETE' : hp ? 'ACTIVE' : 'WAITING'}</Badge>
+            <span className="text-xs text-[var(--txt-secondary)]">
+              {done ? 'All done' : hp ? 'Peer connected' : 'Waiting for receiver'}
+            </span>
           </div>
-        )}
+          <StatusLog lines={lines} blinking={!done && !hp} />
+        </Card>
+      </div>
 
-        {status === 'complete' && <p className="font-medium text-green-600">Download complete</p>}
-      </Card>
+      <div className="mt-6 grid gap-6 lg:grid-cols-3">
+        <Card>
+          <div className="flex items-center justify-between">
+            <span className="text-xs uppercase tracking-wider text-[var(--txt-secondary)]">Peers</span>
+            <span className="font-mono text-sm text-[var(--accent)]">{peers.length}</span>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            {hp ? peers.map((p) => (
+              <span key={p} className="inline-flex items-center gap-1 rounded-md bg-[var(--accent)]/10 px-2 py-1 font-mono text-xs text-[var(--accent-dim)]">
+                <span className="h-1.5 w-1.5 rounded-full bg-[var(--success)]" />
+                {p.slice(0, 8)}
+              </span>
+            )) : (
+              <p className="text-xs text-[var(--txt-dim)]">No one joined yet — share the code above</p>
+            )}
+          </div>
+        </Card>
+        <Card>
+          <div className="flex items-center justify-between">
+            <span className="text-xs uppercase tracking-wider text-[var(--txt-secondary)]">Session</span>
+            <span className="font-mono text-xs text-[var(--txt-dim)]">{startRef.current ? uptime : '—'}</span>
+          </div>
+          <p className="mt-3 text-xs text-[var(--txt-dim)]">
+            {roomCode ? `Room: ${roomCode}` : 'Initializing...'}
+          </p>
+        </Card>
+        <Card>
+          <div className="flex items-center justify-between">
+            <span className="text-xs uppercase tracking-wider text-[var(--txt-secondary)]">Encryption</span>
+            <Badge color="green" dot={false}>DTLS 1.3</Badge>
+          </div>
+          <p className="mt-3 text-xs text-[var(--txt-dim)]">
+            {hp ? 'Peer-to-peer channel active' : 'Waiting for peer to connect'}
+          </p>
+        </Card>
+      </div>
+
+      {xfer && (
+        <Card className="mt-6">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-sm font-medium text-[var(--txt-primary)]">Uploading chunks</span>
+            <span className="font-mono text-sm text-[var(--txt-secondary)]">{prog.verified} / {prog.total}</span>
+          </div>
+          <div className="h-2 w-full overflow-hidden rounded-full bg-[var(--border)]">
+            <div
+              className="h-full rounded-full bg-[var(--accent)] transition-all duration-300"
+              style={{ width: `${Math.min(100, prog.percent)}%` }}
+            />
+          </div>
+          <p className="mt-2 text-xs text-[var(--txt-dim)]">
+            Each chunk is hashed and sent. The receiver verifies every piece against the Merkle tree.
+          </p>
+        </Card>
+      )}
+
+      {done && (
+        <Card className="mt-6 border-[var(--success)]/20 bg-[var(--success)]/5">
+          <div className="flex items-center gap-3">
+            <svg className="h-6 w-6 shrink-0 text-[var(--success)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <div>
+              <p className="font-medium text-[var(--success)]">Transfer Complete</p>
+              <p className="text-xs text-[var(--success)]/60">{prog.verified} / {prog.total} chunks · All verified</p>
+            </div>
+          </div>
+        </Card>
+      )}
+
+      <div className="mt-8 flex items-center justify-center gap-5 border-t border-[var(--border)] pt-4">
+        <span className="text-xs uppercase tracking-[0.15em] text-[var(--txt-secondary)]">
+          STATUS <span className={`ml-1 ${done ? 'text-[var(--success)]' : xfer ? 'text-[var(--accent)]' : 'text-[var(--txt-dim)]'}`}>
+            {done ? 'COMPLETE' : xfer ? 'SENDING' : hp ? 'CONNECTED' : 'WAITING'}
+          </span>
+        </span>
+        {startRef.current && (
+          <span className="text-xs uppercase tracking-[0.15em] text-[var(--txt-secondary)]">
+            UPTIME <span className="ml-1 text-[var(--accent)]">{uptime}</span>
+          </span>
+        )}
+        {!done && (
+          <button
+            onClick={handleCancel}
+            className="cursor-pointer rounded-md border border-[var(--border-light)] px-3 py-1 text-xs uppercase tracking-wider text-[var(--txt-secondary)] transition-colors hover:border-[var(--error)]/30 hover:text-[var(--error)]"
+          >
+            Cancel
+          </button>
+        )}
+        {done && (
+          <button
+            onClick={handleCancel}
+            className="cursor-pointer rounded-md border border-[var(--border-light)] px-3 py-1 text-xs uppercase tracking-wider text-[var(--txt-secondary)] transition-colors hover:border-[var(--accent)]/30 hover:text-[var(--accent)]"
+          >
+            Send Another
+          </button>
+        )}
+      </div>
     </div>
   )
 }
 ```
 
-### packages/web/src/pages/SendPage.jsx
+### packages/web/src/store/useHistoryStore.js
 
 ```text
-import { useEffect, useRef, useState } from 'react'
-import DropZone from '../components/send/DropZone.jsx'
-import RoomCodeDisplay from '../components/send/RoomCodeDisplay.jsx'
-import ConnectionStatus from '../components/send/ConnectionStatus.jsx'
-import ProgressBar from '../components/shared/ProgressBar.jsx'
-import Card from '../components/shared/Card.jsx'
-import { formatBytes } from '../lib/format.js'
-import { useSignalingStore } from '../store/useSignalingStore.js'
-import { useTransferStore } from '../store/useTransferStore.js'
-import { useSendTransfer } from '../hooks/useSendTransfer.js'
+const KEY = 'mesh-history'
 
-export default function SendPage() {
-  const [fileIndex, setFileIndex] = useState(null)
-  const connectedRef = useRef(false)
-
-  const roomCode = useSignalingStore((s) => s.roomCode)
-  const peers = useSignalingStore((s) => s.peers)
-  const createRoom = useSignalingStore((s) => s.createRoom)
-
-  const status = useTransferStore((s) => s.status)
-  const progress = useTransferStore((s) => s.progress)
-  const fileMeta = useTransferStore((s) => s.fileMeta)
-
-  const { startSending, connectToPeer } = useSendTransfer()
-
-  async function handleFileReady(file, index) {
-    setFileIndex(index)
-    await startSending(file, index)
-    await createRoom()
+function load() {
+  try {
+    const raw = localStorage.getItem(KEY)
+    return raw ? JSON.parse(raw) : []
+  } catch {
+    return []
   }
+}
 
-  useEffect(() => {
-    if (peers.length > 0 && !connectedRef.current) {
-      connectedRef.current = true
-      connectToPeer(peers[0])
-    }
-  }, [peers, connectToPeer])
+function save(entries) {
+  try {
+    localStorage.setItem(KEY, JSON.stringify(entries))
+  } catch {}
+}
 
-  if (!fileIndex) {
-    return (
-      <div className="mx-auto max-w-2xl px-6 py-16">
-        <h1 className="text-3xl font-semibold">Send a file</h1>
-        <p className="mt-2 text-black/60 dark:text-white/60">Pick a file to share directly with someone.</p>
-        <div className="mt-8">
-          <DropZone onFileReady={handleFileReady} />
-        </div>
-      </div>
-    )
-  }
+export function addHistoryEntry(entry) {
+  const entries = load()
+  entries.unshift({
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    date: Date.now(),
+    ...entry,
+  })
+  if (entries.length > 50) entries.length = 50
+  save(entries)
+  return entries
+}
 
-  return (
-    <div className="mx-auto max-w-2xl px-6 py-16">
-      <Card className="flex flex-col items-center gap-6">
-        <div className="text-center">
-          <p className="truncate text-lg font-medium">{fileMeta?.fileName}</p>
-          <p className="text-sm text-black/50 dark:text-white/50">{formatBytes(fileMeta?.fileSize || 0)}</p>
-        </div>
+export function getHistory() {
+  return load()
+}
 
-        {roomCode && !connectedRef.current && <RoomCodeDisplay roomCode={roomCode} />}
+export function clearHistory() {
+  save([])
+  return []
+}
 
-        <ConnectionStatus status={status} />
-
-        {status === 'transferring' && (
-          <div className="w-full">
-            <ProgressBar percent={progress.percent} />
-            <p className="mt-2 text-center text-sm text-black/50 dark:text-white/50">
-              {progress.verified} / {progress.total} chunks sent
-            </p>
-          </div>
-        )}
-
-        {status === 'complete' && <p className="font-medium text-green-600">Transfer complete</p>}
-      </Card>
-    </div>
-  )
+export function removeHistoryEntry(id) {
+  const entries = load().filter(e => e.id !== id)
+  save(entries)
+  return entries
 }
 ```
 
@@ -6573,29 +9621,27 @@ export const useSignalingStore = create((set, get) => ({
   error: null,
 
   connect: async () => {
-    if (get().client) return get().client
+    const { client } = get()
+    if (client) return client
     set({ status: 'connecting', error: null })
-    const client = new SignalingClient(SIGNALING_URL)
-
-    client.addEventListener('peerJoined', (e) => {
-      set((state) => ({ peers: [...state.peers, e.detail.peerId] }))
-    })
-    client.addEventListener('peerLeft', (e) => {
-      set((state) => ({ peers: state.peers.filter((id) => id !== e.detail.peerId) }))
-    })
-    client.addEventListener('signalingError', (e) => {
-      set({ error: e.detail.message })
-    })
-    client.addEventListener('close', () => {
-      set({ status: 'idle' })
-    })
-
     try {
-      await client.connect()
-      set({ client, status: 'connected' })
-      return client
+      const c = new SignalingClient(SIGNALING_URL)
+      c.addEventListener('peerJoined', (e) => {
+        set((s) => ({ peers: [...s.peers, e.detail.peerId] }))
+      })
+      c.addEventListener('peerLeft', (e) => {
+        set((s) => ({ peers: s.peers.filter((p) => p !== e.detail.peerId) }))
+      })
+      c.addEventListener('close', () => {
+        const s = get()
+        set({ client: null, status: 'disconnected', peerId: null, peers: [] })
+        if (!s.roomCode) set({ roomCode: null })
+      })
+      await c.connect()
+      set({ client: c, status: 'connected' })
+      return c
     } catch (err) {
-      set({ status: 'error', error: err.message })
+      set({ status: 'error', error: err.message || 'Connection failed' })
       throw err
     }
   },
@@ -6610,14 +9656,18 @@ export const useSignalingStore = create((set, get) => ({
   joinRoom: async (roomCode, password) => {
     const client = await get().connect()
     const result = await client.joinRoom(roomCode, password)
-    set({ roomCode: result.roomCode, peerId: result.peerId, peers: result.existingPeers })
+    set({ roomCode, peerId: result.peerId, peers: result.existingPeers || [] })
     return result
   },
 
   disconnect: () => {
-    const client = get().client
+    const { client } = get()
     if (client) client.close()
     set({ client: null, status: 'idle', roomCode: null, peerId: null, peers: [], error: null })
+  },
+
+  reset: () => {
+    set({ status: 'idle', roomCode: null, peerId: null, peers: [], error: null })
   },
 }))
 ```
@@ -6626,70 +9676,171 @@ export const useSignalingStore = create((set, get) => ({
 
 ```text
 import { create } from 'zustand'
+import { addHistoryEntry } from './useHistoryStore.js'
 
-export const useTransferStore = create((set, get) => ({
+const STORAGE_KEY = 'mesh-transfer-state'
+
+const initial = {
   role: null,
   status: 'idle',
   fileMeta: null,
   progress: { verified: 0, total: 0, percent: 0 },
+  chunkStates: [],
   peerStats: [],
   speedHistory: [],
   error: null,
+  seeding: false,
+  saveMode: 'files',
+  startTime: null,
+  roomCode: '',
+}
 
-  startAsSender: (fileMeta) => {
-    set({ role: 'sender', status: 'waiting-for-peer', fileMeta, error: null })
-  },
+function loadSaved() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (!raw) return null
+    const saved = JSON.parse(raw)
+    if (!saved || !saved.fileMeta) return null
+    const total = saved.fileMeta.totalChunks || 0
+    saved.chunkStates = new Array(total).fill('pending')
+    if (saved.progress.verified > 0) {
+      for (let i = 0; i < saved.progress.verified && i < total; i++) {
+        saved.chunkStates[i] = 'verified'
+      }
+    }
+    return saved
+  } catch { return null }
+}
 
-  startAsReceiver: () => {
-    set({ role: 'receiver', status: 'waiting-for-file', fileMeta: null, error: null })
-  },
+export const useTransferStore = create((set) => {
+  const saved = loadSaved()
+  return {
+    ...initial,
+    ...saved,
 
-  setIncomingFile: (fileMeta) => {
-    set({ fileMeta, status: 'file-offered' })
-  },
+    startAsSender: (fileMeta) => set({
+      role: 'sender',
+      status: 'waiting-for-peer',
+      seeding: true,
+      fileMeta,
+      chunkStates: new Array(fileMeta.totalChunks).fill('pending'),
+      progress: { verified: 0, total: fileMeta.totalChunks, percent: 0 },
+      error: null, startTime: Date.now(),
+    }),
 
-  setTransferring: () => {
-    set({ status: 'transferring', speedHistory: [] })
-  },
-
-  updateProgress: (progress) => {
-    set({ progress })
-  },
-
-  updatePeerStats: (peerStats) => {
-    set({ peerStats })
-  },
-
-  recordSpeedSample: (mbps) => {
-    set((state) => ({
-      speedHistory: [...state.speedHistory.slice(-59), { t: Date.now(), mbps }],
-    }))
-  },
-
-  setComplete: () => {
-    set({ status: 'complete' })
-  },
-
-  setPaused: () => {
-    set({ status: 'paused' })
-  },
-
-  setError: (message) => {
-    set({ status: 'error', error: message })
-  },
-
-  reset: () => {
-    set({
-      role: null,
-      status: 'idle',
+    startAsReceiver: () => set({
+      role: 'receiver',
+      status: 'waiting-for-file',
       fileMeta: null,
       progress: { verified: 0, total: 0, percent: 0 },
+      chunkStates: [],
       peerStats: [],
       speedHistory: [],
-      error: null,
-    })
-  },
-}))
+      error: null, startTime: Date.now(),
+    }),
+
+    setIncomingFile: (fileMeta) => set({
+      fileMeta,
+      status: 'file-offered',
+      chunkStates: new Array(fileMeta.totalChunks).fill('pending'),
+      progress: { verified: 0, total: fileMeta.totalChunks, percent: 0 },
+    }),
+
+    setTransferring: () => set({ status: 'transferring' }),
+    updateProgress: (p) => set({ progress: p }),
+
+    updateChunkState: (index, state) => set((s) => {
+      const next = [...s.chunkStates]
+      next[index] = state
+      return { chunkStates: next }
+    }),
+
+    updatePeerStats: (peerStats) => set({ peerStats }),
+
+    recordSpeedSample: (mbps) => set((s) => {
+      const clean = typeof mbps === 'number' && isFinite(mbps) && mbps >= 0 ? mbps : 0
+      return { speedHistory: [...s.speedHistory.slice(-59), { t: Date.now(), mbps: clean }] }
+    }),
+
+    setRoomCode: (roomCode) => set({ roomCode }),
+    setSeeding: (seeding) => set({ seeding }),
+    setSaveMode: (saveMode) => set({ saveMode }),
+
+    setComplete: () => set((s) => {
+      if (!s.fileMeta || s.role === null) return s
+      const meta = s.fileMeta
+      const fileCount = meta?.files?.length || 1
+      const totalChunks = meta?.totalChunks || s.progress.total
+      const avgMbps = s.speedHistory.length > 0
+        ? s.speedHistory.reduce((a, b) => a + b.mbps, 0) / s.speedHistory.length
+        : 0
+      addHistoryEntry({
+        role: s.role,
+        fileName: meta?.fileName || 'Unknown',
+        fileSize: meta?.fileSize || 0,
+        fileCount,
+        totalChunks,
+        chunkSize: meta?.chunkSize || 0,
+        merkleRoot: meta?.merkleRoot || '',
+        roomCode: s.roomCode || '',
+        status: 'complete',
+        duration: s.startTime ? Math.round((Date.now() - s.startTime) / 1000) : 0,
+        avgSpeed: avgMbps,
+        peers: s.peerStats.length,
+      })
+      return { status: 'complete', seeding: true }
+    }),
+    setPaused: () => set({ status: 'paused' }),
+    setError: (message) => set((s) => {
+      if (!s.fileMeta || s.role === null) return s
+      const meta = s.fileMeta
+      addHistoryEntry({
+        role: s.role,
+        fileName: meta?.fileName || 'Unknown',
+        fileSize: meta?.fileSize || 0,
+        fileCount: meta?.files?.length || 1,
+        totalChunks: meta?.totalChunks || 0,
+        chunkSize: meta?.chunkSize || 0,
+        merkleRoot: meta?.merkleRoot || '',
+        roomCode: s.roomCode || '',
+        status: 'failed',
+        duration: s.startTime ? Math.round((Date.now() - s.startTime) / 1000) : 0,
+        avgSpeed: 0,
+        peers: s.peerStats.length,
+      })
+      return { status: 'error', error: message }
+    }),
+
+    reset: () => {
+      localStorage.removeItem(STORAGE_KEY)
+      set({ ...initial })
+    },
+  }
+})
+
+const KEY = STORAGE_KEY
+useTransferStore.subscribe((state) => {
+  if (state.status === 'idle') {
+    localStorage.removeItem(KEY)
+    return
+  }
+  try {
+    const toSave = {
+      role: state.role,
+      status: state.status,
+      fileMeta: state.fileMeta,
+      progress: state.progress,
+      chunkStates: state.chunkStates,
+      peerStats: state.peerStats,
+      speedHistory: state.speedHistory,
+      error: state.error,
+      seeding: state.seeding,
+      saveMode: state.saveMode,
+      roomCode: state.roomCode,
+    }
+    localStorage.setItem(KEY, JSON.stringify(toSave))
+  } catch { /* storage full */ }
+})
 ```
 
 ### packages/web/src/store/useUIStore.js
@@ -6697,14 +9848,14 @@ export const useTransferStore = create((set, get) => ({
 ```text
 import { create } from 'zustand'
 
-const THEME_KEY = 'mesh-theme'
+const KEY = 'mesh-theme'
 
 export const useUIStore = create((set, get) => ({
-  theme: 'light',
+  theme: 'dark',
 
   initTheme: () => {
-    const stored = localStorage.getItem(THEME_KEY)
-    const theme = stored === 'dark' ? 'dark' : 'light'
+    const stored = localStorage.getItem(KEY)
+    const theme = stored === 'light' ? 'light' : 'dark'
     document.documentElement.classList.toggle('dark', theme === 'dark')
     set({ theme })
   },
@@ -6712,209 +9863,12 @@ export const useUIStore = create((set, get) => ({
   toggleTheme: () => {
     const next = get().theme === 'dark' ? 'light' : 'dark'
     document.documentElement.classList.toggle('dark', next === 'dark')
-    localStorage.setItem(THEME_KEY, next)
+    localStorage.setItem(KEY, next)
     set({ theme: next })
   },
+
+  setPage: (page) => set({ page }),
 }))
-```
-
-### packages/web/src/webrtc-test.html
-
-```text
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="UTF-8" />
-<title>Mesh WebRTC Test</title>
-<script src="https://cdn.tailwindcss.com"></script>
-</head>
-<body class="bg-slate-950 text-slate-100 min-h-screen p-8 font-mono">
-<div class="max-w-3xl mx-auto space-y-6">
-
-<h1 class="text-2xl font-bold">Mesh — WebRTC Connectivity Test</h1>
-<p class="text-slate-400 text-sm">Open this same URL in a second tab. Create a room in one, join with the code in the other.</p>
-
-<div class="space-y-2">
-  <label class="block text-sm text-slate-400">Signaling server URL</label>
-  <input id="signalingUrl" type="text" value="ws://localhost:8080"
-    class="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm" />
-</div>
-
-<div class="grid grid-cols-2 gap-4">
-  <div class="bg-slate-900 border border-slate-700 rounded p-4 space-y-3">
-    <h2 class="font-semibold">Create room</h2>
-    <button id="createRoomBtn" class="bg-emerald-600 hover:bg-emerald-500 px-4 py-2 rounded text-sm w-full">
-      Create Room
-    </button>
-    <div class="text-sm">
-      Room code: <span id="roomCodeDisplay" class="text-emerald-400 font-bold">—</span>
-    </div>
-  </div>
-
-  <div class="bg-slate-900 border border-slate-700 rounded p-4 space-y-3">
-    <h2 class="font-semibold">Join room</h2>
-    <input id="roomCodeInput" type="text" placeholder="ROOMCODE"
-      class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm uppercase" />
-    <button id="joinRoomBtn" class="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded text-sm w-full">
-      Join Room
-    </button>
-  </div>
-</div>
-
-<div class="bg-slate-900 border border-slate-700 rounded p-4 space-y-3">
-  <h2 class="font-semibold">Status</h2>
-  <div class="text-sm">
-    Peer ID: <span id="peerIdDisplay" class="text-slate-300">—</span>
-  </div>
-  <div class="text-sm">
-    WebRTC state: <span id="webrtcStateDisplay" class="text-yellow-400">idle</span>
-  </div>
-</div>
-
-<div class="bg-slate-900 border border-slate-700 rounded p-4 space-y-3">
-  <h2 class="font-semibold">Send message over data channel</h2>
-  <div class="flex gap-2">
-    <input id="messageInput" type="text" placeholder="hello from tab A"
-      class="flex-1 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm" />
-    <button id="sendBtn" disabled
-      class="bg-purple-600 hover:bg-purple-500 disabled:bg-slate-700 disabled:cursor-not-allowed px-4 py-2 rounded text-sm">
-      Send
-    </button>
-  </div>
-</div>
-
-<div class="bg-black border border-slate-700 rounded p-4">
-  <h2 class="font-semibold mb-2">Log</h2>
-  <div id="log" class="text-xs text-slate-300 space-y-1 h-80 overflow-y-auto"></div>
-</div>
-
-</div>
-
-<script type="module">
-import { SignalingClient } from '/src/webrtc/signalingClient.js';
-import { WebRTCPeer } from '/src/webrtc/webrtcPeer.js';
-
-const logEl = document.getElementById('log');
-const peerIdDisplay = document.getElementById('peerIdDisplay');
-const webrtcStateDisplay = document.getElementById('webrtcStateDisplay');
-const roomCodeDisplay = document.getElementById('roomCodeDisplay');
-const sendBtn = document.getElementById('sendBtn');
-const messageInput = document.getElementById('messageInput');
-const createRoomBtn = document.getElementById('createRoomBtn');
-const joinRoomBtn = document.getElementById('joinRoomBtn');
-const roomCodeInput = document.getElementById('roomCodeInput');
-const signalingUrlInput = document.getElementById('signalingUrl');
-
-let signaling = null;
-let peer = null;
-
-function log(message) {
-  const line = document.createElement('div');
-  const time = new Date().toLocaleTimeString();
-  line.textContent = `[${time}] ${message}`;
-  logEl.appendChild(line);
-  logEl.scrollTop = logEl.scrollHeight;
-}
-
-function setWebrtcState(state, color) {
-  webrtcStateDisplay.textContent = state;
-  webrtcStateDisplay.className = color;
-}
-
-async function ensureSignaling() {
-  if (signaling) return signaling;
-  signaling = new SignalingClient(signalingUrlInput.value);
-  await signaling.connect();
-  peerIdDisplay.textContent = signaling.peerId || 'connected';
-  log('connected to signaling server');
-
-  signaling.addEventListener('peerJoined', (event) => {
-    log(`peer joined room: ${event.detail.peerId}`);
-    startConnection(event.detail.peerId, true);
-  });
-
-  signaling.addEventListener('peerLeft', (event) => {
-    log(`peer left room: ${event.detail.peerId}`);
-    setWebrtcState('peer left', 'text-red-400');
-  });
-
-  signaling.addEventListener('signalingError', (event) => {
-    log(`signaling error: ${event.detail.message}`);
-  });
-
-  return signaling;
-}
-
-async function startConnection(remotePeerId, initiator) {
-  log(`starting webrtc connection to ${remotePeerId} (initiator=${initiator})`);
-  setWebrtcState('connecting', 'text-yellow-400');
-
-  peer = new WebRTCPeer(signaling, remotePeerId, { initiator });
-
-peer.addEventListener('jsonMessage', (event) => {
-  log(`received: ${JSON.stringify(event.detail)}`);
-});
-  peer.addEventListener('close', () => {
-    log('data channel closed');
-    setWebrtcState('closed', 'text-red-400');
-    sendBtn.disabled = true;
-  });
-
-  try {
-    await peer.connect();
-    log('data channel open — connection established');
-    setWebrtcState('connected', 'text-emerald-400');
-    sendBtn.disabled = false;
-  } catch (err) {
-    log(`connection failed: ${err.message}`);
-    setWebrtcState('failed', 'text-red-400');
-  }
-}
-
-createRoomBtn.addEventListener('click', async () => {
-  createRoomBtn.disabled = true;
-  try {
-    await ensureSignaling();
-    const result = await signaling.createRoom();
-    roomCodeDisplay.textContent = result.roomCode;
-    peerIdDisplay.textContent = result.peerId;
-    log(`room created: ${result.roomCode}`);
-  } catch (err) {
-    log(`create room failed: ${err.message}`);
-  } finally {
-    createRoomBtn.disabled = false;
-  }
-});
-
-joinRoomBtn.addEventListener('click', async () => {
-  joinRoomBtn.disabled = true;
-  try {
-    await ensureSignaling();
-    const code = roomCodeInput.value.trim().toUpperCase();
-    const result = await signaling.joinRoom(code);
-    peerIdDisplay.textContent = result.peerId;
-    log(`joined room ${result.roomCode}, existing peers: ${result.existingPeers.join(', ') || 'none'}`);
-    for (const existingPeerId of result.existingPeers) {
-      startConnection(existingPeerId, false);
-    }
-  } catch (err) {
-    log(`join room failed: ${err.message}`);
-  } finally {
-    joinRoomBtn.disabled = false;
-  }
-});
-
-sendBtn.addEventListener('click', () => {
-  if (!peer) return;
-  const text = messageInput.value;
-  if (!text) return;
-  peer.send({ text, ts: Date.now() });
-  log(`sent: ${text}`);
-  messageInput.value = '';
-});
-</script>
-</body>
-</html>
 ```
 
 ### packages/web/src/webrtc/protocol.js
@@ -7023,6 +9977,16 @@ export class SignalingClient extends EventTarget {
     this.peerId = null;
     this.roomCode = null;
     this._pending = null;
+    this._relayBuffer = [];
+  }
+
+  addEventListener(type, handler) {
+    super.addEventListener(type, handler);
+    if (type === 'relay' && this._relayBuffer.length > 0) {
+      for (const detail of this._relayBuffer) {
+        handler(new CustomEvent('relay', { detail }));
+      }
+    }
   }
 
   connect() {
@@ -7079,15 +10043,17 @@ export class SignalingClient extends EventTarget {
     }
 
     if (msg.type === MSG_TYPE.RELAY) {
-      this.dispatchEvent(new CustomEvent('relay', {
-        detail: { fromPeerId: msg.fromPeerId, payload: msg.payload },
-      }));
+      const detail = { fromPeerId: msg.fromPeerId, payload: msg.payload };
+      this._relayBuffer.push(detail);
+      if (this._relayBuffer.length > 20) this._relayBuffer.shift();
+      this.dispatchEvent(new CustomEvent('relay', { detail }));
       return;
     }
   }
 
   createRoom(password) {
     return new Promise((resolve, reject) => {
+      if (this._pending) this._pending.reject(new Error('Request cancelled'));
       this._pending = { resolve, reject };
       this._send({ type: MSG_TYPE.CREATE_ROOM, password });
     });
@@ -7095,6 +10061,7 @@ export class SignalingClient extends EventTarget {
 
   joinRoom(roomCode, password) {
     return new Promise((resolve, reject) => {
+      if (this._pending) this._pending.reject(new Error('Request cancelled'));
       this._pending = { resolve, reject };
       this._send({ type: MSG_TYPE.JOIN_ROOM, roomCode, password });
     });
@@ -7106,247 +10073,6 @@ export class SignalingClient extends EventTarget {
 
   close() {
     if (this.ws) this.ws.close();
-  }
-}
-```
-
-### packages/web/src/webrtc/webrtcPeer.js
-
-```text
-import { TYPE, MSG, buildJSONBody, buildChunkBody, parseMessage } from './protocol.js';
-
-export const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
-export const CONNECT_TIMEOUT_MS = 15000;
-export const CHUNK_REQUEST_TIMEOUT_MS = 30000;
-
-export class WebRTCPeer extends EventTarget {
-  constructor(signalingClient, remotePeerId, { initiator }) {
-    super();
-    this.signalingClient = signalingClient;
-    this.remotePeerId = remotePeerId;
-    this.initiator = initiator;
-    this.pc = null;
-    this.channel = null;
-    this._remoteDescSet = false;
-    this._pendingCandidates = [];
-    this._relayHandler = (event) => this._handleRelay(event);
-  }
-
-  connect() {
-    return new Promise((resolve, reject) => {
-      let settled = false;
-
-      const timeout = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        reject(new Error('WebRTC connection timeout'));
-      }, CONNECT_TIMEOUT_MS);
-
-      const cleanup = () => {
-        clearTimeout(timeout);
-        this.signalingClient.removeEventListener('relay', this._relayHandler);
-      };
-
-      const succeed = () => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        resolve(this);
-      };
-
-      const fail = (err) => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        reject(err);
-      };
-
-      this.pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-
-      this.pc.addEventListener('icecandidate', (event) => {
-        if (event.candidate) {
-          this.signalingClient.relay(this.remotePeerId, {
-            kind: 'ice-candidate',
-            candidate: event.candidate.toJSON ? event.candidate.toJSON() : event.candidate,
-          });
-        }
-      });
-
-      this.pc.addEventListener('connectionstatechange', () => {
-        if (this.pc.connectionState === 'failed' || this.pc.connectionState === 'closed') {
-          fail(new Error(`WebRTC connection ${this.pc.connectionState}`));
-        }
-      });
-
-      if (this.initiator) {
-        this.channel = this.pc.createDataChannel('mesh');
-        this._bindChannel(succeed);
-        this.pc.createOffer()
-          .then((offer) => this.pc.setLocalDescription(offer).then(() => offer))
-          .then((offer) => {
-            this.signalingClient.relay(this.remotePeerId, { kind: 'offer', sdp: offer.sdp });
-          })
-          .catch(fail);
-      } else {
-        this.pc.addEventListener('datachannel', (event) => {
-          this.channel = event.channel;
-          this._bindChannel(succeed);
-        });
-      }
-
-      this.signalingClient.addEventListener('relay', this._relayHandler);
-    });
-  }
-
-  _bindChannel(onOpen) {
-    this.channel.binaryType = 'arraybuffer';
-
-    this.channel.addEventListener('open', onOpen);
-
-    this.channel.addEventListener('message', (event) => {
-      if (!(event.data instanceof ArrayBuffer)) return;
-      let msg;
-      try {
-        msg = parseMessage(new Uint8Array(event.data));
-      } catch {
-        return;
-      }
-
-      if (msg.type === TYPE.JSON) {
-        this.dispatchEvent(new CustomEvent('jsonMessage', { detail: msg.data }));
-        return;
-      }
-
-      if (msg.type === TYPE.CHUNK) {
-        this.dispatchEvent(new CustomEvent('chunkMessage', { detail: msg }));
-      }
-    });
-
-    this.channel.addEventListener('close', () => {
-      this.dispatchEvent(new Event('close'));
-    });
-  }
-
-  async _handleRelay(event) {
-    const { fromPeerId, payload } = event.detail;
-    if (fromPeerId !== this.remotePeerId) return;
-
-    if (payload.kind === 'offer') {
-      await this.pc.setRemoteDescription({ type: 'offer', sdp: payload.sdp });
-      this._remoteDescSet = true;
-      await this._flushCandidates();
-      const answer = await this.pc.createAnswer();
-      await this.pc.setLocalDescription(answer);
-      this.signalingClient.relay(this.remotePeerId, { kind: 'answer', sdp: answer.sdp });
-      return;
-    }
-
-    if (payload.kind === 'answer') {
-      await this.pc.setRemoteDescription({ type: 'answer', sdp: payload.sdp });
-      this._remoteDescSet = true;
-      await this._flushCandidates();
-      return;
-    }
-
-    if (payload.kind === 'ice-candidate') {
-      if (this._remoteDescSet) {
-        await this.pc.addIceCandidate(payload.candidate).catch(() => {});
-      } else {
-        this._pendingCandidates.push(payload.candidate);
-      }
-    }
-  }
-
-  async _flushCandidates() {
-    const candidates = this._pendingCandidates;
-    this._pendingCandidates = [];
-    for (const candidate of candidates) {
-      await this.pc.addIceCandidate(candidate).catch(() => {});
-    }
-  }
-
-  sendJSON(obj) {
-    this.channel.send(buildJSONBody(obj).buffer);
-  }
-
-  sendChunk(chunkIndex, chunkHashHex, proof, chunkData) {
-    this.channel.send(buildChunkBody(chunkIndex, chunkHashHex, proof, chunkData).buffer);
-  }
-
-  send(obj) {
-    this.sendJSON(obj);
-  }
-
-  close() {
-    this.signalingClient.removeEventListener('relay', this._relayHandler);
-    if (this.channel) this.channel.close();
-    if (this.pc) this.pc.close();
-  }
-}
-
-export class WebRTCPeerConnection {
-  constructor(signalingClient, remotePeerId, { initiator }) {
-    this.peer = new WebRTCPeer(signalingClient, remotePeerId, { initiator });
-    this.pendingRequests = new Map();
-    this.metadata = null;
-
-    this.peer.addEventListener('jsonMessage', (event) => this._handleJSON(event.detail));
-    this.peer.addEventListener('chunkMessage', (event) => this._handleChunk(event.detail));
-    this.peer.addEventListener('close', () => {
-      for (const { reject } of this.pendingRequests.values()) {
-        reject(new Error('Data channel closed'));
-      }
-      this.pendingRequests.clear();
-    });
-  }
-
-  async connect() {
-    await this.peer.connect();
-    return this;
-  }
-
-  _handleJSON(data) {
-    if (data.type === MSG.FILE_OFFER) {
-      this.metadata = data;
-    }
-  }
-
-  _handleChunk(msg) {
-    const handler = this.pendingRequests.get(msg.chunkIndex);
-    if (!handler) return;
-    clearTimeout(handler.timeout);
-    this.pendingRequests.delete(msg.chunkIndex);
-    handler.resolve(msg);
-  }
-
-  requestChunk(index) {
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.pendingRequests.delete(index);
-        reject(new Error(`Chunk ${index} request timeout`));
-      }, CHUNK_REQUEST_TIMEOUT_MS);
-
-      this.pendingRequests.set(index, { resolve, reject, timeout });
-      this.peer.sendJSON({ type: MSG.CHUNK_REQUEST, index });
-    });
-  }
-
-  serveChunks(getChunk) {
-    this._serveHandler = (event) => {
-      const data = event.detail;
-      if (data.type !== MSG.CHUNK_REQUEST) return;
-      Promise.resolve(getChunk(data.index))
-        .then(({ hash, proof, data: chunkData }) => {
-          this.peer.sendChunk(data.index, hash, proof, chunkData);
-        })
-        .catch(() => {});
-    };
-    this.peer.addEventListener('jsonMessage', this._serveHandler);
-  }
-
-  close() {
-    this.peer.close();
   }
 }
 ```

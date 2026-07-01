@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react'
+import { useCallback } from 'react'
 import { SwarmManager } from '../lib/swarmManager.js'
 import { transferManager as M } from '../lib/transferManager.js'
 import { WebRTCTransport } from '../lib/webrtc.js'
@@ -8,17 +8,6 @@ import { sha256Hex, getMerkleProof } from '../lib/browserCrypto.js'
 import { useTransferStore } from '../store/useTransferStore.js'
 
 export function useTransfer() {
-  const transferStatus = useTransferStore((s) => s.status)
-
-  useEffect(() => {
-    const active = transferStatus === 'transferring' || transferStatus === 'file-offered' || transferStatus === 'waiting-for-peer' || transferStatus === 'waiting-for-file'
-    if (active) {
-      const handler = (e) => { e.preventDefault(); e.returnValue = '' }
-      window.addEventListener('beforeunload', handler)
-      return () => window.removeEventListener('beforeunload', handler)
-    }
-  }, [transferStatus])
-
   const startSending = useCallback(async (file, fileIndex, fileRefs) => {
     M.fileRef = file
     M.indexRef = fileIndex

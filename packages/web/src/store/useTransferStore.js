@@ -24,12 +24,11 @@ function loadSaved() {
     if (!raw) return null
     const saved = JSON.parse(raw)
     if (!saved || !saved.fileMeta) return null
-    if (saved.chunkStates) {
-      saved.chunkStates = new Array(saved.fileMeta.totalChunks).fill('pending')
-      if (saved.progress.verified > 0) {
-        for (let i = 0; i < saved.progress.verified && i < saved.chunkStates.length; i++) {
-          saved.chunkStates[i] = 'verified'
-        }
+    const total = saved.fileMeta.totalChunks || 0
+    saved.chunkStates = new Array(total).fill('pending')
+    if (saved.progress.verified > 0) {
+      for (let i = 0; i < saved.progress.verified && i < total; i++) {
+        saved.chunkStates[i] = 'verified'
       }
     }
     return saved
@@ -91,6 +90,7 @@ export const useTransferStore = create((set) => {
     setSaveMode: (saveMode) => set({ saveMode }),
 
     setComplete: () => set((s) => {
+      if (!s.fileMeta || s.role === null) return s
       const meta = s.fileMeta
       const fileCount = meta?.files?.length || 1
       const totalChunks = meta?.totalChunks || s.progress.total
@@ -115,6 +115,7 @@ export const useTransferStore = create((set) => {
     }),
     setPaused: () => set({ status: 'paused' }),
     setError: (message) => set((s) => {
+      if (!s.fileMeta || s.role === null) return s
       const meta = s.fileMeta
       addHistoryEntry({
         role: s.role,
@@ -152,6 +153,7 @@ useTransferStore.subscribe((state) => {
       status: state.status,
       fileMeta: state.fileMeta,
       progress: state.progress,
+      chunkStates: state.chunkStates,
       peerStats: state.peerStats,
       speedHistory: state.speedHistory,
       error: state.error,
