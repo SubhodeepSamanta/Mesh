@@ -23,7 +23,6 @@ export default function Receive() {
   const [roomClosed, setRoomClosed] = useState(false)
   const [startingTransfer, setStartingTransfer] = useState(false)
   const swarmRef = useRef(null)
-  const transportsRef = useRef([])
   const downloadGuardRef = useRef(false)
   const mountedRef = useRef(true)
 
@@ -45,69 +44,7 @@ export default function Receive() {
   const setComplete = useTransferStore((s) => s.setComplete)
   const error = useTransferStore((s) => s.error)
 
-  const { startReceiving, addReceiverPeer, triggerDownload, disconnectAll } = useTransfer()
-
-  const dialPeer = useCallback(async (peerId) => {
-    if (!mountedRef.current) return
-    const client = useSignalingStore.getState().client
-    if (!client) return
-
-    // Avoid double-dialing
-    const alreadyDialing = transportsRef.current.some(x => x.remotePeerId === peerId && !x._closed)
-    if (alreadyDialing) return
-
-    const t = new WebRTCTransport(client, peerId, { initiator: true })
-
-    let resolved = false
-    const offerTimeout = setTimeout(() => {
-      if (!resolved) {
-        resolved = true
-        t.close()
-        transportsRef.current = transportsRef.current.filter(x => x !== t)
-      }
-    }, 10000)
-
-    t.onJSON(async (msg) => {
-      if (msg.type === MSG.FILE_OFFER) {
-        t.offeredRoot = msg.merkleRoot
-        if (!swarmRef.current) {
-          swarmRef.current = await startReceiving(msg)
-        }
-        if (swarmRef.current && msg.merkleRoot === swarmRef.current.merkleRoot) {
-          if (!resolved) {
-            resolved = true
-            clearTimeout(offerTimeout)
-          }
-          const currentStatus = useTransferStore.getState().status
-          if (currentStatus === 'transferring') {
-            addReceiverPeer(t, swarmRef.current)
-          }
-        } else {
-          if (!resolved) {
-            resolved = true
-            clearTimeout(offerTimeout)
-          }
-          t.close()
-          transportsRef.current = transportsRef.current.filter(x => x !== t)
-        }
-      }
-    })
-
-    M.pendingDials++
-    try {
-      await t.connect()
-      if (mountedRef.current) {
-        transportsRef.current.push(t)
-      } else {
-        t.close()
-      }
-    } catch {
-      t.close()
-      transportsRef.current = transportsRef.current.filter(x => x !== t)
-    } finally {
-      M.pendingDials = Math.max(0, M.pendingDials - 1)
-    }
-  }, [startReceiving, addReceiverPeer])
+  const { startReceiving, addReceiverPeer, triggerDownload, disconnectAll, dialPeer } = useTransfer()
 
   async function handleJoin(code) {
     setJoining(true)
@@ -145,7 +82,7 @@ export default function Receive() {
         }
       } catch {}
     }
-    for (const transport of transportsRef.current) {
+    for (const [id, transport] of M.transports) {
       if (swarmRef.current && transport.offeredRoot === swarmRef.current.merkleRoot) {
         addReceiverPeer(transport, swarmRef.current)
       }
@@ -157,7 +94,6 @@ export default function Receive() {
     disconnectAll()
     M.streamHandle = null
     swarmRef.current = null
-    transportsRef.current = []
     downloadGuardRef.current = false
     setRoomClosed(false)
     navigate('/receive')
@@ -197,22 +133,7 @@ export default function Receive() {
     return unsub
   }, [roomCode, status, dialPeer])
 
-  // Periodic dial retry for any disconnected/idle peers inside the room
-  useEffect(() => {
-    if (!roomCode || status === 'complete' || status === 'error') return
 
-    const interval = setInterval(() => {
-      const peers = useSignalingStore.getState().peers
-      for (const peerId of peers) {
-        const hasActive = transportsRef.current.some(t => t.remotePeerId === peerId && !t._closed)
-        if (!hasActive) {
-          dialPeer(peerId)
-        }
-      }
-    }, 5000)
-
-    return () => clearInterval(interval)
-  }, [roomCode, status, dialPeer])
 
   const prefillCode = searchParams.get('code') || ''
   const showFileMeta = !!fileMeta

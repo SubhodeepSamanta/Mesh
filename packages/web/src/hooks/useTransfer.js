@@ -7,6 +7,7 @@ import { readChunk, getFileForChunk } from '../lib/fileChunker.js'
 import { sha256Hex, getMerkleProof, buildMerkleTree } from '../lib/browserCrypto.js'
 import { useTransferStore } from '../store/useTransferStore.js'
 import { useToastStore } from '../store/useToastStore.js'
+import { useSignalingStore } from '../store/useSignalingStore.js'
 
 const VALID_MERKLE = /^[0-9a-f]{64}$/
 const PATH_UNSAFE = /(?:^\/|[\\:]|(?:^|[/\\])\.\.(?:[/\\]|$)|[\x00-\x1f])/
@@ -329,25 +330,26 @@ export function useTransfer() {
     })
     transport.pc.addEventListener('connectionstatechange', () => {
       if (transport.pc.connectionState === 'disconnected' || transport.pc.connectionState === 'failed') {
+        transport.close()
         M.transports.delete(transport.remotePeerId)
       }
     })
     M.transports.set(transport.remotePeerId, transport)
     useTransferStore.getState().setTransferring()
   }, [])
-
+ 
   const addReceiverPeer = useCallback(async (transport, swarm) => {
     const requestFn = (index) => {
       transport.sendJSON({ type: MSG.CHUNK_REQUEST, index })
       return Promise.resolve()
     }
-
+ 
     transport.onJSON((msg) => {
       if (msg.type === MSG.TRANSFER_COMPLETE) {
         useTransferStore.getState().setComplete(M.receivedMeta?.tree != null)
       }
     })
-
+ 
     transport.onChunk(async (msg) => {
       if (!M.swarm || M.swarm.isComplete() || M.swarm.aborted) return
       try {
@@ -360,14 +362,8 @@ export function useTransfer() {
         )
       } catch {}
     })
-
+ 
     swarm.addPeer(transport.remotePeerId, requestFn)
-    transport.pc.addEventListener('connectionstatechange', () => {
-      if (transport.pc.connectionState === 'disconnected' || transport.pc.connectionState === 'failed') {
-        M.transports.delete(transport.remotePeerId)
-        swarm.removePeer(transport.remotePeerId)
-      }
-    })
     M.transports.set(transport.remotePeerId, transport)
     useTransferStore.getState().setTransferring()
   }, [])
@@ -514,6 +510,73 @@ export function useTransfer() {
     M.downloadGuard = false
   }, [])
 
+  const dialPeer = useCallback(async (peerId) => {
+    const client = useSignalingStore.getState().client
+    if (!client) return
+
+    // Avoid double-dialing
+    if (M.dialingPeers.has(peerId) || M.transports.has(peerId)) return
+
+    M.dialingPeers.add(peerId)
+    const t = new WebRTCTransport(client, peerId, { initiator: true })
+
+    let resolved = false
+    const offerTimeout = setTimeout(() => {
+      if (!resolved) {
+        resolved = true
+        t.close()
+        M.dialingPeers.delete(peerId)
+      }
+    }, 10000)
+
+    t.onJSON(async (msg) => {
+      if (msg.type === MSG.FILE_OFFER) {
+        t.offeredRoot = msg.merkleRoot
+        if (!M.swarm) {
+          M.swarm = await startReceiving(msg)
+        }
+        if (M.swarm && msg.merkleRoot === M.swarm.merkleRoot) {
+          if (!resolved) {
+            resolved = true
+            clearTimeout(offerTimeout)
+            M.dialingPeers.delete(peerId)
+          }
+          const currentStatus = useTransferStore.getState().status
+          if (currentStatus === 'transferring') {
+            addReceiverPeer(t, M.swarm)
+          }
+        } else {
+          if (!resolved) {
+            resolved = true
+            clearTimeout(offerTimeout)
+            M.dialingPeers.delete(peerId)
+          }
+          t.close()
+          M.transports.delete(peerId)
+        }
+      }
+    })
+
+    M.pendingDials++
+    try {
+      await t.connect()
+      t.pc.addEventListener('connectionstatechange', () => {
+        if (t.pc.connectionState === 'disconnected' || t.pc.connectionState === 'failed') {
+          t.close()
+          M.transports.delete(peerId)
+          if (M.swarm) M.swarm.removePeer(peerId)
+        }
+      })
+      M.transports.set(peerId, t)
+    } catch {
+      t.close()
+      M.transports.delete(peerId)
+    } finally {
+      M.dialingPeers.delete(peerId)
+      M.pendingDials = Math.max(0, M.pendingDials - 1)
+    }
+  }, [startReceiving, addReceiverPeer])
+
   return {
     startSending,
     startReceiving,
@@ -524,5 +587,6 @@ export function useTransfer() {
     disconnectAll,
     stopSeeding,
     resumeSeeding,
+    dialPeer,
   }
 }

@@ -14,6 +14,7 @@ export const transferManager = {
   streamHandle: null,
   streamWriters: new Map(),
   pendingDials: 0,
+  dialingPeers: new Set(),
   _peerCheckTimer: null,
   _relayHandler: null,
   _relayClient: null,
@@ -53,6 +54,7 @@ export const transferManager = {
     this.streamHandle = null
     this.streamWriters.clear()
     this.pendingDials = 0
+    this.dialingPeers.clear()
     if (this._peerCheckTimer) { clearTimeout(this._peerCheckTimer); this._peerCheckTimer = null }
   },
 }
