@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Mesh WebRTC Test</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen p-8 font-mono">
+<div class="max-w-3xl mx-auto space-y-6">
+
+<h1 class="text-2xl font-bold">Mesh — WebRTC Connectivity Test</h1>
+<p class="text-slate-400 text-sm">Open this same URL in a second tab. Create a room in one, join with the code in the other.</p>
+
+<div class="space-y-2">
+  <label class="block text-sm text-slate-400">Signaling server URL</label>
+  <input id="signalingUrl" type="text" value="ws://localhost:8080"
+    class="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm" />
+</div>
+
+<div class="grid grid-cols-2 gap-4">
+  <div class="bg-slate-900 border border-slate-700 rounded p-4 space-y-3">
+    <h2 class="font-semibold">Create room</h2>
+    <button id="createRoomBtn" class="bg-emerald-600 hover:bg-emerald-500 px-4 py-2 rounded text-sm w-full">
+      Create Room
+    </button>
+    <div class="text-sm">
+      Room code: <span id="roomCodeDisplay" class="text-emerald-400 font-bold">—</span>
+    </div>
+  </div>
+
+  <div class="bg-slate-900 border border-slate-700 rounded p-4 space-y-3">
+    <h2 class="font-semibold">Join room</h2>
+    <input id="roomCodeInput" type="text" placeholder="ROOMCODE"
+      class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm uppercase" />
+    <button id="joinRoomBtn" class="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded text-sm w-full">
+      Join Room
+    </button>
+  </div>
+</div>
+
+<div class="bg-slate-900 border border-slate-700 rounded p-4 space-y-3">
+  <h2 class="font-semibold">Status</h2>
+  <div class="text-sm">
+    Peer ID: <span id="peerIdDisplay" class="text-slate-300">—</span>
+  </div>
+  <div class="text-sm">
+    WebRTC state: <span id="webrtcStateDisplay" class="text-yellow-400">idle</span>
+  </div>
+</div>
+
+<div class="bg-slate-900 border border-slate-700 rounded p-4 space-y-3">
+  <h2 class="font-semibold">Send message over data channel</h2>
+  <div class="flex gap-2">
+    <input id="messageInput" type="text" placeholder="hello from tab A"
+      class="flex-1 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm" />
+    <button id="sendBtn" disabled
+      class="bg-purple-600 hover:bg-purple-500 disabled:bg-slate-700 disabled:cursor-not-allowed px-4 py-2 rounded text-sm">
+      Send
+    </button>
+  </div>
+</div>
+
+<div class="bg-black border border-slate-700 rounded p-4">
+  <h2 class="font-semibold mb-2">Log</h2>
+  <div id="log" class="text-xs text-slate-300 space-y-1 h-80 overflow-y-auto"></div>
+</div>
+
+</div>
+
+<script type="module">
+import { SignalingClient } from '/src/webrtc/signalingClient.js';
+import { WebRTCPeer } from '/src/webrtc/webrtcPeer.js';
+
+const logEl = document.getElementById('log');
+const peerIdDisplay = document.getElementById('peerIdDisplay');
+const webrtcStateDisplay = document.getElementById('webrtcStateDisplay');
+const roomCodeDisplay = document.getElementById('roomCodeDisplay');
+const sendBtn = document.getElementById('sendBtn');
+const messageInput = document.getElementById('messageInput');
+const createRoomBtn = document.getElementById('createRoomBtn');
+const joinRoomBtn = document.getElementById('joinRoomBtn');
+const roomCodeInput = document.getElementById('roomCodeInput');
+const signalingUrlInput = document.getElementById('signalingUrl');
+
+let signaling = null;
+let peer = null;
+
+function log(message) {
+  const line = document.createElement('div');
+  const time = new Date().toLocaleTimeString();
+  line.textContent = `[${time}] ${message}`;
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function setWebrtcState(state, color) {
+  webrtcStateDisplay.textContent = state;
+  webrtcStateDisplay.className = color;
+}
+
+async function ensureSignaling() {
+  if (signaling) return signaling;
+  signaling = new SignalingClient(signalingUrlInput.value);
+  await signaling.connect();
+  peerIdDisplay.textContent = signaling.peerId || 'connected';
+  log('connected to signaling server');
+
+  signaling.addEventListener('peerJoined', (event) => {
+    log(`peer joined room: ${event.detail.peerId}`);
+    startConnection(event.detail.peerId, true);
+  });
+
+  signaling.addEventListener('peerLeft', (event) => {
+    log(`peer left room: ${event.detail.peerId}`);
+    setWebrtcState('peer left', 'text-red-400');
+  });
+
+  signaling.addEventListener('signalingError', (event) => {
+    log(`signaling error: ${event.detail.message}`);
+  });
+
+  return signaling;
+}
+
+async function startConnection(remotePeerId, initiator) {
+  log(`starting webrtc connection to ${remotePeerId} (initiator=${initiator})`);
+  setWebrtcState('connecting', 'text-yellow-400');
+
+  peer = new WebRTCPeer(signaling, remotePeerId, { initiator });
+
+  peer.addEventListener('message', (event) => {
+    log(`received: ${JSON.stringify(event.detail)}`);
+  });
+
+  peer.addEventListener('close', () => {
+    log('data channel closed');
+    setWebrtcState('closed', 'text-red-400');
+    sendBtn.disabled = true;
+  });
+
+  try {
+    await peer.connect();
+    log('data channel open — connection established');
+    setWebrtcState('connected', 'text-emerald-400');
+    sendBtn.disabled = false;
+  } catch (err) {
+    log(`connection failed: ${err.message}`);
+    setWebrtcState('failed', 'text-red-400');
+  }
+}
+
+createRoomBtn.addEventListener('click', async () => {
+  createRoomBtn.disabled = true;
+  try {
+    await ensureSignaling();
+    const result = await signaling.createRoom();
+    roomCodeDisplay.textContent = result.roomCode;
+    peerIdDisplay.textContent = result.peerId;
+    log(`room created: ${result.roomCode}`);
+  } catch (err) {
+    log(`create room failed: ${err.message}`);
+  } finally {
+    createRoomBtn.disabled = false;
+  }
+});
+
+joinRoomBtn.addEventListener('click', async () => {
+  joinRoomBtn.disabled = true;
+  try {
+    await ensureSignaling();
+    const code = roomCodeInput.value.trim().toUpperCase();
+    const result = await signaling.joinRoom(code);
+    peerIdDisplay.textContent = result.peerId;
+    log(`joined room ${result.roomCode}, existing peers: ${result.existingPeers.join(', ') || 'none'}`);
+    for (const existingPeerId of result.existingPeers) {
+      startConnection(existingPeerId, false);
+    }
+  } catch (err) {
+    log(`join room failed: ${err.message}`);
+  } finally {
+    joinRoomBtn.disabled = false;
+  }
+});
+
+sendBtn.addEventListener('click', () => {
+  if (!peer) return;
+  const text = messageInput.value;
+  if (!text) return;
+  peer.send({ text, ts: Date.now() });
+  log(`sent: ${text}`);
+  messageInput.value = '';
+});
+</script>
+</body>
+</html>

@@ -1,5 +1,6 @@
 import { WebSocketServer } from 'ws';
 import { randomBytes, createHash } from 'crypto';
+import { pathToFileURL } from 'url';
 
 export const MSG_TYPE = {
   CREATE_ROOM:  'CREATE_ROOM',
@@ -233,7 +234,7 @@ export class SignalingServer {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const PORT = process.env.PORT || 8080;
   const server = new SignalingServer();
   server.listen(PORT).then(() => {

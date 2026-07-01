@@ -11,6 +11,8 @@ Excluded: node_modules, .git, package-lock.json, .env
 - docker-compose.yml
 - docs/phase2.md
 - docs/phases.md
+- docs/sig-test-out.txt
+- docs/test-out.txt
 - package.json
 - packages/cli/package.json
 - packages/cli/src/commands/receive.js
@@ -57,6 +59,11 @@ Excluded: node_modules, .git, package-lock.json, .env
 - packages/web/src/assets/vite.svg
 - packages/web/src/index.css
 - packages/web/src/main.jsx
+- packages/web/src/webrtc-test.html
+- packages/web/src/webrtc/signalingClient.js
+- packages/web/src/webrtc/webrtcPeer.js
+- packages/web/test/signalingClient.test.js
+- packages/web/test/webrtc.test.js
 - packages/web/vite.config.js
 - received/protocol.js
 - received/testfile.bin
@@ -64,6 +71,7 @@ Excluded: node_modules, .git, package-lock.json, .env
 - sig-test-out.txt
 - test-out.txt
 - testfile.bin
+- web-test-out.txt
 
 ## Contents
 
@@ -420,6 +428,14 @@ Examples:
 - [ ] Phase 4: React Frontend
 - [ ] Phase 5: CLI, Polish, Deployment
 ```
+
+### docs/sig-test-out.txt
+
+Binary or non-UTF-8 file omitted from markdown snapshot (1140 bytes).
+
+### docs/test-out.txt
+
+Binary or non-UTF-8 file omitted from markdown snapshot (28974 bytes).
 
 ### package.json
 
@@ -3964,7 +3980,8 @@ export default defineConfig([
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run"
   },
   "dependencies": {
     "d3": "^7.9.0",
@@ -3984,7 +4001,8 @@ export default defineConfig([
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.3",
     "globals": "^17.6.0",
-    "vite": "^8.1.0"
+    "vite": "^8.1.0",
+    "vitest": "^4.1.9"
   }
 }
 ```
@@ -4477,6 +4495,781 @@ createRoot(document.getElementById('root')).render(
 )
 ```
 
+### packages/web/src/webrtc-test.html
+
+```text
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Mesh WebRTC Test</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen p-8 font-mono">
+<div class="max-w-3xl mx-auto space-y-6">
+
+<h1 class="text-2xl font-bold">Mesh — WebRTC Connectivity Test</h1>
+<p class="text-slate-400 text-sm">Open this same URL in a second tab. Create a room in one, join with the code in the other.</p>
+
+<div class="space-y-2">
+  <label class="block text-sm text-slate-400">Signaling server URL</label>
+  <input id="signalingUrl" type="text" value="ws://localhost:8080"
+    class="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm" />
+</div>
+
+<div class="grid grid-cols-2 gap-4">
+  <div class="bg-slate-900 border border-slate-700 rounded p-4 space-y-3">
+    <h2 class="font-semibold">Create room</h2>
+    <button id="createRoomBtn" class="bg-emerald-600 hover:bg-emerald-500 px-4 py-2 rounded text-sm w-full">
+      Create Room
+    </button>
+    <div class="text-sm">
+      Room code: <span id="roomCodeDisplay" class="text-emerald-400 font-bold">—</span>
+    </div>
+  </div>
+
+  <div class="bg-slate-900 border border-slate-700 rounded p-4 space-y-3">
+    <h2 class="font-semibold">Join room</h2>
+    <input id="roomCodeInput" type="text" placeholder="ROOMCODE"
+      class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm uppercase" />
+    <button id="joinRoomBtn" class="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded text-sm w-full">
+      Join Room
+    </button>
+  </div>
+</div>
+
+<div class="bg-slate-900 border border-slate-700 rounded p-4 space-y-3">
+  <h2 class="font-semibold">Status</h2>
+  <div class="text-sm">
+    Peer ID: <span id="peerIdDisplay" class="text-slate-300">—</span>
+  </div>
+  <div class="text-sm">
+    WebRTC state: <span id="webrtcStateDisplay" class="text-yellow-400">idle</span>
+  </div>
+</div>
+
+<div class="bg-slate-900 border border-slate-700 rounded p-4 space-y-3">
+  <h2 class="font-semibold">Send message over data channel</h2>
+  <div class="flex gap-2">
+    <input id="messageInput" type="text" placeholder="hello from tab A"
+      class="flex-1 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm" />
+    <button id="sendBtn" disabled
+      class="bg-purple-600 hover:bg-purple-500 disabled:bg-slate-700 disabled:cursor-not-allowed px-4 py-2 rounded text-sm">
+      Send
+    </button>
+  </div>
+</div>
+
+<div class="bg-black border border-slate-700 rounded p-4">
+  <h2 class="font-semibold mb-2">Log</h2>
+  <div id="log" class="text-xs text-slate-300 space-y-1 h-80 overflow-y-auto"></div>
+</div>
+
+</div>
+
+<script type="module">
+import { SignalingClient } from '/src/webrtc/signalingClient.js';
+import { WebRTCPeer } from '/src/webrtc/webrtcPeer.js';
+
+const logEl = document.getElementById('log');
+const peerIdDisplay = document.getElementById('peerIdDisplay');
+const webrtcStateDisplay = document.getElementById('webrtcStateDisplay');
+const roomCodeDisplay = document.getElementById('roomCodeDisplay');
+const sendBtn = document.getElementById('sendBtn');
+const messageInput = document.getElementById('messageInput');
+const createRoomBtn = document.getElementById('createRoomBtn');
+const joinRoomBtn = document.getElementById('joinRoomBtn');
+const roomCodeInput = document.getElementById('roomCodeInput');
+const signalingUrlInput = document.getElementById('signalingUrl');
+
+let signaling = null;
+let peer = null;
+
+function log(message) {
+  const line = document.createElement('div');
+  const time = new Date().toLocaleTimeString();
+  line.textContent = `[${time}] ${message}`;
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function setWebrtcState(state, color) {
+  webrtcStateDisplay.textContent = state;
+  webrtcStateDisplay.className = color;
+}
+
+async function ensureSignaling() {
+  if (signaling) return signaling;
+  signaling = new SignalingClient(signalingUrlInput.value);
+  await signaling.connect();
+  peerIdDisplay.textContent = signaling.peerId || 'connected';
+  log('connected to signaling server');
+
+  signaling.addEventListener('peerJoined', (event) => {
+    log(`peer joined room: ${event.detail.peerId}`);
+    startConnection(event.detail.peerId, true);
+  });
+
+  signaling.addEventListener('peerLeft', (event) => {
+    log(`peer left room: ${event.detail.peerId}`);
+    setWebrtcState('peer left', 'text-red-400');
+  });
+
+  signaling.addEventListener('signalingError', (event) => {
+    log(`signaling error: ${event.detail.message}`);
+  });
+
+  return signaling;
+}
+
+async function startConnection(remotePeerId, initiator) {
+  log(`starting webrtc connection to ${remotePeerId} (initiator=${initiator})`);
+  setWebrtcState('connecting', 'text-yellow-400');
+
+  peer = new WebRTCPeer(signaling, remotePeerId, { initiator });
+
+  peer.addEventListener('message', (event) => {
+    log(`received: ${JSON.stringify(event.detail)}`);
+  });
+
+  peer.addEventListener('close', () => {
+    log('data channel closed');
+    setWebrtcState('closed', 'text-red-400');
+    sendBtn.disabled = true;
+  });
+
+  try {
+    await peer.connect();
+    log('data channel open — connection established');
+    setWebrtcState('connected', 'text-emerald-400');
+    sendBtn.disabled = false;
+  } catch (err) {
+    log(`connection failed: ${err.message}`);
+    setWebrtcState('failed', 'text-red-400');
+  }
+}
+
+createRoomBtn.addEventListener('click', async () => {
+  createRoomBtn.disabled = true;
+  try {
+    await ensureSignaling();
+    const result = await signaling.createRoom();
+    roomCodeDisplay.textContent = result.roomCode;
+    peerIdDisplay.textContent = result.peerId;
+    log(`room created: ${result.roomCode}`);
+  } catch (err) {
+    log(`create room failed: ${err.message}`);
+  } finally {
+    createRoomBtn.disabled = false;
+  }
+});
+
+joinRoomBtn.addEventListener('click', async () => {
+  joinRoomBtn.disabled = true;
+  try {
+    await ensureSignaling();
+    const code = roomCodeInput.value.trim().toUpperCase();
+    const result = await signaling.joinRoom(code);
+    peerIdDisplay.textContent = result.peerId;
+    log(`joined room ${result.roomCode}, existing peers: ${result.existingPeers.join(', ') || 'none'}`);
+    for (const existingPeerId of result.existingPeers) {
+      startConnection(existingPeerId, false);
+    }
+  } catch (err) {
+    log(`join room failed: ${err.message}`);
+  } finally {
+    joinRoomBtn.disabled = false;
+  }
+});
+
+sendBtn.addEventListener('click', () => {
+  if (!peer) return;
+  const text = messageInput.value;
+  if (!text) return;
+  peer.send({ text, ts: Date.now() });
+  log(`sent: ${text}`);
+  messageInput.value = '';
+});
+</script>
+</body>
+</html>
+```
+
+### packages/web/src/webrtc/signalingClient.js
+
+```text
+export const MSG_TYPE = {
+  CREATE_ROOM:  'CREATE_ROOM',
+  ROOM_CREATED: 'ROOM_CREATED',
+  JOIN_ROOM:    'JOIN_ROOM',
+  ROOM_JOINED:  'ROOM_JOINED',
+  PEER_JOINED:  'PEER_JOINED',
+  PEER_LEFT:    'PEER_LEFT',
+  RELAY:        'RELAY',
+  ERROR:        'ERROR',
+};
+
+export class SignalingClient extends EventTarget {
+  constructor(url) {
+    super();
+    this.url = url;
+    this.ws = null;
+    this.peerId = null;
+    this.roomCode = null;
+    this._pending = null;
+  }
+
+  connect() {
+    return new Promise((resolve, reject) => {
+      this.ws = new WebSocket(this.url);
+
+      this.ws.addEventListener('open', () => resolve(this), { once: true });
+      this.ws.addEventListener('error', () => reject(new Error('Signaling connection failed')), { once: true });
+      this.ws.addEventListener('message', (event) => this._handleMessage(event));
+      this.ws.addEventListener('close', () => this.dispatchEvent(new Event('close')));
+    });
+  }
+
+  _send(msg) {
+    this.ws.send(JSON.stringify(msg));
+  }
+
+  _handleMessage(event) {
+    let msg;
+    try {
+      msg = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+
+    if (msg.type === MSG_TYPE.ROOM_CREATED || msg.type === MSG_TYPE.ROOM_JOINED) {
+      this.peerId = msg.peerId;
+      this.roomCode = msg.roomCode;
+      if (this._pending) {
+        this._pending.resolve(msg);
+        this._pending = null;
+      }
+      return;
+    }
+
+    if (msg.type === MSG_TYPE.ERROR) {
+      if (this._pending) {
+        this._pending.reject(new Error(msg.message));
+        this._pending = null;
+        return;
+      }
+      this.dispatchEvent(new CustomEvent('signalingError', { detail: msg }));
+      return;
+    }
+
+    if (msg.type === MSG_TYPE.PEER_JOINED) {
+      this.dispatchEvent(new CustomEvent('peerJoined', { detail: { peerId: msg.peerId } }));
+      return;
+    }
+
+    if (msg.type === MSG_TYPE.PEER_LEFT) {
+      this.dispatchEvent(new CustomEvent('peerLeft', { detail: { peerId: msg.peerId } }));
+      return;
+    }
+
+    if (msg.type === MSG_TYPE.RELAY) {
+      this.dispatchEvent(new CustomEvent('relay', {
+        detail: { fromPeerId: msg.fromPeerId, payload: msg.payload },
+      }));
+      return;
+    }
+  }
+
+  createRoom(password) {
+    return new Promise((resolve, reject) => {
+      this._pending = { resolve, reject };
+      this._send({ type: MSG_TYPE.CREATE_ROOM, password });
+    });
+  }
+
+  joinRoom(roomCode, password) {
+    return new Promise((resolve, reject) => {
+      this._pending = { resolve, reject };
+      this._send({ type: MSG_TYPE.JOIN_ROOM, roomCode, password });
+    });
+  }
+
+  relay(targetPeerId, payload) {
+    this._send({ type: MSG_TYPE.RELAY, targetPeerId, payload });
+  }
+
+  close() {
+    if (this.ws) this.ws.close();
+  }
+}
+```
+
+### packages/web/src/webrtc/webrtcPeer.js
+
+```text
+export const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
+export const CONNECT_TIMEOUT_MS = 15000;
+
+export class WebRTCPeer extends EventTarget {
+  constructor(signalingClient, remotePeerId, { initiator }) {
+    super();
+    this.signalingClient = signalingClient;
+    this.remotePeerId = remotePeerId;
+    this.initiator = initiator;
+    this.pc = null;
+    this.channel = null;
+    this._remoteDescSet = false;
+    this._pendingCandidates = [];
+    this._relayHandler = (event) => this._handleRelay(event);
+  }
+
+  connect() {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+
+      const timeout = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(new Error('WebRTC connection timeout'));
+      }, CONNECT_TIMEOUT_MS);
+
+      const cleanup = () => {
+        clearTimeout(timeout);
+        this.signalingClient.removeEventListener('relay', this._relayHandler);
+      };
+
+      const succeed = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(this);
+      };
+
+      const fail = (err) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(err);
+      };
+
+      this.pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+
+      this.pc.addEventListener('icecandidate', (event) => {
+        if (event.candidate) {
+          this.signalingClient.relay(this.remotePeerId, {
+            kind: 'ice-candidate',
+            candidate: event.candidate.toJSON ? event.candidate.toJSON() : event.candidate,
+          });
+        }
+      });
+
+      this.pc.addEventListener('connectionstatechange', () => {
+        if (this.pc.connectionState === 'failed' || this.pc.connectionState === 'closed') {
+          fail(new Error(`WebRTC connection ${this.pc.connectionState}`));
+        }
+      });
+
+      if (this.initiator) {
+        this.channel = this.pc.createDataChannel('mesh');
+        this._bindChannel(succeed);
+        this.pc.createOffer()
+          .then((offer) => this.pc.setLocalDescription(offer).then(() => offer))
+          .then((offer) => {
+            this.signalingClient.relay(this.remotePeerId, { kind: 'offer', sdp: offer.sdp });
+          })
+          .catch(fail);
+      } else {
+        this.pc.addEventListener('datachannel', (event) => {
+          this.channel = event.channel;
+          this._bindChannel(succeed);
+        });
+      }
+
+      this.signalingClient.addEventListener('relay', this._relayHandler);
+    });
+  }
+
+  _bindChannel(onOpen) {
+    this.channel.addEventListener('open', onOpen);
+    this.channel.addEventListener('message', (event) => {
+      let data;
+      try {
+        data = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+      this.dispatchEvent(new CustomEvent('message', { detail: data }));
+    });
+    this.channel.addEventListener('close', () => {
+      this.dispatchEvent(new Event('close'));
+    });
+  }
+
+  async _handleRelay(event) {
+    const { fromPeerId, payload } = event.detail;
+    if (fromPeerId !== this.remotePeerId) return;
+
+    if (payload.kind === 'offer') {
+      await this.pc.setRemoteDescription({ type: 'offer', sdp: payload.sdp });
+      this._remoteDescSet = true;
+      await this._flushCandidates();
+      const answer = await this.pc.createAnswer();
+      await this.pc.setLocalDescription(answer);
+      this.signalingClient.relay(this.remotePeerId, { kind: 'answer', sdp: answer.sdp });
+      return;
+    }
+
+    if (payload.kind === 'answer') {
+      await this.pc.setRemoteDescription({ type: 'answer', sdp: payload.sdp });
+      this._remoteDescSet = true;
+      await this._flushCandidates();
+      return;
+    }
+
+    if (payload.kind === 'ice-candidate') {
+      if (this._remoteDescSet) {
+        await this.pc.addIceCandidate(payload.candidate).catch(() => {});
+      } else {
+        this._pendingCandidates.push(payload.candidate);
+      }
+    }
+  }
+
+  async _flushCandidates() {
+    const candidates = this._pendingCandidates;
+    this._pendingCandidates = [];
+    for (const candidate of candidates) {
+      await this.pc.addIceCandidate(candidate).catch(() => {});
+    }
+  }
+
+  send(obj) {
+    this.channel.send(JSON.stringify(obj));
+  }
+
+  close() {
+    this.signalingClient.removeEventListener('relay', this._relayHandler);
+    if (this.channel) this.channel.close();
+    if (this.pc) this.pc.close();
+  }
+}
+```
+
+### packages/web/test/signalingClient.test.js
+
+```text
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { SignalingClient, MSG_TYPE } from '../src/webrtc/signalingClient.js';
+
+class FakeWebSocket extends EventTarget {
+  constructor(url) {
+    super();
+    this.url = url;
+    this.sent = [];
+    FakeWebSocket.instances.push(this);
+    queueMicrotask(() => this.dispatchEvent(new Event('open')));
+  }
+
+  send(data) {
+    this.sent.push(JSON.parse(data));
+  }
+
+  close() {
+    this.dispatchEvent(new Event('close'));
+  }
+
+  emitServerMessage(obj) {
+    this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(obj) }));
+  }
+}
+FakeWebSocket.instances = [];
+
+describe('SignalingClient', () => {
+  let originalWebSocket;
+
+  beforeEach(() => {
+    originalWebSocket = global.WebSocket;
+    global.WebSocket = FakeWebSocket;
+    FakeWebSocket.instances = [];
+  });
+
+  afterEach(() => {
+    global.WebSocket = originalWebSocket;
+  });
+
+  it('connect resolves once the socket opens', async () => {
+    const client = new SignalingClient('ws://localhost:8080');
+    const resolved = await client.connect();
+    expect(resolved).toBe(client);
+  });
+
+  it('createRoom resolves with roomCode and peerId', async () => {
+    const client = new SignalingClient('ws://localhost:8080');
+    await client.connect();
+
+    const createPromise = client.createRoom();
+    const socket = FakeWebSocket.instances[0];
+    expect(socket.sent[0]).toEqual({ type: MSG_TYPE.CREATE_ROOM, password: undefined });
+
+    socket.emitServerMessage({ type: MSG_TYPE.ROOM_CREATED, roomCode: 'ABC123', peerId: 'peer1' });
+
+    const result = await createPromise;
+    expect(result.roomCode).toBe('ABC123');
+    expect(client.peerId).toBe('peer1');
+  });
+
+  it('joinRoom rejects when the server returns an error', async () => {
+    const client = new SignalingClient('ws://localhost:8080');
+    await client.connect();
+
+    const joinPromise = client.joinRoom('BADCOD');
+    const socket = FakeWebSocket.instances[0];
+    socket.emitServerMessage({ type: MSG_TYPE.ERROR, message: 'Room not found' });
+
+    await expect(joinPromise).rejects.toThrow('Room not found');
+  });
+
+  it('dispatches peerJoined, peerLeft, and relay events', async () => {
+    const client = new SignalingClient('ws://localhost:8080');
+    await client.connect();
+    const socket = FakeWebSocket.instances[0];
+
+    const peerJoined = new Promise((resolve) => {
+      client.addEventListener('peerJoined', (e) => resolve(e.detail));
+    });
+    socket.emitServerMessage({ type: MSG_TYPE.PEER_JOINED, peerId: 'peer2' });
+    await expect(peerJoined).resolves.toEqual({ peerId: 'peer2' });
+
+    const peerLeft = new Promise((resolve) => {
+      client.addEventListener('peerLeft', (e) => resolve(e.detail));
+    });
+    socket.emitServerMessage({ type: MSG_TYPE.PEER_LEFT, peerId: 'peer2' });
+    await expect(peerLeft).resolves.toEqual({ peerId: 'peer2' });
+
+    const relay = new Promise((resolve) => {
+      client.addEventListener('relay', (e) => resolve(e.detail));
+    });
+    socket.emitServerMessage({ type: MSG_TYPE.RELAY, fromPeerId: 'peer2', payload: { sdp: 'x' } });
+    await expect(relay).resolves.toEqual({ fromPeerId: 'peer2', payload: { sdp: 'x' } });
+  });
+
+  it('relay sends a RELAY message with targetPeerId and payload', async () => {
+    const client = new SignalingClient('ws://localhost:8080');
+    await client.connect();
+    const socket = FakeWebSocket.instances[0];
+
+    client.relay('peer2', { kind: 'offer', sdp: 'fake' });
+
+    expect(socket.sent[0]).toEqual({
+      type: MSG_TYPE.RELAY,
+      targetPeerId: 'peer2',
+      payload: { kind: 'offer', sdp: 'fake' },
+    });
+  });
+});
+```
+
+### packages/web/test/webrtc.test.js
+
+```text
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { WebRTCPeer, CONNECT_TIMEOUT_MS } from '../src/webrtc/webrtcPeer.js';
+
+class FakeDataChannel extends EventTarget {
+  constructor() {
+    super();
+    this.readyState = 'connecting';
+    this.peer = null;
+  }
+
+  send(data) {
+    this.peer.dispatchEvent(new MessageEvent('message', { data }));
+  }
+
+  open() {
+    this.readyState = 'open';
+    this.dispatchEvent(new Event('open'));
+  }
+
+  close() {
+    this.readyState = 'closed';
+    this.dispatchEvent(new Event('close'));
+  }
+}
+
+function linkChannels(a, b) {
+  a.peer = b;
+  b.peer = a;
+}
+
+class FakeRTCPeerConnection extends EventTarget {
+  constructor() {
+    super();
+    this.connectionState = 'new';
+    this.channel = null;
+    this.localDescription = null;
+    this.remoteDescription = null;
+  }
+
+  createDataChannel() {
+    this.channel = new FakeDataChannel();
+    return this.channel;
+  }
+
+  createOffer() {
+    return Promise.resolve({ type: 'offer', sdp: 'fake-offer-sdp' });
+  }
+
+  createAnswer() {
+    return Promise.resolve({ type: 'answer', sdp: 'fake-answer-sdp' });
+  }
+
+  setLocalDescription(desc) {
+    this.localDescription = desc;
+    return Promise.resolve();
+  }
+
+  setRemoteDescription(desc) {
+    this.remoteDescription = desc;
+    return Promise.resolve();
+  }
+
+  addIceCandidate() {
+    return Promise.resolve();
+  }
+
+  close() {
+    this.connectionState = 'closed';
+  }
+}
+
+class FakeSignalingClient extends EventTarget {
+  constructor(peerId) {
+    super();
+    this.peerId = peerId;
+    this.partner = null;
+    this.sentPayloads = [];
+  }
+
+  relay(targetPeerId, payload) {
+    this.sentPayloads.push(payload);
+    queueMicrotask(() => {
+      this.partner.dispatchEvent(new CustomEvent('relay', {
+        detail: { fromPeerId: this.peerId, payload },
+      }));
+    });
+  }
+}
+
+function linkSignaling(a, b) {
+  a.partner = b;
+  b.partner = a;
+}
+
+async function flush(times = 3) {
+  for (let i = 0; i < times; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+}
+
+describe('WebRTCPeer', () => {
+  let originalRTCPeerConnection;
+
+  beforeEach(() => {
+    originalRTCPeerConnection = global.RTCPeerConnection;
+  });
+
+  afterEach(() => {
+    global.RTCPeerConnection = originalRTCPeerConnection;
+    vi.useRealTimers();
+  });
+
+  it('establishes a data channel and exchanges a message end to end', async () => {
+    const pcA = new FakeRTCPeerConnection();
+    const pcB = new FakeRTCPeerConnection();
+    global.RTCPeerConnection = vi.fn()
+      .mockImplementationOnce(function () { return pcA; })
+      .mockImplementationOnce(function () { return pcB; });
+
+    const sigA = new FakeSignalingClient('peerA');
+    const sigB = new FakeSignalingClient('peerB');
+    linkSignaling(sigA, sigB);
+
+    const peerA = new WebRTCPeer(sigA, 'peerB', { initiator: true });
+    const peerB = new WebRTCPeer(sigB, 'peerA', { initiator: false });
+
+    const connectA = peerA.connect();
+    const connectB = peerB.connect();
+
+    await flush();
+
+    const channelB = new FakeDataChannel();
+    linkChannels(pcA.channel, channelB);
+    pcB.dispatchEvent(Object.assign(new Event('datachannel'), { channel: channelB }));
+
+    pcA.channel.open();
+    channelB.open();
+
+    const [resolvedA, resolvedB] = await Promise.all([connectA, connectB]);
+    expect(resolvedA).toBe(peerA);
+    expect(resolvedB).toBe(peerB);
+
+    const received = new Promise((resolve) => {
+      peerB.addEventListener('message', (e) => resolve(e.detail));
+    });
+    peerA.send({ hello: 'world' });
+    await expect(received).resolves.toEqual({ hello: 'world' });
+
+    expect(pcB.remoteDescription.sdp).toBe('fake-offer-sdp');
+    expect(pcA.remoteDescription.sdp).toBe('fake-answer-sdp');
+  });
+
+  it('ignores relay messages from peers other than the remote peer', async () => {
+    const pcA = new FakeRTCPeerConnection();
+    global.RTCPeerConnection = vi.fn().mockImplementationOnce(function () { return pcA; });
+
+    const sigA = new FakeSignalingClient('peerA');
+    sigA.partner = sigA;
+
+    const peerA = new WebRTCPeer(sigA, 'peerB', { initiator: true });
+    peerA.connect().catch(() => {});
+
+    await flush();
+
+    sigA.dispatchEvent(new CustomEvent('relay', {
+      detail: { fromPeerId: 'someOtherPeer', payload: { kind: 'answer', sdp: 'should-be-ignored' } },
+    }));
+
+    await flush();
+
+    expect(pcA.remoteDescription).toBeNull();
+    peerA.close();
+  });
+
+  it('rejects if the data channel never opens before the timeout', async () => {
+    vi.useFakeTimers();
+
+    const pcA = new FakeRTCPeerConnection();
+    const pcB = new FakeRTCPeerConnection();
+    global.RTCPeerConnection = vi.fn()
+      .mockImplementationOnce(function () { return pcA; })
+      .mockImplementationOnce(function () { return pcB; });
+
+    const sigA = new FakeSignalingClient('peerA');
+    const sigB = new FakeSignalingClient('peerB');
+    linkSignaling(sigA, sigB);
+
+    const peerA = new WebRTCPeer(sigA, 'peerB', { initiator: true });
+    const connectA = peerA.connect();
+
+    const assertion = expect(connectA).rejects.toThrow('WebRTC connection timeout');
+    await vi.advanceTimersByTimeAsync(CONNECT_TIMEOUT_MS + 100);
+    await assertion;
+  });
+});
+```
+
 ### packages/web/vite.config.js
 
 ```text
@@ -4773,4 +5566,8 @@ Binary or non-UTF-8 file omitted from markdown snapshot (28940 bytes).
 ### testfile.bin
 
 Binary or non-UTF-8 file omitted from markdown snapshot (52428800 bytes).
+
+### web-test-out.txt
+
+Binary or non-UTF-8 file omitted from markdown snapshot (720 bytes).
 
