@@ -55,12 +55,12 @@ export class SwarmManager extends EventEmitter {
     }
   }
 
-  _markPeerFailed(peerId) {
+_markPeerFailed(peerId) {
     const peer = this.peers.get(peerId);
     if (!peer || peer.failed) return;
     peer.failed = true;
-    this.emit('peerFailed', { peerId, reason: 'too_many_consecutive_failures' });
     this.removePeer(peerId);
+    this.emit('peerFailed', { peerId, reason: 'too_many_consecutive_failures' });
   }
 
   _fillPipeline(peerId) {

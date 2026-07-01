@@ -40,18 +40,20 @@ export async function downloadFile(fileHash, totalChunks, merkleRoot, dhtNode) {
     swarm.emit('connectionWarnings', connectionErrors);
   }
 
-  await new Promise((resolve, reject) => {
-    swarm.on('complete', resolve);
-    swarm.on('peerFailed', () => {
-      if (swarm.peers.size === 0 && !swarm.isComplete()) {
-        reject(new Error('All peers failed'));
-      }
+try {
+    await new Promise((resolve, reject) => {
+      swarm.on('complete', resolve);
+      swarm.on('peerFailed', () => {
+        if (swarm.peers.size === 0 && !swarm.isComplete()) {
+          reject(new Error('All peers failed'));
+        }
+      });
     });
-  });
 
-  for (const conn of connections.values()) conn.close();
-
-  return swarm.assemble();
+    return swarm.assemble();
+  } finally {
+    for (const conn of connections.values()) conn.close();
+  }
 }
 
 export async function startDownloadSession(fileHash, totalChunks, merkleRoot, bootstrapAddr, bootstrapPort) {

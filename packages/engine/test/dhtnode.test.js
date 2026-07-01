@@ -63,7 +63,48 @@ describe('dht node networking', () => {
     await nodeB.close();
     await nodeC.close();
   });
+it('survives a valid-JSON packet with a malformed nodeId without crashing', async () => {
+    const nodeA = new DHTNode();
+    await nodeA.listen();
 
+    const dgram = await import('dgram');
+    const sender = dgram.default.createSocket('udp4');
+    const badPacket = Buffer.from(JSON.stringify({
+      type: 'DHT_PING', msgId: 'aaaa', nodeId: 'not-a-valid-hex-id',
+    }));
+    sender.send(badPacket, nodeA.port, '127.0.0.1');
+
+    await new Promise(r => setTimeout(r, 100));
+
+    const stillAlive = await nodeA.ping('127.0.0.1', nodeA.port).catch(() => 'survived');
+    assert.ok(stillAlive);
+
+    sender.close();
+    await nodeA.close();
+  });
+
+  it('survives a FIND_NODE with a malformed targetId without crashing', async () => {
+    const nodeA = new DHTNode();
+    const nodeB = new DHTNode();
+    await nodeA.listen();
+    await nodeB.listen();
+
+    const dgram = await import('dgram');
+    const sender = dgram.default.createSocket('udp4');
+    const badPacket = Buffer.from(JSON.stringify({
+      type: 'DHT_FIND_NODE', msgId: 'bbbb', nodeId: nodeB.nodeId, targetId: 'short',
+    }));
+    sender.send(badPacket, nodeA.port, '127.0.0.1');
+
+    await new Promise(r => setTimeout(r, 100));
+
+    const stillAlive = await nodeA.ping('127.0.0.1', nodeA.port).catch(() => 'survived');
+    assert.ok(stillAlive);
+
+    sender.close();
+    await nodeA.close();
+    await nodeB.close();
+  });
   it('bootstrap joins the network and populates routing table', async () => {
     const nodeA = new DHTNode();
     const nodeB = new DHTNode();

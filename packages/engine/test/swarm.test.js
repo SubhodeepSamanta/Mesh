@@ -84,7 +84,25 @@ describe('swarm manager', () => {
     assert.ok(servedBy.peerA > 0);
     assert.ok(servedBy.peerB > 0);
   });
+it('peers.size reflects the failed peer being removed by the time peerFailed fires', async () => {
+    const { merkleRoot } = buildTestFile(10);
+    const swarm = new SwarmManager(10, merkleRoot);
 
+    swarm.addPeer('onlyPeer', () => Promise.reject(new Error('always fails')));
+
+    const result = await new Promise((resolve) => {
+      swarm.on('complete', () => resolve('complete'));
+      swarm.on('peerFailed', () => {
+        if (swarm.peers.size === 0 && !swarm.isComplete()) {
+          resolve('all_failed_detected');
+        } else {
+          resolve(`race_bug_size_${swarm.peers.size}`);
+        }
+      });
+    });
+
+    assert.equal(result, 'all_failed_detected');
+  });
   it('rejects a chunk with wrong hash and re-requests it', async () => {
     const { chunks, hashes, tree, merkleRoot } = buildTestFile(3);
     const swarm = new SwarmManager(3, merkleRoot);

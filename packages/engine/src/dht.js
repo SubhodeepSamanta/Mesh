@@ -7,6 +7,10 @@ export const ID_BYTES = 20;
 export const ALPHA = 3;
 export const REQUEST_TIMEOUT_MS = 3000;
 
+export function isValidNodeId(id) {
+  return typeof id === 'string' && id.length === ID_BYTES * 2 && /^[0-9a-f]+$/i.test(id);
+}
+
 export function generateNodeId() {
   return randomBytes(ID_BYTES).toString('hex');
 }
@@ -52,7 +56,8 @@ export class RoutingTable {
     this.buckets = Array.from({ length: ID_BYTES * 8 }, () => []);
   }
 
-  addPeer(peer) {
+addPeer(peer) {
+    if (!peer || !isValidNodeId(peer.id)) return false;
     if (peer.id === this.myId) return false;
     const idx = bucketIndex(this.myId, peer.id);
     const bucket = this.buckets[idx];
@@ -69,7 +74,8 @@ export class RoutingTable {
     return false;
   }
 
-  removePeer(peerId) {
+removePeer(peerId) {
+    if (!isValidNodeId(peerId)) return false;
     const idx = bucketIndex(this.myId, peerId);
     const bucket = this.buckets[idx];
     const existingIdx = bucket.findIndex(p => p.id === peerId);
@@ -88,7 +94,8 @@ export class RoutingTable {
     return this.buckets.flat();
   }
 
-  getClosest(targetId, count = DHT_K) {
+getClosest(targetId, count = DHT_K) {
+    if (!isValidNodeId(targetId)) return [];
     const all = this.getAllPeers();
     return all
       .map(peer => ({ peer, dist: xorDistance(peer.id, targetId) }))
@@ -159,7 +166,7 @@ listen(port = 0, host = '127.0.0.1') {
     });
   }
 
-  _handleMessage(msgBuf, rinfo) {
+_handleMessage(msgBuf, rinfo) {
     let msg;
     try {
       msg = JSON.parse(msgBuf.toString('utf8'));
@@ -167,6 +174,14 @@ listen(port = 0, host = '127.0.0.1') {
       return;
     }
 
+    try {
+      this._processMessage(msg, rinfo);
+    } catch (e) {
+      this.emit('malformedMessage', { error: e.message, rinfo });
+    }
+  }
+
+  _processMessage(msg, rinfo) {
     if (msg.nodeId && msg.nodeId !== this.nodeId) {
       this.routingTable.addPeer({ id: msg.nodeId, addr: rinfo.address, port: rinfo.port });
     }
@@ -189,32 +204,32 @@ listen(port = 0, host = '127.0.0.1') {
       return;
     }
 
-if (msg.type === DHT_MSG.ANNOUNCE) {
-  if (typeof msg.fileHash !== 'string' || typeof msg.port !== 'number') return;
-  const peers = this.fileStore.get(msg.fileHash) || [];
-  const existingIdx = peers.findIndex(p => p.addr === rinfo.address && p.port === msg.port);
-  if (existingIdx === -1) {
-    peers.push({ addr: rinfo.address, port: msg.port, announcedAt: Date.now() });
-  } else {
-    peers[existingIdx].announcedAt = Date.now();
-  }
-  this.fileStore.set(msg.fileHash, peers);
-  this._send(rinfo.address, rinfo.port, {
-    type: DHT_MSG.ANNOUNCE_ACK, msgId: msg.msgId, nodeId: this.nodeId,
-  });
-  return;
-}
+    if (msg.type === DHT_MSG.ANNOUNCE) {
+      if (typeof msg.fileHash !== 'string' || typeof msg.port !== 'number') return;
+      const peers = this.fileStore.get(msg.fileHash) || [];
+      const existingIdx = peers.findIndex(p => p.addr === rinfo.address && p.port === msg.port);
+      if (existingIdx === -1) {
+        peers.push({ addr: rinfo.address, port: msg.port, announcedAt: Date.now() });
+      } else {
+        peers[existingIdx].announcedAt = Date.now();
+      }
+      this.fileStore.set(msg.fileHash, peers);
+      this._send(rinfo.address, rinfo.port, {
+        type: DHT_MSG.ANNOUNCE_ACK, msgId: msg.msgId, nodeId: this.nodeId,
+      });
+      return;
+    }
 
-if (msg.type === DHT_MSG.GET_PEERS) {
-  if (typeof msg.fileHash !== 'string') return;
-  const peers = this.fileStore.get(msg.fileHash) || [];
-  this._send(rinfo.address, rinfo.port, {
-    type: DHT_MSG.PEERS, msgId: msg.msgId, nodeId: this.nodeId,
-    fileHash: msg.fileHash,
-    peers: peers.map(p => ({ addr: p.addr, port: p.port })),
-  });
-  return;
-}
+    if (msg.type === DHT_MSG.GET_PEERS) {
+      if (typeof msg.fileHash !== 'string') return;
+      const peers = this.fileStore.get(msg.fileHash) || [];
+      this._send(rinfo.address, rinfo.port, {
+        type: DHT_MSG.PEERS, msgId: msg.msgId, nodeId: this.nodeId,
+        fileHash: msg.fileHash,
+        peers: peers.map(p => ({ addr: p.addr, port: p.port })),
+      });
+      return;
+    }
 
     if (msg.type === DHT_MSG.PONG || msg.type === DHT_MSG.FOUND_NODE ||
         msg.type === DHT_MSG.ANNOUNCE_ACK || msg.type === DHT_MSG.PEERS) {

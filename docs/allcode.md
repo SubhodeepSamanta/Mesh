@@ -3327,6 +3327,7 @@ export const metrics = { totalRooms: 0, totalPeers: 0 };
 ```text
 import { WebSocketServer } from 'ws';
 import { randomBytes, createHash } from 'crypto';
+import { pathToFileURL } from 'url';
 
 export const MSG_TYPE = {
   CREATE_ROOM:  'CREATE_ROOM',
@@ -3560,7 +3561,7 @@ export class SignalingServer {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const PORT = process.env.PORT || 8080;
   const server = new SignalingServer();
   server.listen(PORT).then(() => {
@@ -5569,5 +5570,5 @@ Binary or non-UTF-8 file omitted from markdown snapshot (52428800 bytes).
 
 ### web-test-out.txt
 
-Binary or non-UTF-8 file omitted from markdown snapshot (720 bytes).
+Binary or non-UTF-8 file omitted from markdown snapshot (722 bytes).
 
