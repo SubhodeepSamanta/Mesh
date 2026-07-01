@@ -135,6 +135,12 @@ export class WebRTCTransport {
 
   async sendChunk(index, hashHex, proof, data) {
     if (!this.channel || this.channel.readyState !== 'open') return
+    if (this.pc.sctp && typeof this.pc.sctp.maxMessageSize === 'number') {
+      const payloadSize = data.byteLength || data.length || 0
+      if (this.pc.sctp.maxMessageSize < payloadSize) {
+        console.warn(`SCTP maxMessageSize (${this.pc.sctp.maxMessageSize}) is lower than chunk size (${payloadSize}). Large chunk transfers may fail.`)
+      }
+    }
     const HIGH_WATER = 8 * 1024 * 1024
     if (this.channel.bufferedAmount > HIGH_WATER) {
       this.channel.bufferedAmountLowThreshold = 1024 * 1024
