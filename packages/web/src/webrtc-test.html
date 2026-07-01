@@ -128,10 +128,9 @@ async function startConnection(remotePeerId, initiator) {
 
   peer = new WebRTCPeer(signaling, remotePeerId, { initiator });
 
-  peer.addEventListener('message', (event) => {
-    log(`received: ${JSON.stringify(event.detail)}`);
-  });
-
+peer.addEventListener('jsonMessage', (event) => {
+  log(`received: ${JSON.stringify(event.detail)}`);
+});
   peer.addEventListener('close', () => {
     log('data channel closed');
     setWebrtcState('closed', 'text-red-400');

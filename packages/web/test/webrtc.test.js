@@ -141,7 +141,7 @@ describe('WebRTCPeer', () => {
     expect(resolvedB).toBe(peerB);
 
     const received = new Promise((resolve) => {
-      peerB.addEventListener('message', (e) => resolve(e.detail));
+      peerB.addEventListener('jsonMessage', (e) => resolve(e.detail));
     });
     peerA.send({ hello: 'world' });
     await expect(received).resolves.toEqual({ hello: 'world' });

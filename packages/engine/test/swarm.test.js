@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'crypto';
 import { SwarmManager } from '../src/swarm.js';
 import { buildMerkleTree, getMerkleProof, sha256 } from '../src/crypto.js';
+import { assembleChunks } from '../src/chunker.js';
 
 function buildTestFile(numChunks, chunkSize = 1024) {
   const chunks = [];
@@ -45,6 +46,11 @@ describe('swarm manager', () => {
     const { chunks, hashes, tree, merkleRoot } = buildTestFile(5);
     const swarm = new SwarmManager(5, merkleRoot);
 
+    const collected = new Map();
+    swarm.on('chunkVerified', ({ chunkIndex, chunkData }) => {
+      collected.set(chunkIndex, chunkData);
+    });
+
     swarm.addPeer('peerA', (idx) => {
       setImmediate(() => {
         const proof = getMerkleProof(tree, idx);
@@ -55,7 +61,7 @@ describe('swarm manager', () => {
 
     await new Promise(resolve => swarm.on('complete', resolve));
 
-    const assembled = swarm.assemble();
+    const assembled = assembleChunks(collected, 5);
     const expected = Buffer.concat(chunks);
     assert.deepEqual(assembled, expected);
   });
@@ -84,25 +90,7 @@ describe('swarm manager', () => {
     assert.ok(servedBy.peerA > 0);
     assert.ok(servedBy.peerB > 0);
   });
-it('peers.size reflects the failed peer being removed by the time peerFailed fires', async () => {
-    const { merkleRoot } = buildTestFile(10);
-    const swarm = new SwarmManager(10, merkleRoot);
 
-    swarm.addPeer('onlyPeer', () => Promise.reject(new Error('always fails')));
-
-    const result = await new Promise((resolve) => {
-      swarm.on('complete', () => resolve('complete'));
-      swarm.on('peerFailed', () => {
-        if (swarm.peers.size === 0 && !swarm.isComplete()) {
-          resolve('all_failed_detected');
-        } else {
-          resolve(`race_bug_size_${swarm.peers.size}`);
-        }
-      });
-    });
-
-    assert.equal(result, 'all_failed_detected');
-  });
   it('rejects a chunk with wrong hash and re-requests it', async () => {
     const { chunks, hashes, tree, merkleRoot } = buildTestFile(3);
     const swarm = new SwarmManager(3, merkleRoot);
@@ -205,11 +193,6 @@ it('peers.size reflects the failed peer being removed by the time peerFailed fir
     assert.equal(stats[0].chunksServed, 6);
   });
 
-  it('assemble throws if called before completion', () => {
-    const { merkleRoot } = buildTestFile(5);
-    const swarm = new SwarmManager(5, merkleRoot);
-    assert.throws(() => swarm.assemble(), /not complete/);
-  });
   it('marks a peer as failed after too many consecutive chunk failures', async () => {
     const { merkleRoot } = buildTestFile(10);
     const swarm = new SwarmManager(10, merkleRoot);
@@ -243,5 +226,50 @@ it('peers.size reflects the failed peer being removed by the time peerFailed fir
     await new Promise(resolve => swarm.on('complete', resolve));
 
     assert.equal(swarm.isComplete(), true);
+  });
+
+  it('peers.size reflects the failed peer being removed by the time peerFailed fires', async () => {
+    const { merkleRoot } = buildTestFile(10);
+    const swarm = new SwarmManager(10, merkleRoot);
+
+    swarm.addPeer('onlyPeer', () => Promise.reject(new Error('always fails')));
+
+    const result = await new Promise((resolve) => {
+      swarm.on('complete', () => resolve('complete'));
+      swarm.on('peerFailed', () => {
+        if (swarm.peers.size === 0 && !swarm.isComplete()) {
+          resolve('all_failed_detected');
+        } else {
+          resolve(`race_bug_size_${swarm.peers.size}`);
+        }
+      });
+    });
+
+    assert.equal(result, 'all_failed_detected');
+  });
+
+  it('handles a large number of chunks efficiently without O(n^2) blowup', { timeout: 20000 }, async () => {
+    const numChunks = 50000;
+    const { chunks, hashes, tree, merkleRoot } = buildTestFile(numChunks, 16);
+    const swarm = new SwarmManager(numChunks, merkleRoot);
+
+    const start = Date.now();
+
+    swarm.addPeer('peerA', (idx) => {
+      setImmediate(() => {
+        const proof = getMerkleProof(tree, idx);
+        swarm.onChunkReceived('peerA', idx, chunks[idx], hashes[idx], proof);
+      });
+      return Promise.resolve();
+    });
+
+    await new Promise(resolve => swarm.on('complete', resolve));
+
+    const elapsedMs = Date.now() - start;
+    assert.equal(swarm.isComplete(), true);
+    assert.ok(
+      elapsedMs < 10000,
+      `expected the pipeline to fill in under 10s, took ${elapsedMs}ms — possible O(n^2) regression in _fillPipeline`
+    );
   });
 });

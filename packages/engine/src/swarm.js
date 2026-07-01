@@ -1,7 +1,6 @@
 import { EventEmitter } from 'events';
 import { createHash } from 'crypto';
 import { verifyChunk } from './crypto.js';
-import { assembleChunks } from './chunker.js';
 
 export const PIPELINE_SIZE = 16;
 export const MAX_CONSECUTIVE_FAILURES = 5;
@@ -15,13 +14,15 @@ const CHUNK_STATE = {
 export class SwarmManager extends EventEmitter {
   constructor(totalChunks, merkleRoot) {
     super();
-    this.totalChunks = totalChunks;
-    this.merkleRoot  = merkleRoot;
-    this.chunkState  = new Array(totalChunks).fill(CHUNK_STATE.PENDING);
-    this.chunkPeer   = new Array(totalChunks).fill(null);
-    this.received    = new Map();
-    this.peers       = new Map();
-    this.done        = false;
+    this.totalChunks   = totalChunks;
+    this.merkleRoot    = merkleRoot;
+    this.chunkState    = new Array(totalChunks).fill(CHUNK_STATE.PENDING);
+    this.chunkPeer     = new Array(totalChunks).fill(null);
+    this.pendingQueue  = Array.from({ length: totalChunks }, (_, i) => i);
+    this.queueHead     = 0;
+    this.verifiedCount = 0;
+    this.peers         = new Map();
+    this.done          = false;
   }
 
   addPeer(peerId, requestChunkFn) {
@@ -42,8 +43,7 @@ export class SwarmManager extends EventEmitter {
 
     for (const chunkIdx of peer.pending) {
       if (this.chunkState[chunkIdx] === CHUNK_STATE.REQUESTED) {
-        this.chunkState[chunkIdx] = CHUNK_STATE.PENDING;
-        this.chunkPeer[chunkIdx] = null;
+        this._requeueChunk(chunkIdx);
       }
     }
 
@@ -55,7 +55,7 @@ export class SwarmManager extends EventEmitter {
     }
   }
 
-_markPeerFailed(peerId) {
+  _markPeerFailed(peerId) {
     const peer = this.peers.get(peerId);
     if (!peer || peer.failed) return;
     peer.failed = true;
@@ -63,12 +63,18 @@ _markPeerFailed(peerId) {
     this.emit('peerFailed', { peerId, reason: 'too_many_consecutive_failures' });
   }
 
+  _requeueChunk(chunkIndex) {
+    this.chunkState[chunkIndex] = CHUNK_STATE.PENDING;
+    this.chunkPeer[chunkIndex] = null;
+    this.pendingQueue.push(chunkIndex);
+  }
+
   _fillPipeline(peerId) {
     const peer = this.peers.get(peerId);
     if (!peer || peer.failed || this.done) return;
 
-    for (let i = 0; i < this.totalChunks; i++) {
-      if (peer.pending.size >= PIPELINE_SIZE) break;
+    while (peer.pending.size < PIPELINE_SIZE && this.queueHead < this.pendingQueue.length) {
+      const i = this.pendingQueue[this.queueHead++];
       if (this.chunkState[i] !== CHUNK_STATE.PENDING) continue;
 
       this.chunkState[i] = CHUNK_STATE.REQUESTED;
@@ -89,8 +95,7 @@ _markPeerFailed(peerId) {
     }
 
     if (this.chunkState[chunkIndex] === CHUNK_STATE.REQUESTED) {
-      this.chunkState[chunkIndex] = CHUNK_STATE.PENDING;
-      this.chunkPeer[chunkIndex] = null;
+      this._requeueChunk(chunkIndex);
     }
 
     if (peer && peer.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
@@ -116,8 +121,7 @@ _markPeerFailed(peerId) {
     if (actualHash !== expectedHash) {
       peer.consecutiveFailures++;
       this.emit('chunkFailed', { peerId, chunkIndex, reason: 'hash_mismatch' });
-      this.chunkState[chunkIndex] = CHUNK_STATE.PENDING;
-      this.chunkPeer[chunkIndex] = null;
+      this._requeueChunk(chunkIndex);
 
       if (peer.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
         this._markPeerFailed(peerId);
@@ -130,8 +134,7 @@ _markPeerFailed(peerId) {
     if (proof && !verifyChunk(chunkData, proof, this.merkleRoot)) {
       peer.consecutiveFailures++;
       this.emit('chunkFailed', { peerId, chunkIndex, reason: 'proof_invalid' });
-      this.chunkState[chunkIndex] = CHUNK_STATE.PENDING;
-      this.chunkPeer[chunkIndex] = null;
+      this._requeueChunk(chunkIndex);
 
       if (peer.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
         this._markPeerFailed(peerId);
@@ -143,12 +146,16 @@ _markPeerFailed(peerId) {
 
     peer.consecutiveFailures = 0;
     this.chunkState[chunkIndex] = CHUNK_STATE.VERIFIED;
-    this.received.set(chunkIndex, chunkData);
+    this.verifiedCount++;
     peer.chunksServed++;
 
-    this.emit('chunkVerified', { peerId, chunkIndex, total: this.totalChunks, verified: this.received.size });
+    this.emit('chunkVerified', {
+      peerId, chunkIndex, chunkData,
+      total: this.totalChunks,
+      verified: this.verifiedCount,
+    });
 
-    if (this.received.size === this.totalChunks) {
+    if (this.verifiedCount === this.totalChunks) {
       this.done = true;
       this.emit('complete');
     } else {
@@ -160,9 +167,9 @@ _markPeerFailed(peerId) {
 
   getProgress() {
     return {
-      verified: this.received.size,
+      verified: this.verifiedCount,
       total: this.totalChunks,
-      percent: (this.received.size / this.totalChunks) * 100,
+      percent: (this.verifiedCount / this.totalChunks) * 100,
     };
   }
 
@@ -178,10 +185,5 @@ _markPeerFailed(peerId) {
 
   isComplete() {
     return this.done;
-  }
-
-  assemble() {
-    if (!this.done) throw new Error('Transfer not complete');
-    return assembleChunks(this.received, this.totalChunks);
   }
 }

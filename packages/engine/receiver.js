@@ -128,6 +128,12 @@ async function finish() {
 
       sendJSON(socket, { type: MSG.FILE_ACCEPT });
       startKeepalive();
+
+      if (metadata.totalChunks === 0) {
+        await finish();
+        return;
+      }
+
       requestNext();
       return;
     }

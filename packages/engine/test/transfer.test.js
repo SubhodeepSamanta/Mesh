@@ -186,7 +186,33 @@ describe('transfer', () => {
     const match = await runTransferTest(10 * 1024 * 1024, 19001);
     assert.equal(match, true);
   });
+it('handles a 0-byte file end to end without hanging', async () => {
+    const { indexFile } = await import('../src/chunker.js');
+    const { downloadFile } = await import('../src/transfer.js');
+    const filePath = join(tmpdir(), `mesh-empty-src-${Date.now()}.bin`);
+    await writeFile(filePath, Buffer.alloc(0));
 
+    const meta = await indexFile(filePath);
+    const outputPath = join(tmpdir(), `mesh-empty-out-${Date.now()}.bin`);
+    const fakeDht = { getPeersForFile: async () => [] };
+
+    const result = await downloadFile({
+      fileHash: 'x'.repeat(64),
+      fileSize: meta.fileSize,
+      totalChunks: meta.totalChunks,
+      chunkSize: meta.chunkSize,
+      merkleRoot: meta.merkleRoot,
+      outputPath,
+      dhtNode: fakeDht,
+    });
+
+    assert.equal(result.totalChunks, 0);
+    const written = await readFile(outputPath);
+    assert.equal(written.length, 0);
+
+    await unlink(filePath);
+    await unlink(outputPath);
+  });
   it('transfers a 100MB file correctly with hash match', { timeout: 60000 }, async () => {
     const match = await runTransferTest(100 * 1024 * 1024, 19002);
     assert.equal(match, true);

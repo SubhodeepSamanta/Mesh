@@ -1,5 +1,8 @@
-﻿export const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
+﻿import { TYPE, MSG, buildJSONBody, buildChunkBody, parseMessage } from './protocol.js';
+
+export const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
 export const CONNECT_TIMEOUT_MS = 15000;
+export const CHUNK_REQUEST_TIMEOUT_MS = 30000;
 
 export class WebRTCPeer extends EventTarget {
   constructor(signalingClient, remotePeerId, { initiator }) {
@@ -82,16 +85,29 @@ export class WebRTCPeer extends EventTarget {
   }
 
   _bindChannel(onOpen) {
+    this.channel.binaryType = 'arraybuffer';
+
     this.channel.addEventListener('open', onOpen);
+
     this.channel.addEventListener('message', (event) => {
-      let data;
+      if (!(event.data instanceof ArrayBuffer)) return;
+      let msg;
       try {
-        data = JSON.parse(event.data);
+        msg = parseMessage(new Uint8Array(event.data));
       } catch {
         return;
       }
-      this.dispatchEvent(new CustomEvent('message', { detail: data }));
+
+      if (msg.type === TYPE.JSON) {
+        this.dispatchEvent(new CustomEvent('jsonMessage', { detail: msg.data }));
+        return;
+      }
+
+      if (msg.type === TYPE.CHUNK) {
+        this.dispatchEvent(new CustomEvent('chunkMessage', { detail: msg }));
+      }
     });
+
     this.channel.addEventListener('close', () => {
       this.dispatchEvent(new Event('close'));
     });
@@ -135,13 +151,86 @@ export class WebRTCPeer extends EventTarget {
     }
   }
 
+  sendJSON(obj) {
+    this.channel.send(buildJSONBody(obj).buffer);
+  }
+
+  sendChunk(chunkIndex, chunkHashHex, proof, chunkData) {
+    this.channel.send(buildChunkBody(chunkIndex, chunkHashHex, proof, chunkData).buffer);
+  }
+
   send(obj) {
-    this.channel.send(JSON.stringify(obj));
+    this.sendJSON(obj);
   }
 
   close() {
     this.signalingClient.removeEventListener('relay', this._relayHandler);
     if (this.channel) this.channel.close();
     if (this.pc) this.pc.close();
+  }
+}
+
+export class WebRTCPeerConnection {
+  constructor(signalingClient, remotePeerId, { initiator }) {
+    this.peer = new WebRTCPeer(signalingClient, remotePeerId, { initiator });
+    this.pendingRequests = new Map();
+    this.metadata = null;
+
+    this.peer.addEventListener('jsonMessage', (event) => this._handleJSON(event.detail));
+    this.peer.addEventListener('chunkMessage', (event) => this._handleChunk(event.detail));
+    this.peer.addEventListener('close', () => {
+      for (const { reject } of this.pendingRequests.values()) {
+        reject(new Error('Data channel closed'));
+      }
+      this.pendingRequests.clear();
+    });
+  }
+
+  async connect() {
+    await this.peer.connect();
+    return this;
+  }
+
+  _handleJSON(data) {
+    if (data.type === MSG.FILE_OFFER) {
+      this.metadata = data;
+    }
+  }
+
+  _handleChunk(msg) {
+    const handler = this.pendingRequests.get(msg.chunkIndex);
+    if (!handler) return;
+    clearTimeout(handler.timeout);
+    this.pendingRequests.delete(msg.chunkIndex);
+    handler.resolve(msg);
+  }
+
+  requestChunk(index) {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pendingRequests.delete(index);
+        reject(new Error(`Chunk ${index} request timeout`));
+      }, CHUNK_REQUEST_TIMEOUT_MS);
+
+      this.pendingRequests.set(index, { resolve, reject, timeout });
+      this.peer.sendJSON({ type: MSG.CHUNK_REQUEST, index });
+    });
+  }
+
+  serveChunks(getChunk) {
+    this._serveHandler = (event) => {
+      const data = event.detail;
+      if (data.type !== MSG.CHUNK_REQUEST) return;
+      Promise.resolve(getChunk(data.index))
+        .then(({ hash, proof, data: chunkData }) => {
+          this.peer.sendChunk(data.index, hash, proof, chunkData);
+        })
+        .catch(() => {});
+    };
+    this.peer.addEventListener('jsonMessage', this._serveHandler);
+  }
+
+  close() {
+    this.peer.close();
   }
 }

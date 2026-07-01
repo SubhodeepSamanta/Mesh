@@ -4,9 +4,23 @@ import { sha256, buildMerkleTree } from './crypto.js';
 
 export const DEFAULT_CHUNK_SIZE = 65536;
 
+export const EMPTY_FILE_MERKLE_ROOT = sha256(Buffer.alloc(0));
+
 export async function indexFile(filePath, chunkSize = DEFAULT_CHUNK_SIZE) {
   const fileStat = await stat(filePath);
   const fileSize = fileStat.size;
+
+  if (fileSize === 0) {
+    return {
+      hashes: [],
+      tree: { root: EMPTY_FILE_MERKLE_ROOT, levels: [] },
+      merkleRoot: EMPTY_FILE_MERKLE_ROOT,
+      totalChunks: 0,
+      fileSize,
+      chunkSize,
+    };
+  }
+
   const hashes = [];
   const stream = createReadStream(filePath, { highWaterMark: chunkSize });
   for await (const chunk of stream) {

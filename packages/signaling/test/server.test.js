@@ -148,7 +148,32 @@ describe('signaling server', () => {
     ws1.close();
     await server.close();
   });
+  it('metrics track room and peer activity', async () => {
+    const { metrics } = await import('../src/metrics.js');
+    const startRooms = metrics.totalRoomsCreated;
 
+    const server = new SignalingServer();
+    const addr = await server.listen(0);
+
+    const ws1 = await connect(addr.port);
+    send(ws1, { type: MSG_TYPE.CREATE_ROOM });
+    await nextMessage(ws1);
+
+    assert.equal(metrics.totalRoomsCreated, startRooms + 1);
+    assert.equal(metrics.activeRooms >= 1, true);
+
+    ws1.close();
+    await server.close();
+  });
+it('listen rejects cleanly when the port is already in use', async () => {
+    const serverA = new SignalingServer();
+    const addr = await serverA.listen(0);
+
+    const serverB = new SignalingServer();
+    await assert.rejects(() => serverB.listen(addr.port));
+
+    await serverA.close();
+  });
   it('removes the room entirely once all peers disconnect', async () => {
     const server = new SignalingServer();
     const addr = await server.listen(0);

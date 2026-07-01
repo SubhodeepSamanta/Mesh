@@ -9,6 +9,7 @@ Excluded: node_modules, .git, package-lock.json, .env
 - .env.example
 - .gitignore
 - docker-compose.yml
+- docs/bugs.md
 - docs/phase2.md
 - docs/phases.md
 - docs/sig-test-out.txt
@@ -60,17 +61,15 @@ Excluded: node_modules, .git, package-lock.json, .env
 - packages/web/src/index.css
 - packages/web/src/main.jsx
 - packages/web/src/webrtc-test.html
+- packages/web/src/webrtc/protocol.js
 - packages/web/src/webrtc/signalingClient.js
 - packages/web/src/webrtc/webrtcPeer.js
 - packages/web/test/signalingClient.test.js
 - packages/web/test/webrtc.test.js
+- packages/web/test/webrtcProtocol.test.js
 - packages/web/vite.config.js
-- received/protocol.js
-- received/testfile.bin
-- received/transfer.test.js
 - sig-test-out.txt
 - test-out.txt
-- testfile.bin
 - web-test-out.txt
 
 ## Contents
@@ -113,6 +112,158 @@ services:
       - PORT=8080
     restart: unless-stopped
 ```
+
+### docs/bugs.md
+
+````text
+Good call auditing before Phase 4 — this codebase has more issues than the "COMPLETE" checkpoints suggest, and one of them directly answers your "any number/size of files" question with **no, not currently**. Let me lay out everything I found, ranked by severity, then propose how to split it into parts.
+
+## The direct answer first
+
+**No — right now the DHT/swarm/encrypted path cannot reliably handle arbitrarily large files.** Two compounding reasons:
+
+**1. The whole file gets buffered in RAM, not streamed to disk.**
+Your Phase 1 `receiver.js` writes each chunk directly to disk at its byte offset (`fileHandle.write(chunkData, 0, len, offset)`) — that was the right design, explicitly called out as a key decision. But `swarm.js` doesn't do this. Look at `onChunkReceived`:
+
+```javascript
+this.received.set(chunkIndex, chunkData);
+```
+
+Every verified chunk's raw bytes sit in a `Map` in memory for the entire transfer. Then `assemble()`:
+
+```javascript
+assemble() {
+  if (!this.done) throw new Error('Transfer not complete');
+  return assembleChunks(this.received, this.totalChunks);  // Buffer.concat of EVERYTHING
+}
+```
+
+`transfer.js`'s `downloadFile()` returns this one giant in-memory `Buffer`. For a 50MB test file, fine. For a 20GB file, you need 20GB+ of free RAM just to hold the download, then another spike for `Buffer.concat`. This is a real regression from Phase 1's architecture, not a hypothetical — it happened because the DHT/swarm path was built as a self-contained function returning a `Buffer` rather than writing to a file handle like `receiver.js` does.
+
+**2. `SwarmManager._fillPipeline` is O(n) per call, called on every chunk completion → O(n²) overall.**
+
+```javascript
+_fillPipeline(peerId) {
+  ...
+  for (let i = 0; i < this.totalChunks; i++) {
+    if (peer.pending.size >= PIPELINE_SIZE) break;
+    if (this.chunkState[i] !== CHUNK_STATE.PENDING) continue;
+    ...
+  }
+}
+```
+
+This linearly scans from chunk 0 every single time a peer needs more work — which happens after every chunk verification. For a file with 160,000 chunks (≈10GB at 64KB/chunk), that's up to 160,000 comparisons run roughly 160,000 times ≈ 25 billion operations. Small test files (10-100 chunks) never expose this; a real large file would grind to a crawl or effectively hang.
+
+Both of these need fixing before Phase 4 gives you a UI that lets people try genuinely large files — otherwise the frontend will just make the RAM/CPU problem visible with a spinner that never finishes.
+
+## Critical bugs (crash / hang / leak)
+
+**3. Malformed UDP messages with a bad `nodeId` crash the entire DHT node process.**
+
+```javascript
+_handleMessage(msgBuf, rinfo) {
+  let msg;
+  try { msg = JSON.parse(msgBuf.toString('utf8')); } catch { return; }
+
+  if (msg.nodeId && msg.nodeId !== this.nodeId) {
+    this.routingTable.addPeer({ id: msg.nodeId, addr: rinfo.address, port: rinfo.port });
+  }
+  ...
+```
+
+Your existing test ("handles malformed UDP packets") only sends invalid JSON, which the try/catch handles. But **valid JSON with a wrong-length `nodeId`** (e.g. `{"type":"DHT_PING","nodeId":"xyz"}`) sails past the try/catch, hits `addPeer` → `bucketIndex` → `xorDistance`:
+
+```javascript
+if (a.length !== ID_BYTES || b.length !== ID_BYTES) {
+  throw new Error('Node IDs must be 20 bytes');
+}
+```
+
+This throws synchronously inside a `dgram` `'message'` event handler. Node's `EventEmitter` does not catch listener exceptions — this is an **uncaught exception that crashes the process**. Any DHT node (which by design accepts UDP from arbitrary peers) can be killed by one malformed-but-valid-JSON packet. Same exposure exists via `FIND_NODE`'s `targetId` and `ANNOUNCE`/`GET_PEERS`'s `fileHash` fields — anything that flows into `xorDistance` unvalidated. This is your single highest-priority fix; it's a DoS vector, not an edge case.
+
+**4. `downloadFile` can hang forever when the last connected peer fails mid-transfer.**
+
+```javascript
+_markPeerFailed(peerId) {
+  ...
+  peer.failed = true;
+  this.emit('peerFailed', { peerId, reason: 'too_many_consecutive_failures' });  // ① fires first
+  this.removePeer(peerId);                                                       // ② deletes after
+}
+```
+
+In `transfer.js`:
+```javascript
+swarm.on('peerFailed', () => {
+  if (swarm.peers.size === 0 && !swarm.isComplete()) {
+    reject(new Error('All peers failed'));
+  }
+});
+```
+
+`emit()` calls listeners synchronously *before* `removePeer()` runs. So when this listener checks `swarm.peers.size`, the failing peer **hasn't been deleted yet** — `size` is still 1, never 0, at the exact moment this check needs to see 0. When the last peer fails, this condition never trips, the `complete` event never fires either, and the `await new Promise(...)` in `downloadFile` hangs indefinitely. Untested — your integration tests only cover failure at *connection* time (`ECONNREFUSED`), not mid-transfer peer failure after a successful connection.
+
+**5. Connection resource leak on the "all peers failed" path.**
+
+```javascript
+await new Promise((resolve, reject) => { ... });  // if this rejects...
+for (const conn of connections.values()) conn.close();  // ...this never runs
+return swarm.assemble();
+```
+
+If the promise rejects (once bug #4 is fixed and it actually can reject), every successfully-opened `PeerConnection` socket in `connections` is abandoned — never closed. Needs a `try/finally`.
+
+## High-priority correctness/performance issues
+
+**6. Sequential peer connection in `downloadFile` — no concurrency.**
+```javascript
+for (const peerInfo of peers) {
+  const conn = new PeerConnection(peerInfo.addr, peerInfo.port);
+  await conn.connect();  // waits for THIS to resolve/reject before trying next peer
+  ...
+}
+```
+With `HANDSHAKE_TIMEOUT_MS = 5000`, if you discover 20 peers and 10 are dead/unreachable, you pay up to 50 seconds connecting sequentially before the swarm even starts. Should be `Promise.allSettled` over all peers concurrently.
+
+**7. No cap on simultaneous peer connections.** For a popular file with hundreds of seeders, `downloadFile` will try to open a TCP connection (plus ECDH handshake) to every single one. Real P2P clients cap this (e.g. 30-50 concurrent). Not urgent at your current scale, but will bite you the moment more than a handful of peers exist.
+
+**8. `WebRTCPeer` still can't carry chunk protocol traffic.** As flagged last time — it only does `JSON.stringify`/`JSON.parse` over the data channel, no binary support, and doesn't implement the `requestChunk`/framing interface `PeerConnection` does. This is necessary before WebRTC transfers can join the swarm at all, and it's more than a "nice to have" — it's a real gap between the architecture doc's stated invariant #5 and the actual code.
+
+## Medium (dead code / duplication / edge cases)
+
+**9. Empty file (0 bytes) crashes.** `buildMerkleTree([])` → `throw new Error('No hashes provided')`. `indexFile` never special-cases this. Anyone sending a 0-byte file breaks the sender at indexing time.
+
+**10. Two independent Merkle-root implementations.** `buildMerkleRoot` (crypto.js) and `buildMerkleTree` (crypto.js) compute the same thing differently — the former is only referenced from a synthetic test, never from production code. Dead duplication; a future edit to one and not the other is a correctness trap waiting to happen.
+
+**11. `importPublicKey` is defined but never called.** `deriveSharedKey` reimplements the same `createPublicKey(...)` call inline instead of using it. Minor DRY violation.
+
+**12. `packages/signaling/Dockerfile` is a literally empty file**, but `docker-compose.yml` references `build: ./packages/signaling`. This will fail the moment you try `docker-compose up` — Phase 5 concern, but worth knowing it's not just "not started," it's actively broken if invoked today.
+
+**13. Rate-limit map in the signaling server never prunes stale IPs.** `this.rateLimits` grows one entry per distinct `ip:action` forever; long-running server = slow leak. Room expiry already has a cleanup pattern (`_expireRooms`) — rate limits don't.
+
+**14. Signaling server has no `wss.on('error', ...)` handler.** If the port's already in use, `WebSocketServer`'s `'error'` event has no listener — Node's special-case for unhandled `'error'` events means this throws and crashes the process instead of giving you a clean "port in use" message.
+
+**15. `packages/signaling/src/metrics.js`** is an unused stub, never incremented anywhere. Dead placeholder.
+
+**16. Repo hygiene** — `received/protocol.js` and `received/transfer.test.js` are stale leftover copies from before encryption was added (missing `KEY_EXCHANGE` entirely), sitting in a gitignored folder. Harmless but confusing if you ever `cat` the wrong file while debugging. Worth a `Remove-Item -Recurse` cleanup pass along with the stray root-level `test-out.txt`, `testfile.bin`, `sig-test-out.txt`.
+
+## Proposed grouping
+
+**Part F1 — Critical stability (do this first, before anything else):**
+Fix #3 (DHT crash on malformed packets — wrap `_handleMessage` safely, validate ID lengths before use), #4 (peerFailed race), #5 (connection leak via try/finally). These are the ones that can crash a running node or silently hang a transfer forever. Small, surgical, testable in isolation.
+
+**Part F2 — Large-file capability (this is the one that actually answers your size question):**
+Rework the DHT/swarm download path to stream verified chunks to disk immediately instead of buffering the whole file in `SwarmManager.received`, and fix `_fillPipeline`'s O(n) scan (swap the linear scan for a pending-indices queue/Set). This is the biggest single piece of work — it changes `SwarmManager`'s and `transfer.js`'s contract (no more `assemble()` returning a `Buffer`; instead it needs a file handle passed in, like `receiver.js` already does it right).
+
+**Part F3 — Peer connection quality:** #6 (concurrent connect), #7 (connection cap), #8 (WebRTC binary chunk protocol — the `WebRTCPeerConnection` class we discussed last time also lives here).
+
+**Part F4 — Cleanup:** #9 through #16. Quick, low-risk, good to batch together in one pass.
+
+Given your "fix everything now, don't leave things for later" style, I'd do F1 → F2 → F3 → F4 in that order and re-run the full test suite after each part, same discipline as Phase 1/2. F2 is the one gating a real "yes" to your size question, so don't skip to Phase 4 before it's done if large-file support matters for your portfolio demo.
+
+Want me to start on **F1** now?
+````
 
 ### docs/phase2.md
 
@@ -662,6 +813,12 @@ async function finish() {
 
       sendJSON(socket, { type: MSG.FILE_ACCEPT });
       startKeepalive();
+
+      if (metadata.totalChunks === 0) {
+        await finish();
+        return;
+      }
+
       requestNext();
       return;
     }
@@ -876,9 +1033,23 @@ import { sha256, buildMerkleTree } from './crypto.js';
 
 export const DEFAULT_CHUNK_SIZE = 65536;
 
+export const EMPTY_FILE_MERKLE_ROOT = sha256(Buffer.alloc(0));
+
 export async function indexFile(filePath, chunkSize = DEFAULT_CHUNK_SIZE) {
   const fileStat = await stat(filePath);
   const fileSize = fileStat.size;
+
+  if (fileSize === 0) {
+    return {
+      hashes: [],
+      tree: { root: EMPTY_FILE_MERKLE_ROOT, levels: [] },
+      merkleRoot: EMPTY_FILE_MERKLE_ROOT,
+      totalChunks: 0,
+      fileSize,
+      chunkSize,
+    };
+  }
+
   const hashes = [];
   const stream = createReadStream(filePath, { highWaterMark: chunkSize });
   for await (const chunk of stream) {
@@ -931,21 +1102,6 @@ export function sha256(buffer) {
   return createHash('sha256').update(buffer).digest('hex');
 }
 
-export function buildMerkleRoot(hashes) {
-  if (hashes.length === 0) throw new Error('No hashes provided');
-  if (hashes.length === 1) return hashes[0];
-  let level = hashes.map(h => Buffer.from(h, 'hex'));
-  if (level.length % 2 !== 0) level.push(level[level.length - 1]);
-  while (level.length > 1) {
-    const next = [];
-    for (let i = 0; i < level.length; i += 2) {
-      next.push(Buffer.from(createHash('sha256').update(Buffer.concat([level[i], level[i + 1]])).digest()));
-    }
-    level = next;
-    if (level.length > 1 && level.length % 2 !== 0) level.push(level[level.length - 1]);
-  }
-  return level[0].toString('hex');
-}
 
 export function buildMerkleTree(hashes) {
   if (hashes.length === 0) throw new Error('No hashes provided');
@@ -1004,7 +1160,7 @@ export function importPublicKey(derBytes) {
 }
 
 export function deriveSharedKey(myPrivateKey, theirPublicKeyDER) {
-  const theirPublicKey = createPublicKey({ key: Buffer.from(theirPublicKeyDER), type: 'spki', format: 'der' });
+  const theirPublicKey = importPublicKey(theirPublicKeyDER);
   const raw = diffieHellman({ privateKey: myPrivateKey, publicKey: theirPublicKey });
   return Buffer.from(hkdfSync('sha256', raw, Buffer.from('mesh-v1'), Buffer.from('mesh-encryption-key'), 32));
 }
@@ -1042,6 +1198,10 @@ export const DHT_K = 20;
 export const ID_BYTES = 20;
 export const ALPHA = 3;
 export const REQUEST_TIMEOUT_MS = 3000;
+
+export function isValidNodeId(id) {
+  return typeof id === 'string' && id.length === ID_BYTES * 2 && /^[0-9a-f]+$/i.test(id);
+}
 
 export function generateNodeId() {
   return randomBytes(ID_BYTES).toString('hex');
@@ -1088,7 +1248,8 @@ export class RoutingTable {
     this.buckets = Array.from({ length: ID_BYTES * 8 }, () => []);
   }
 
-  addPeer(peer) {
+addPeer(peer) {
+    if (!peer || !isValidNodeId(peer.id)) return false;
     if (peer.id === this.myId) return false;
     const idx = bucketIndex(this.myId, peer.id);
     const bucket = this.buckets[idx];
@@ -1105,7 +1266,8 @@ export class RoutingTable {
     return false;
   }
 
-  removePeer(peerId) {
+removePeer(peerId) {
+    if (!isValidNodeId(peerId)) return false;
     const idx = bucketIndex(this.myId, peerId);
     const bucket = this.buckets[idx];
     const existingIdx = bucket.findIndex(p => p.id === peerId);
@@ -1124,7 +1286,8 @@ export class RoutingTable {
     return this.buckets.flat();
   }
 
-  getClosest(targetId, count = DHT_K) {
+getClosest(targetId, count = DHT_K) {
+    if (!isValidNodeId(targetId)) return [];
     const all = this.getAllPeers();
     return all
       .map(peer => ({ peer, dist: xorDistance(peer.id, targetId) }))
@@ -1195,7 +1358,7 @@ listen(port = 0, host = '127.0.0.1') {
     });
   }
 
-  _handleMessage(msgBuf, rinfo) {
+_handleMessage(msgBuf, rinfo) {
     let msg;
     try {
       msg = JSON.parse(msgBuf.toString('utf8'));
@@ -1203,6 +1366,14 @@ listen(port = 0, host = '127.0.0.1') {
       return;
     }
 
+    try {
+      this._processMessage(msg, rinfo);
+    } catch (e) {
+      this.emit('malformedMessage', { error: e.message, rinfo });
+    }
+  }
+
+  _processMessage(msg, rinfo) {
     if (msg.nodeId && msg.nodeId !== this.nodeId) {
       this.routingTable.addPeer({ id: msg.nodeId, addr: rinfo.address, port: rinfo.port });
     }
@@ -1225,32 +1396,32 @@ listen(port = 0, host = '127.0.0.1') {
       return;
     }
 
-if (msg.type === DHT_MSG.ANNOUNCE) {
-  if (typeof msg.fileHash !== 'string' || typeof msg.port !== 'number') return;
-  const peers = this.fileStore.get(msg.fileHash) || [];
-  const existingIdx = peers.findIndex(p => p.addr === rinfo.address && p.port === msg.port);
-  if (existingIdx === -1) {
-    peers.push({ addr: rinfo.address, port: msg.port, announcedAt: Date.now() });
-  } else {
-    peers[existingIdx].announcedAt = Date.now();
-  }
-  this.fileStore.set(msg.fileHash, peers);
-  this._send(rinfo.address, rinfo.port, {
-    type: DHT_MSG.ANNOUNCE_ACK, msgId: msg.msgId, nodeId: this.nodeId,
-  });
-  return;
-}
+    if (msg.type === DHT_MSG.ANNOUNCE) {
+      if (typeof msg.fileHash !== 'string' || typeof msg.port !== 'number') return;
+      const peers = this.fileStore.get(msg.fileHash) || [];
+      const existingIdx = peers.findIndex(p => p.addr === rinfo.address && p.port === msg.port);
+      if (existingIdx === -1) {
+        peers.push({ addr: rinfo.address, port: msg.port, announcedAt: Date.now() });
+      } else {
+        peers[existingIdx].announcedAt = Date.now();
+      }
+      this.fileStore.set(msg.fileHash, peers);
+      this._send(rinfo.address, rinfo.port, {
+        type: DHT_MSG.ANNOUNCE_ACK, msgId: msg.msgId, nodeId: this.nodeId,
+      });
+      return;
+    }
 
-if (msg.type === DHT_MSG.GET_PEERS) {
-  if (typeof msg.fileHash !== 'string') return;
-  const peers = this.fileStore.get(msg.fileHash) || [];
-  this._send(rinfo.address, rinfo.port, {
-    type: DHT_MSG.PEERS, msgId: msg.msgId, nodeId: this.nodeId,
-    fileHash: msg.fileHash,
-    peers: peers.map(p => ({ addr: p.addr, port: p.port })),
-  });
-  return;
-}
+    if (msg.type === DHT_MSG.GET_PEERS) {
+      if (typeof msg.fileHash !== 'string') return;
+      const peers = this.fileStore.get(msg.fileHash) || [];
+      this._send(rinfo.address, rinfo.port, {
+        type: DHT_MSG.PEERS, msgId: msg.msgId, nodeId: this.nodeId,
+        fileHash: msg.fileHash,
+        peers: peers.map(p => ({ addr: p.addr, port: p.port })),
+      });
+      return;
+    }
 
     if (msg.type === DHT_MSG.PONG || msg.type === DHT_MSG.FOUND_NODE ||
         msg.type === DHT_MSG.ANNOUNCE_ACK || msg.type === DHT_MSG.PEERS) {
@@ -1666,7 +1837,6 @@ export function parseMessage(body) {
 import { EventEmitter } from 'events';
 import { createHash } from 'crypto';
 import { verifyChunk } from './crypto.js';
-import { assembleChunks } from './chunker.js';
 
 export const PIPELINE_SIZE = 16;
 export const MAX_CONSECUTIVE_FAILURES = 5;
@@ -1680,13 +1850,15 @@ const CHUNK_STATE = {
 export class SwarmManager extends EventEmitter {
   constructor(totalChunks, merkleRoot) {
     super();
-    this.totalChunks = totalChunks;
-    this.merkleRoot  = merkleRoot;
-    this.chunkState  = new Array(totalChunks).fill(CHUNK_STATE.PENDING);
-    this.chunkPeer   = new Array(totalChunks).fill(null);
-    this.received    = new Map();
-    this.peers       = new Map();
-    this.done        = false;
+    this.totalChunks   = totalChunks;
+    this.merkleRoot    = merkleRoot;
+    this.chunkState    = new Array(totalChunks).fill(CHUNK_STATE.PENDING);
+    this.chunkPeer     = new Array(totalChunks).fill(null);
+    this.pendingQueue  = Array.from({ length: totalChunks }, (_, i) => i);
+    this.queueHead     = 0;
+    this.verifiedCount = 0;
+    this.peers         = new Map();
+    this.done          = false;
   }
 
   addPeer(peerId, requestChunkFn) {
@@ -1707,8 +1879,7 @@ export class SwarmManager extends EventEmitter {
 
     for (const chunkIdx of peer.pending) {
       if (this.chunkState[chunkIdx] === CHUNK_STATE.REQUESTED) {
-        this.chunkState[chunkIdx] = CHUNK_STATE.PENDING;
-        this.chunkPeer[chunkIdx] = null;
+        this._requeueChunk(chunkIdx);
       }
     }
 
@@ -1724,16 +1895,22 @@ export class SwarmManager extends EventEmitter {
     const peer = this.peers.get(peerId);
     if (!peer || peer.failed) return;
     peer.failed = true;
-    this.emit('peerFailed', { peerId, reason: 'too_many_consecutive_failures' });
     this.removePeer(peerId);
+    this.emit('peerFailed', { peerId, reason: 'too_many_consecutive_failures' });
+  }
+
+  _requeueChunk(chunkIndex) {
+    this.chunkState[chunkIndex] = CHUNK_STATE.PENDING;
+    this.chunkPeer[chunkIndex] = null;
+    this.pendingQueue.push(chunkIndex);
   }
 
   _fillPipeline(peerId) {
     const peer = this.peers.get(peerId);
     if (!peer || peer.failed || this.done) return;
 
-    for (let i = 0; i < this.totalChunks; i++) {
-      if (peer.pending.size >= PIPELINE_SIZE) break;
+    while (peer.pending.size < PIPELINE_SIZE && this.queueHead < this.pendingQueue.length) {
+      const i = this.pendingQueue[this.queueHead++];
       if (this.chunkState[i] !== CHUNK_STATE.PENDING) continue;
 
       this.chunkState[i] = CHUNK_STATE.REQUESTED;
@@ -1754,8 +1931,7 @@ export class SwarmManager extends EventEmitter {
     }
 
     if (this.chunkState[chunkIndex] === CHUNK_STATE.REQUESTED) {
-      this.chunkState[chunkIndex] = CHUNK_STATE.PENDING;
-      this.chunkPeer[chunkIndex] = null;
+      this._requeueChunk(chunkIndex);
     }
 
     if (peer && peer.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
@@ -1781,8 +1957,7 @@ export class SwarmManager extends EventEmitter {
     if (actualHash !== expectedHash) {
       peer.consecutiveFailures++;
       this.emit('chunkFailed', { peerId, chunkIndex, reason: 'hash_mismatch' });
-      this.chunkState[chunkIndex] = CHUNK_STATE.PENDING;
-      this.chunkPeer[chunkIndex] = null;
+      this._requeueChunk(chunkIndex);
 
       if (peer.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
         this._markPeerFailed(peerId);
@@ -1795,8 +1970,7 @@ export class SwarmManager extends EventEmitter {
     if (proof && !verifyChunk(chunkData, proof, this.merkleRoot)) {
       peer.consecutiveFailures++;
       this.emit('chunkFailed', { peerId, chunkIndex, reason: 'proof_invalid' });
-      this.chunkState[chunkIndex] = CHUNK_STATE.PENDING;
-      this.chunkPeer[chunkIndex] = null;
+      this._requeueChunk(chunkIndex);
 
       if (peer.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
         this._markPeerFailed(peerId);
@@ -1808,12 +1982,16 @@ export class SwarmManager extends EventEmitter {
 
     peer.consecutiveFailures = 0;
     this.chunkState[chunkIndex] = CHUNK_STATE.VERIFIED;
-    this.received.set(chunkIndex, chunkData);
+    this.verifiedCount++;
     peer.chunksServed++;
 
-    this.emit('chunkVerified', { peerId, chunkIndex, total: this.totalChunks, verified: this.received.size });
+    this.emit('chunkVerified', {
+      peerId, chunkIndex, chunkData,
+      total: this.totalChunks,
+      verified: this.verifiedCount,
+    });
 
-    if (this.received.size === this.totalChunks) {
+    if (this.verifiedCount === this.totalChunks) {
       this.done = true;
       this.emit('complete');
     } else {
@@ -1825,9 +2003,9 @@ export class SwarmManager extends EventEmitter {
 
   getProgress() {
     return {
-      verified: this.received.size,
+      verified: this.verifiedCount,
       total: this.totalChunks,
-      percent: (this.received.size / this.totalChunks) * 100,
+      percent: (this.verifiedCount / this.totalChunks) * 100,
     };
   }
 
@@ -1844,74 +2022,107 @@ export class SwarmManager extends EventEmitter {
   isComplete() {
     return this.done;
   }
-
-  assemble() {
-    if (!this.done) throw new Error('Transfer not complete');
-    return assembleChunks(this.received, this.totalChunks);
-  }
 }
 ```
 
 ### packages/engine/src/transfer.js
 
 ```text
-import { DHTNode, fileHashToDhtKey } from './dht.js';
+import { open, unlink } from 'fs/promises';
+import { DHTNode } from './dht.js';
 import { SwarmManager } from './swarm.js';
 import { PeerConnection } from './peer.js';
 
 export const TRANSFER_VERSION = '1.0.0';
+export const MAX_CONCURRENT_CONNECTIONS = 30;
 
-export async function downloadFile(fileHash, totalChunks, merkleRoot, dhtNode) {
+export async function downloadFile({ fileHash, fileSize, totalChunks, chunkSize, merkleRoot, outputPath, dhtNode }) {
+  if (totalChunks === 0) {
+    const emptyHandle = await open(outputPath, 'w');
+    await emptyHandle.close();
+    return { outputPath, fileSize: 0, totalChunks: 0 };
+  }
+
   const peers = await dhtNode.getPeersForFile(fileHash);
 
   if (peers.length === 0) {
     throw new Error('No peers found for this file');
   }
 
+  const peersToTry = peers.slice(0, MAX_CONCURRENT_CONNECTIONS);
+
   const swarm = new SwarmManager(totalChunks, merkleRoot);
   const connections = new Map();
   const connectionErrors = [];
+  const fileHandle = await open(outputPath, 'w');
+  let succeeded = false;
 
-  for (const peerInfo of peers) {
-    const peerId = `${peerInfo.addr}:${peerInfo.port}`;
-    try {
-      const conn = new PeerConnection(peerInfo.addr, peerInfo.port);
-      await conn.connect();
-      connections.set(peerId, conn);
+  try {
+    await fileHandle.truncate(fileSize);
 
-      swarm.addPeer(peerId, async (chunkIndex) => {
-        const chunkMsg = await conn.requestChunk(chunkIndex);
-        swarm.onChunkReceived(peerId, chunkIndex, chunkMsg.chunkData, chunkMsg.chunkHash, chunkMsg.proof);
+    const connectionAttempts = await Promise.allSettled(
+      peersToTry.map(async (peerInfo) => {
+        const peerId = `${peerInfo.addr}:${peerInfo.port}`;
+        try {
+          const conn = new PeerConnection(peerInfo.addr, peerInfo.port);
+          await conn.connect();
+          return { peerId, conn };
+        } catch (e) {
+          return { peerId, error: e };
+        }
+      })
+    );
+
+    for (const result of connectionAttempts) {
+      const { peerId, conn, error } = result.value;
+      if (conn) {
+        connections.set(peerId, conn);
+        swarm.addPeer(peerId, async (chunkIndex) => {
+          const chunkMsg = await conn.requestChunk(chunkIndex);
+          const verified = swarm.onChunkReceived(
+            peerId, chunkIndex, chunkMsg.chunkData, chunkMsg.chunkHash, chunkMsg.proof
+          );
+          if (verified) {
+            await fileHandle.write(
+              chunkMsg.chunkData, 0, chunkMsg.chunkData.length, chunkIndex * chunkSize
+            );
+          }
+        });
+      } else {
+        connectionErrors.push({ peerId, reason: error.message });
+      }
+    }
+
+    if (connections.size === 0) {
+      const detail = connectionErrors.map(e => `${e.peerId}: ${e.reason}`).join('; ');
+      throw new Error(`Could not connect to any peer for this file. Tried ${peersToTry.length} of ${peers.length} discovered peer(s). ${detail}`);
+    }
+
+    if (connectionErrors.length > 0) {
+      swarm.emit('connectionWarnings', connectionErrors);
+    }
+
+    await new Promise((resolve, reject) => {
+      swarm.on('complete', resolve);
+      swarm.on('peerFailed', () => {
+        if (swarm.peers.size === 0 && !swarm.isComplete()) {
+          reject(new Error('All peers failed'));
+        }
       });
-    } catch (e) {
-      connectionErrors.push({ peerId, reason: e.message });
+    });
+
+    succeeded = true;
+    return { outputPath, fileSize, totalChunks };
+  } finally {
+    for (const conn of connections.values()) conn.close();
+    await fileHandle.close().catch(() => {});
+    if (!succeeded) {
+      await unlink(outputPath).catch(() => {});
     }
   }
-
-  if (connections.size === 0) {
-    const detail = connectionErrors.map(e => `${e.peerId}: ${e.reason}`).join('; ');
-    throw new Error(`Could not connect to any peer for this file. Tried ${peers.length} peer(s). ${detail}`);
-  }
-
-  if (connectionErrors.length > 0) {
-    swarm.emit('connectionWarnings', connectionErrors);
-  }
-
-  await new Promise((resolve, reject) => {
-    swarm.on('complete', resolve);
-    swarm.on('peerFailed', () => {
-      if (swarm.peers.size === 0 && !swarm.isComplete()) {
-        reject(new Error('All peers failed'));
-      }
-    });
-  });
-
-  for (const conn of connections.values()) conn.close();
-
-  return swarm.assemble();
 }
 
-export async function startDownloadSession(fileHash, totalChunks, merkleRoot, bootstrapAddr, bootstrapPort) {
+export async function startDownloadSession({ fileHash, fileSize, totalChunks, chunkSize, merkleRoot, outputPath, bootstrapAddr, bootstrapPort }) {
   const dhtNode = new DHTNode();
   await dhtNode.listen();
 
@@ -1920,8 +2131,7 @@ export async function startDownloadSession(fileHash, totalChunks, merkleRoot, bo
   }
 
   try {
-    const fileBuffer = await downloadFile(fileHash, totalChunks, merkleRoot, dhtNode);
-    return fileBuffer;
+    return await downloadFile({ fileHash, fileSize, totalChunks, chunkSize, merkleRoot, outputPath, dhtNode });
   } finally {
     await dhtNode.close();
   }
@@ -1938,7 +2148,7 @@ import { randomBytes, createHash } from 'crypto';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { chunkFile, assembleChunks } from '../src/chunker.js';
-import { sha256, buildMerkleRoot, buildMerkleTree, getMerkleProof, verifyChunk } from '../src/crypto.js';
+import { sha256, buildMerkleTree, getMerkleProof, verifyChunk } from '../src/crypto.js';
 
 async function makeTempFile(size) {
   const filePath = join(tmpdir(), `mesh-test-${Date.now()}.bin`);
@@ -1967,15 +2177,23 @@ describe('chunker', () => {
     await unlink(filePath);
   });
 
-  it('merkle root changes when any chunk is modified', () => {
-    const hashes = ['aaa', 'bbb', 'ccc', 'ddd'];
-    const root1 = buildMerkleRoot([...hashes]);
+it('merkle root changes when any chunk is modified', () => {
+    const hashes = ['aa'.repeat(32), 'bb'.repeat(32), 'cc'.repeat(32), 'dd'.repeat(32)];
+    const root1 = buildMerkleTree([...hashes]).root;
     const tampered = [...hashes];
-    tampered[2] = 'TAMPERED';
-    const root2 = buildMerkleRoot(tampered);
+    tampered[2] = 'ee'.repeat(32);
+    const root2 = buildMerkleTree(tampered).root;
     assert.notEqual(root1, root2);
   });
-
+it('handles a 0-byte file without crashing', async () => {
+    const filePath = join(tmpdir(), `mesh-empty-${Date.now()}.bin`);
+    await import('fs/promises').then(fs => fs.writeFile(filePath, Buffer.alloc(0)));
+    const { totalChunks, fileSize, merkleRoot } = await import('../src/chunker.js').then(m => m.indexFile(filePath));
+    assert.equal(totalChunks, 0);
+    assert.equal(fileSize, 0);
+    assert.equal(typeof merkleRoot, 'string');
+    await unlink(filePath);
+  });
   it('merkle proof verification passes for valid chunk', async () => {
     const filePath = await makeTempFile(300 * 1024);
     const { chunks, tree } = await chunkFile(filePath);
@@ -2441,7 +2659,48 @@ describe('dht node networking', () => {
     await nodeB.close();
     await nodeC.close();
   });
+it('survives a valid-JSON packet with a malformed nodeId without crashing', async () => {
+    const nodeA = new DHTNode();
+    await nodeA.listen();
 
+    const dgram = await import('dgram');
+    const sender = dgram.default.createSocket('udp4');
+    const badPacket = Buffer.from(JSON.stringify({
+      type: 'DHT_PING', msgId: 'aaaa', nodeId: 'not-a-valid-hex-id',
+    }));
+    sender.send(badPacket, nodeA.port, '127.0.0.1');
+
+    await new Promise(r => setTimeout(r, 100));
+
+    const stillAlive = await nodeA.ping('127.0.0.1', nodeA.port).catch(() => 'survived');
+    assert.ok(stillAlive);
+
+    sender.close();
+    await nodeA.close();
+  });
+
+  it('survives a FIND_NODE with a malformed targetId without crashing', async () => {
+    const nodeA = new DHTNode();
+    const nodeB = new DHTNode();
+    await nodeA.listen();
+    await nodeB.listen();
+
+    const dgram = await import('dgram');
+    const sender = dgram.default.createSocket('udp4');
+    const badPacket = Buffer.from(JSON.stringify({
+      type: 'DHT_FIND_NODE', msgId: 'bbbb', nodeId: nodeB.nodeId, targetId: 'short',
+    }));
+    sender.send(badPacket, nodeA.port, '127.0.0.1');
+
+    await new Promise(r => setTimeout(r, 100));
+
+    const stillAlive = await nodeA.ping('127.0.0.1', nodeA.port).catch(() => 'survived');
+    assert.ok(stillAlive);
+
+    sender.close();
+    await nodeA.close();
+    await nodeB.close();
+  });
   it('bootstrap joins the network and populates routing table', async () => {
     const nodeA = new DHTNode();
     const nodeB = new DHTNode();
@@ -2526,10 +2785,13 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'net';
 import { randomBytes } from 'crypto';
+import { readFile, unlink } from 'fs/promises';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { DHTNode } from '../src/dht.js';
 import { buildMerkleTree, getMerkleProof, sha256, generateKeyPair, exportPublicKey, deriveSharedKey, encrypt } from '../src/crypto.js';
 import { sendJSON, sendChunk, createFramer, parseMessage, MSG, TYPE } from '../src/protocol.js';
-import { downloadFile } from '../src/transfer.js';
+import { downloadFile, MAX_CONCURRENT_CONNECTIONS } from '../src/transfer.js';
 
 function startTestSeeder(chunks, hashes, tree, merkleRoot, fileSize, port) {
   return new Promise((resolveListen) => {
@@ -2549,6 +2811,44 @@ function startTestSeeder(chunks, hashes, tree, merkleRoot, fileSize, port) {
           sharedKey = deriveSharedKey(keyPair.privateKey, theirPub);
           const myPub = exportPublicKey(keyPair).toString('base64');
           sendJSON(socket, { type: MSG.KEY_EXCHANGE, publicKey: myPub });
+          return;
+        }
+
+        if (msg.data.type === MSG.CHUNK_REQUEST && sharedKey) {
+          const { index } = msg.data;
+          const proof = getMerkleProof(tree, index);
+          const encrypted = encrypt(chunks[index], sharedKey);
+          sendChunk(socket, index, hashes[index], proof, encrypted);
+        }
+      });
+
+      socket.on('data', framer);
+    });
+
+    server.listen(port, '127.0.0.1', () => resolveListen(server));
+  });
+}
+
+function startSlowTestSeeder(chunks, hashes, tree, delayMs, port) {
+  return new Promise((resolveListen) => {
+    const server = net.createServer((socket) => {
+      socket.setNoDelay(true);
+      socket.setMaxListeners(0);
+
+      const keyPair = generateKeyPair();
+      let sharedKey = null;
+
+      const framer = createFramer((body) => {
+        const msg = parseMessage(body);
+        if (msg.type !== TYPE.JSON) return;
+
+        if (msg.data.type === MSG.KEY_EXCHANGE) {
+          setTimeout(() => {
+            const theirPub = Buffer.from(msg.data.publicKey, 'base64');
+            sharedKey = deriveSharedKey(keyPair.privateKey, theirPub);
+            const myPub = exportPublicKey(keyPair).toString('base64');
+            sendJSON(socket, { type: MSG.KEY_EXCHANGE, publicKey: myPub });
+          }, delayMs);
           return;
         }
 
@@ -2595,30 +2895,102 @@ describe('engine integration', () => {
 
     await seederNode.announceFile(fileHash, tcpPort);
 
-    const result = await downloadFile(fileHash, numChunks, tree.root, downloaderNode);
+    const outputPath = join(tmpdir(), `mesh-dl-${Date.now()}-${Math.random().toString(16).slice(2)}.bin`);
+    const fileSize = numChunks * chunkSize;
 
+    await downloadFile({
+      fileHash, fileSize, totalChunks: numChunks, chunkSize,
+      merkleRoot: tree.root, outputPath, dhtNode: downloaderNode,
+    });
+
+    const resultBuf = await readFile(outputPath);
     const expected = Buffer.concat(chunks);
-    assert.deepEqual(result, expected);
+    assert.deepEqual(resultBuf, expected);
 
+    await unlink(outputPath);
     server.close();
     await seederNode.close();
     await downloaderNode.close();
   });
+it('connects to multiple peers concurrently rather than sequentially', async () => {
+    const numChunks = 5;
+    const chunkSize = 1024;
+    const chunks = [];
+    const hashes = [];
+    for (let i = 0; i < numChunks; i++) {
+      const chunk = randomBytes(chunkSize);
+      chunks.push(chunk);
+      hashes.push(sha256(chunk));
+    }
+    const tree = buildMerkleTree(hashes);
+    const fileHash = sha256(Buffer.concat(chunks));
 
+    const DELAY_MS = 400;
+    const NUM_SEEDERS = 5;
+    const servers = [];
+    const seederPeers = [];
+
+    for (let i = 0; i < NUM_SEEDERS; i++) {
+      const port = 18700 + i;
+      const server = await startSlowTestSeeder(chunks, hashes, tree, DELAY_MS, port);
+      servers.push(server);
+      seederPeers.push({ addr: '127.0.0.1', port });
+    }
+
+    const fakeDht = { getPeersForFile: async () => seederPeers };
+    const outputPath = join(tmpdir(), `mesh-concurrent-${Date.now()}.bin`);
+    const start = Date.now();
+
+    await downloadFile({
+      fileHash, fileSize: numChunks * chunkSize, totalChunks: numChunks, chunkSize,
+      merkleRoot: tree.root, outputPath, dhtNode: fakeDht,
+    });
+
+    const elapsed = Date.now() - start;
+    assert.ok(
+      elapsed < DELAY_MS * NUM_SEEDERS,
+      `expected concurrent connect (< ${DELAY_MS * NUM_SEEDERS}ms), took ${elapsed}ms — possible sequential regression`
+    );
+
+    await unlink(outputPath);
+    for (const s of servers) s.close();
+  });
+
+  it('caps concurrent connection attempts at MAX_CONCURRENT_CONNECTIONS', async () => {
+    const deadPeers = Array.from({ length: 40 }, () => ({ addr: '127.0.0.1', port: 1 }));
+    const fakeDht = { getPeersForFile: async () => deadPeers };
+    const outputPath = join(tmpdir(), `mesh-cap-${Date.now()}.bin`);
+
+await assert.rejects(
+      () => downloadFile({
+        fileHash: 'x'.repeat(64), fileSize: 1024 * 5, totalChunks: 5, chunkSize: 1024,
+        merkleRoot: 'a'.repeat(64), outputPath, dhtNode: fakeDht,
+      }),
+      (err) => {
+        assert.match(err.message, new RegExp(`Tried ${MAX_CONCURRENT_CONNECTIONS} of 40`));
+        return true;
+      }
+    );
+  });
   it('throws a clear error when no peers have the file', async () => {
     const downloaderNode = new DHTNode();
     await downloaderNode.listen();
 
     const fakeFileHash = sha256(Buffer.from('nobody has this'));
+    const outputPath = join(tmpdir(), `mesh-dl-nopeer-${Date.now()}.bin`);
 
     await assert.rejects(
-      () => downloadFile(fakeFileHash, 5, 'a'.repeat(64), downloaderNode),
+      () => downloadFile({
+        fileHash: fakeFileHash, fileSize: 1024 * 5, totalChunks: 5, chunkSize: 1024,
+        merkleRoot: 'a'.repeat(64), outputPath, dhtNode: downloaderNode,
+      }),
       /No peers found/
     );
 
     await downloaderNode.close();
   });
-it('reports detailed errors when all peer connections fail', async () => {
+
+  it('reports detailed errors when all peer connections fail', async () => {
     const downloaderNode = new DHTNode();
     const fakeSeederNode = new DHTNode();
     await downloaderNode.listen();
@@ -2631,8 +3003,13 @@ it('reports detailed errors when all peer connections fail', async () => {
     const fileHash = sha256(Buffer.from('file with dead peer'));
     await fakeSeederNode.announceFile(fileHash, 19999);
 
+    const outputPath = join(tmpdir(), `mesh-dl-deadpeer-${Date.now()}.bin`);
+
     await assert.rejects(
-      () => downloadFile(fileHash, 5, 'a'.repeat(64), downloaderNode),
+      () => downloadFile({
+        fileHash, fileSize: 1024 * 5, totalChunks: 5, chunkSize: 1024,
+        merkleRoot: 'a'.repeat(64), outputPath, dhtNode: downloaderNode,
+      }),
       (err) => {
         assert.match(err.message, /Could not connect to any peer/);
         assert.match(err.message, /19999/);
@@ -2864,6 +3241,7 @@ import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'crypto';
 import { SwarmManager } from '../src/swarm.js';
 import { buildMerkleTree, getMerkleProof, sha256 } from '../src/crypto.js';
+import { assembleChunks } from '../src/chunker.js';
 
 function buildTestFile(numChunks, chunkSize = 1024) {
   const chunks = [];
@@ -2906,6 +3284,11 @@ describe('swarm manager', () => {
     const { chunks, hashes, tree, merkleRoot } = buildTestFile(5);
     const swarm = new SwarmManager(5, merkleRoot);
 
+    const collected = new Map();
+    swarm.on('chunkVerified', ({ chunkIndex, chunkData }) => {
+      collected.set(chunkIndex, chunkData);
+    });
+
     swarm.addPeer('peerA', (idx) => {
       setImmediate(() => {
         const proof = getMerkleProof(tree, idx);
@@ -2916,7 +3299,7 @@ describe('swarm manager', () => {
 
     await new Promise(resolve => swarm.on('complete', resolve));
 
-    const assembled = swarm.assemble();
+    const assembled = assembleChunks(collected, 5);
     const expected = Buffer.concat(chunks);
     assert.deepEqual(assembled, expected);
   });
@@ -3048,11 +3431,6 @@ describe('swarm manager', () => {
     assert.equal(stats[0].chunksServed, 6);
   });
 
-  it('assemble throws if called before completion', () => {
-    const { merkleRoot } = buildTestFile(5);
-    const swarm = new SwarmManager(5, merkleRoot);
-    assert.throws(() => swarm.assemble(), /not complete/);
-  });
   it('marks a peer as failed after too many consecutive chunk failures', async () => {
     const { merkleRoot } = buildTestFile(10);
     const swarm = new SwarmManager(10, merkleRoot);
@@ -3086,6 +3464,51 @@ describe('swarm manager', () => {
     await new Promise(resolve => swarm.on('complete', resolve));
 
     assert.equal(swarm.isComplete(), true);
+  });
+
+  it('peers.size reflects the failed peer being removed by the time peerFailed fires', async () => {
+    const { merkleRoot } = buildTestFile(10);
+    const swarm = new SwarmManager(10, merkleRoot);
+
+    swarm.addPeer('onlyPeer', () => Promise.reject(new Error('always fails')));
+
+    const result = await new Promise((resolve) => {
+      swarm.on('complete', () => resolve('complete'));
+      swarm.on('peerFailed', () => {
+        if (swarm.peers.size === 0 && !swarm.isComplete()) {
+          resolve('all_failed_detected');
+        } else {
+          resolve(`race_bug_size_${swarm.peers.size}`);
+        }
+      });
+    });
+
+    assert.equal(result, 'all_failed_detected');
+  });
+
+  it('handles a large number of chunks efficiently without O(n^2) blowup', { timeout: 20000 }, async () => {
+    const numChunks = 50000;
+    const { chunks, hashes, tree, merkleRoot } = buildTestFile(numChunks, 16);
+    const swarm = new SwarmManager(numChunks, merkleRoot);
+
+    const start = Date.now();
+
+    swarm.addPeer('peerA', (idx) => {
+      setImmediate(() => {
+        const proof = getMerkleProof(tree, idx);
+        swarm.onChunkReceived('peerA', idx, chunks[idx], hashes[idx], proof);
+      });
+      return Promise.resolve();
+    });
+
+    await new Promise(resolve => swarm.on('complete', resolve));
+
+    const elapsedMs = Date.now() - start;
+    assert.equal(swarm.isComplete(), true);
+    assert.ok(
+      elapsedMs < 10000,
+      `expected the pipeline to fill in under 10s, took ${elapsedMs}ms — possible O(n^2) regression in _fillPipeline`
+    );
   });
 });
 ```
@@ -3281,7 +3704,33 @@ describe('transfer', () => {
     const match = await runTransferTest(10 * 1024 * 1024, 19001);
     assert.equal(match, true);
   });
+it('handles a 0-byte file end to end without hanging', async () => {
+    const { indexFile } = await import('../src/chunker.js');
+    const { downloadFile } = await import('../src/transfer.js');
+    const filePath = join(tmpdir(), `mesh-empty-src-${Date.now()}.bin`);
+    await writeFile(filePath, Buffer.alloc(0));
 
+    const meta = await indexFile(filePath);
+    const outputPath = join(tmpdir(), `mesh-empty-out-${Date.now()}.bin`);
+    const fakeDht = { getPeersForFile: async () => [] };
+
+    const result = await downloadFile({
+      fileHash: 'x'.repeat(64),
+      fileSize: meta.fileSize,
+      totalChunks: meta.totalChunks,
+      chunkSize: meta.chunkSize,
+      merkleRoot: meta.merkleRoot,
+      outputPath,
+      dhtNode: fakeDht,
+    });
+
+    assert.equal(result.totalChunks, 0);
+    const written = await readFile(outputPath);
+    assert.equal(written.length, 0);
+
+    await unlink(filePath);
+    await unlink(outputPath);
+  });
   it('transfers a 100MB file correctly with hash match', { timeout: 60000 }, async () => {
     const match = await runTransferTest(100 * 1024 * 1024, 19002);
     assert.equal(match, true);
@@ -3292,7 +3741,18 @@ describe('transfer', () => {
 ### packages/signaling/Dockerfile
 
 ```text
+FROM node:22-alpine
 
+WORKDIR /app
+
+COPY package.json ./
+RUN npm install --omit=dev
+
+COPY src ./src
+
+EXPOSE 8080
+
+CMD ["node", "src/server.js"]
 ```
 
 ### packages/signaling/package.json
@@ -3319,7 +3779,30 @@ describe('transfer', () => {
 ### packages/signaling/src/metrics.js
 
 ```text
-export const metrics = { totalRooms: 0, totalPeers: 0 };
+export const metrics = {
+  totalRoomsCreated: 0,
+  totalPeersJoined: 0,
+  activeRooms: 0,
+  activePeers: 0,
+};
+
+export function recordRoomCreated() {
+  metrics.totalRoomsCreated++;
+  metrics.activeRooms++;
+}
+
+export function recordRoomExpiredOrClosed() {
+  metrics.activeRooms = Math.max(0, metrics.activeRooms - 1);
+}
+
+export function recordPeerJoined() {
+  metrics.totalPeersJoined++;
+  metrics.activePeers++;
+}
+
+export function recordPeerLeft() {
+  metrics.activePeers = Math.max(0, metrics.activePeers - 1);
+}
 ```
 
 ### packages/signaling/src/server.js
@@ -3328,6 +3811,7 @@ export const metrics = { totalRooms: 0, totalPeers: 0 };
 import { WebSocketServer } from 'ws';
 import { randomBytes, createHash } from 'crypto';
 import { pathToFileURL } from 'url';
+import { recordRoomCreated, recordRoomExpiredOrClosed, recordPeerJoined, recordPeerLeft } from './metrics.js';
 
 export const MSG_TYPE = {
   CREATE_ROOM:  'CREATE_ROOM',
@@ -3369,15 +3853,28 @@ export class SignalingServer {
     this._expiryTimer = null;
   }
 
-  listen(port = 0) {
-    return new Promise((resolve) => {
-      this.wss = new WebSocketServer({ port }, () => {
+listen(port = 0) {
+    return new Promise((resolve, reject) => {
+      this.wss = new WebSocketServer({ port });
+
+      this.wss.once('error', reject);
+
+      this.wss.once('listening', () => {
+        this.wss.removeListener('error', reject);
+
+        this.wss.on('error', (err) => {
+          this.emit ? this.emit('error', err) : console.error('Signaling server error:', err.message);
+        });
+
         this.wss.on('connection', (ws, req) => {
           ws._ip = req.socket.remoteAddress || '127.0.0.1';
           this._handleConnection(ws);
         });
 
-        this._expiryTimer = setInterval(() => this._expireRooms(), 60 * 1000);
+        this._expiryTimer = setInterval(() => {
+          this._expireRooms();
+          this._pruneRateLimits();
+        }, 60 * 1000);
 
         resolve(this.wss.address());
       });
@@ -3398,7 +3895,7 @@ export class SignalingServer {
     }
   }
 
-  _checkRateLimit(ip, action) {
+_checkRateLimit(ip, action) {
     const key  = `${ip}:${action}`;
     const now  = Date.now();
     const max  = action === 'create' ? this.maxCreates : this.maxJoins;
@@ -3411,6 +3908,18 @@ export class SignalingServer {
     return recent.length <= max;
   }
 
+  _pruneRateLimits() {
+    const now = Date.now();
+    for (const [key, list] of this.rateLimits) {
+      const recent = list.filter(t => now - t < RATE_WINDOW_MS);
+      if (recent.length === 0) {
+        this.rateLimits.delete(key);
+      } else {
+        this.rateLimits.set(key, recent);
+      }
+    }
+  }
+
   _expireRooms() {
     const now = Date.now();
     for (const [code, room] of this.rooms) {
@@ -3420,6 +3929,7 @@ export class SignalingServer {
           ws.close();
         }
         this.rooms.delete(code);
+        recordRoomExpiredOrClosed();
       }
     }
   }
@@ -3476,7 +3986,9 @@ export class SignalingServer {
       lastActivity: Date.now(),
     });
 
-    ws.roomCode = roomCode;
+ws.roomCode = roomCode;
+    recordRoomCreated();
+    recordPeerJoined();
     this._send(ws, { type: MSG_TYPE.ROOM_CREATED, roomCode, peerId: ws.peerId });
   }
 
@@ -3504,6 +4016,7 @@ export class SignalingServer {
     room.peers.set(ws.peerId, ws);
     room.lastActivity = Date.now();
     ws.roomCode = roomCode;
+    recordPeerJoined();
 
     this._send(ws, {
       type: MSG_TYPE.ROOM_JOINED,
@@ -3550,6 +4063,7 @@ export class SignalingServer {
     if (!room) return;
 
     room.peers.delete(ws.peerId);
+    recordPeerLeft();
 
     for (const peerWs of room.peers.values()) {
       this._send(peerWs, { type: MSG_TYPE.PEER_LEFT, peerId: ws.peerId });
@@ -3557,6 +4071,7 @@ export class SignalingServer {
 
     if (room.peers.size === 0) {
       this.rooms.delete(ws.roomCode);
+      recordRoomExpiredOrClosed();
     }
   }
 }
@@ -3723,7 +4238,32 @@ describe('signaling server', () => {
     ws1.close();
     await server.close();
   });
+  it('metrics track room and peer activity', async () => {
+    const { metrics } = await import('../src/metrics.js');
+    const startRooms = metrics.totalRoomsCreated;
 
+    const server = new SignalingServer();
+    const addr = await server.listen(0);
+
+    const ws1 = await connect(addr.port);
+    send(ws1, { type: MSG_TYPE.CREATE_ROOM });
+    await nextMessage(ws1);
+
+    assert.equal(metrics.totalRoomsCreated, startRooms + 1);
+    assert.equal(metrics.activeRooms >= 1, true);
+
+    ws1.close();
+    await server.close();
+  });
+it('listen rejects cleanly when the port is already in use', async () => {
+    const serverA = new SignalingServer();
+    const addr = await serverA.listen(0);
+
+    const serverB = new SignalingServer();
+    await assert.rejects(() => serverB.listen(addr.port));
+
+    await serverA.close();
+  });
   it('removes the room entirely once all peers disconnect', async () => {
     const server = new SignalingServer();
     const addr = await server.listen(0);
@@ -4629,10 +5169,9 @@ async function startConnection(remotePeerId, initiator) {
 
   peer = new WebRTCPeer(signaling, remotePeerId, { initiator });
 
-  peer.addEventListener('message', (event) => {
-    log(`received: ${JSON.stringify(event.detail)}`);
-  });
-
+peer.addEventListener('jsonMessage', (event) => {
+  log(`received: ${JSON.stringify(event.detail)}`);
+});
   peer.addEventListener('close', () => {
     log('data channel closed');
     setWebrtcState('closed', 'text-red-400');
@@ -4694,6 +5233,90 @@ sendBtn.addEventListener('click', () => {
 </script>
 </body>
 </html>
+```
+
+### packages/web/src/webrtc/protocol.js
+
+```text
+export const TYPE = { JSON: 0x00, CHUNK: 0x01 };
+
+export const MSG = {
+  FILE_OFFER:        'FILE_OFFER',
+  FILE_ACCEPT:       'FILE_ACCEPT',
+  CHUNK_REQUEST:     'CHUNK_REQUEST',
+  TRANSFER_COMPLETE: 'TRANSFER_COMPLETE',
+  KEEPALIVE:         'KEEPALIVE',
+  ERROR:             'ERROR',
+};
+
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
+
+function concatBytes(chunks) {
+  const total = chunks.reduce((sum, c) => sum + c.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    out.set(c, offset);
+    offset += c.length;
+  }
+  return out;
+}
+
+function hexToBytes(hex) {
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) {
+    out[i] = parseInt(hex.substr(i * 2, 2), 16);
+  }
+  return out;
+}
+
+function bytesToHex(bytes) {
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+export function buildJSONBody(obj) {
+  const typeFlag = new Uint8Array([TYPE.JSON]);
+  const body = textEncoder.encode(JSON.stringify(obj));
+  return concatBytes([typeFlag, body]);
+}
+
+export function buildChunkBody(chunkIndex, chunkHashHex, proof, chunkData) {
+  const typeFlag = new Uint8Array([TYPE.CHUNK]);
+
+  const indexBuf = new Uint8Array(4);
+  new DataView(indexBuf.buffer).setUint32(0, chunkIndex, false);
+
+  const hashBuf = hexToBytes(chunkHashHex);
+
+  const proofJSON = textEncoder.encode(JSON.stringify(proof));
+  const proofLenBuf = new Uint8Array(4);
+  new DataView(proofLenBuf.buffer).setUint32(0, proofJSON.length, false);
+
+  const dataBytes = chunkData instanceof Uint8Array ? chunkData : new Uint8Array(chunkData);
+
+  return concatBytes([typeFlag, indexBuf, hashBuf, proofLenBuf, proofJSON, dataBytes]);
+}
+
+export function parseMessage(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const type = view.getUint8(0);
+
+  if (type === TYPE.JSON) {
+    return { type: TYPE.JSON, data: JSON.parse(textDecoder.decode(bytes.subarray(1))) };
+  }
+
+  if (type === TYPE.CHUNK) {
+    const chunkIndex = view.getUint32(1, false);
+    const chunkHash = bytesToHex(bytes.subarray(5, 37));
+    const proofLen = view.getUint32(37, false);
+    const proof = JSON.parse(textDecoder.decode(bytes.subarray(41, 41 + proofLen)));
+    const chunkData = bytes.subarray(41 + proofLen);
+    return { type: TYPE.CHUNK, chunkIndex, chunkHash, proof, chunkData };
+  }
+
+  throw new Error(`Unknown message type: ${type}`);
+}
 ```
 
 ### packages/web/src/webrtc/signalingClient.js
@@ -4808,8 +5431,11 @@ export class SignalingClient extends EventTarget {
 ### packages/web/src/webrtc/webrtcPeer.js
 
 ```text
+import { TYPE, MSG, buildJSONBody, buildChunkBody, parseMessage } from './protocol.js';
+
 export const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
 export const CONNECT_TIMEOUT_MS = 15000;
+export const CHUNK_REQUEST_TIMEOUT_MS = 30000;
 
 export class WebRTCPeer extends EventTarget {
   constructor(signalingClient, remotePeerId, { initiator }) {
@@ -4892,16 +5518,29 @@ export class WebRTCPeer extends EventTarget {
   }
 
   _bindChannel(onOpen) {
+    this.channel.binaryType = 'arraybuffer';
+
     this.channel.addEventListener('open', onOpen);
+
     this.channel.addEventListener('message', (event) => {
-      let data;
+      if (!(event.data instanceof ArrayBuffer)) return;
+      let msg;
       try {
-        data = JSON.parse(event.data);
+        msg = parseMessage(new Uint8Array(event.data));
       } catch {
         return;
       }
-      this.dispatchEvent(new CustomEvent('message', { detail: data }));
+
+      if (msg.type === TYPE.JSON) {
+        this.dispatchEvent(new CustomEvent('jsonMessage', { detail: msg.data }));
+        return;
+      }
+
+      if (msg.type === TYPE.CHUNK) {
+        this.dispatchEvent(new CustomEvent('chunkMessage', { detail: msg }));
+      }
     });
+
     this.channel.addEventListener('close', () => {
       this.dispatchEvent(new Event('close'));
     });
@@ -4945,14 +5584,87 @@ export class WebRTCPeer extends EventTarget {
     }
   }
 
+  sendJSON(obj) {
+    this.channel.send(buildJSONBody(obj).buffer);
+  }
+
+  sendChunk(chunkIndex, chunkHashHex, proof, chunkData) {
+    this.channel.send(buildChunkBody(chunkIndex, chunkHashHex, proof, chunkData).buffer);
+  }
+
   send(obj) {
-    this.channel.send(JSON.stringify(obj));
+    this.sendJSON(obj);
   }
 
   close() {
     this.signalingClient.removeEventListener('relay', this._relayHandler);
     if (this.channel) this.channel.close();
     if (this.pc) this.pc.close();
+  }
+}
+
+export class WebRTCPeerConnection {
+  constructor(signalingClient, remotePeerId, { initiator }) {
+    this.peer = new WebRTCPeer(signalingClient, remotePeerId, { initiator });
+    this.pendingRequests = new Map();
+    this.metadata = null;
+
+    this.peer.addEventListener('jsonMessage', (event) => this._handleJSON(event.detail));
+    this.peer.addEventListener('chunkMessage', (event) => this._handleChunk(event.detail));
+    this.peer.addEventListener('close', () => {
+      for (const { reject } of this.pendingRequests.values()) {
+        reject(new Error('Data channel closed'));
+      }
+      this.pendingRequests.clear();
+    });
+  }
+
+  async connect() {
+    await this.peer.connect();
+    return this;
+  }
+
+  _handleJSON(data) {
+    if (data.type === MSG.FILE_OFFER) {
+      this.metadata = data;
+    }
+  }
+
+  _handleChunk(msg) {
+    const handler = this.pendingRequests.get(msg.chunkIndex);
+    if (!handler) return;
+    clearTimeout(handler.timeout);
+    this.pendingRequests.delete(msg.chunkIndex);
+    handler.resolve(msg);
+  }
+
+  requestChunk(index) {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pendingRequests.delete(index);
+        reject(new Error(`Chunk ${index} request timeout`));
+      }, CHUNK_REQUEST_TIMEOUT_MS);
+
+      this.pendingRequests.set(index, { resolve, reject, timeout });
+      this.peer.sendJSON({ type: MSG.CHUNK_REQUEST, index });
+    });
+  }
+
+  serveChunks(getChunk) {
+    this._serveHandler = (event) => {
+      const data = event.detail;
+      if (data.type !== MSG.CHUNK_REQUEST) return;
+      Promise.resolve(getChunk(data.index))
+        .then(({ hash, proof, data: chunkData }) => {
+          this.peer.sendChunk(data.index, hash, proof, chunkData);
+        })
+        .catch(() => {});
+    };
+    this.peer.addEventListener('jsonMessage', this._serveHandler);
+  }
+
+  close() {
+    this.peer.close();
   }
 }
 ```
@@ -5217,7 +5929,7 @@ describe('WebRTCPeer', () => {
     expect(resolvedB).toBe(peerB);
 
     const received = new Promise((resolve) => {
-      peerB.addEventListener('message', (e) => resolve(e.detail));
+      peerB.addEventListener('jsonMessage', (e) => resolve(e.detail));
     });
     peerA.send({ hello: 'world' });
     await expect(received).resolves.toEqual({ hello: 'world' });
@@ -5271,6 +5983,37 @@ describe('WebRTCPeer', () => {
 });
 ```
 
+### packages/web/test/webrtcProtocol.test.js
+
+```text
+import { describe, it, expect } from 'vitest';
+import { TYPE, MSG, buildJSONBody, buildChunkBody, parseMessage } from '../src/webrtc/protocol.js';
+
+describe('webrtc binary protocol', () => {
+  it('round trips a JSON message', () => {
+    const body = buildJSONBody({ type: MSG.CHUNK_REQUEST, index: 42 });
+    const parsed = parseMessage(body);
+    expect(parsed.type).toBe(TYPE.JSON);
+    expect(parsed.data).toEqual({ type: MSG.CHUNK_REQUEST, index: 42 });
+  });
+
+  it('round trips a chunk message including binary data', () => {
+    const chunkData = new Uint8Array([1, 2, 3, 4, 5, 250, 251]);
+    const hash = 'a'.repeat(64);
+    const proof = [{ hash: 'b'.repeat(64), position: 'right' }];
+
+    const body = buildChunkBody(7, hash, proof, chunkData);
+    const parsed = parseMessage(body);
+
+    expect(parsed.type).toBe(TYPE.CHUNK);
+    expect(parsed.chunkIndex).toBe(7);
+    expect(parsed.chunkHash).toBe(hash);
+    expect(parsed.proof).toEqual(proof);
+    expect(new Uint8Array(parsed.chunkData)).toEqual(chunkData);
+  });
+});
+```
+
 ### packages/web/vite.config.js
 
 ```text
@@ -5283,292 +6026,15 @@ export default defineConfig({
 })
 ```
 
-### received/protocol.js
-
-```text
-const HEADER_SIZE = 4;
-const MAX_MESSAGE_SIZE = 100 * 1024 * 1024;
-
-export const MSG = {
-  FILE_OFFER:        'FILE_OFFER',
-  FILE_ACCEPT:       'FILE_ACCEPT',
-  FILE_REJECT:       'FILE_REJECT',
-  CHUNK_REQUEST:     'CHUNK_REQUEST',
-  CHUNK_DATA:        'CHUNK_DATA',
-  CHUNK_NACK:        'CHUNK_NACK',
-  TRANSFER_COMPLETE: 'TRANSFER_COMPLETE',
-  KEEPALIVE:         'KEEPALIVE',
-  ERROR:             'ERROR',
-};
-
-export const TYPE = {
-  JSON:  0x00,
-  CHUNK: 0x01,
-};
-
-export function sendMessage(socket, data) {
-  const isBuffer = Buffer.isBuffer(data);
-  const body = isBuffer ? data : Buffer.from(JSON.stringify(data), 'utf8');
-  const header = Buffer.allocUnsafe(HEADER_SIZE);
-  header.writeUInt32BE(body.length, 0);
-  const packet = Buffer.concat([header, body]);
-  const ok = socket.write(packet);
-  if (!ok) {
-    return new Promise(resolve => {
-      socket.once('drain', resolve);
-    });
-  }
-  return Promise.resolve();
-}
-
-export function sendJSON(socket, obj) {
-  const typeFlag = Buffer.from([TYPE.JSON]);
-  const body = Buffer.from(JSON.stringify(obj), 'utf8');
-  return sendMessage(socket, Buffer.concat([typeFlag, body]));
-}
-
-export function sendChunk(socket, chunkIndex, chunkHash, proof, chunkBuffer) {
-  const typeFlag  = Buffer.from([TYPE.CHUNK]);
-  const indexBuf  = Buffer.allocUnsafe(4);
-  indexBuf.writeUInt32BE(chunkIndex, 0);
-  const hashBuf   = Buffer.from(chunkHash, 'hex');
-  const proofJSON = Buffer.from(JSON.stringify(proof), 'utf8');
-  const proofLen  = Buffer.allocUnsafe(4);
-  proofLen.writeUInt32BE(proofJSON.length, 0);
-  const body = Buffer.concat([typeFlag, indexBuf, hashBuf, proofLen, proofJSON, chunkBuffer]);
-  return sendMessage(socket, body);
-}
-
-export function createFramer(onMessage) {
-  let accumulator = Buffer.alloc(0);
-  return function (incoming) {
-    accumulator = Buffer.concat([accumulator, incoming]);
-    while (true) {
-      if (accumulator.length < HEADER_SIZE) break;
-      const bodyLength = accumulator.readUInt32BE(0);
-      if (bodyLength > MAX_MESSAGE_SIZE) {
-        throw new Error(`Message too large: ${bodyLength} bytes`);
-      }
-      if (accumulator.length < HEADER_SIZE + bodyLength) break;
-      const body = Buffer.from(accumulator.slice(HEADER_SIZE, HEADER_SIZE + bodyLength));
-      accumulator = Buffer.from(accumulator.slice(HEADER_SIZE + bodyLength));
-      onMessage(body);
-    }
-  };
-}
-
-export function parseMessage(body) {
-  const type = body.readUInt8(0);
-  if (type === TYPE.JSON) {
-    return { type: TYPE.JSON, data: JSON.parse(body.slice(1).toString('utf8')) };
-  }
-  if (type === TYPE.CHUNK) {
-    const chunkIndex = body.readUInt32BE(1);
-    const chunkHash  = body.slice(5, 37).toString('hex');
-    const proofLen   = body.readUInt32BE(37);
-    const proof      = JSON.parse(body.slice(41, 41 + proofLen).toString('utf8'));
-    const chunkData  = Buffer.from(body.slice(41 + proofLen));
-    return { type: TYPE.CHUNK, chunkIndex, chunkHash, proof, chunkData };
-  }
-  throw new Error(`Unknown message type: ${type}`);
-}
-```
-
-### received/testfile.bin
-
-Binary or non-UTF-8 file omitted from markdown snapshot (52428800 bytes).
-
-### received/transfer.test.js
-
-```text
-import { describe, it } from 'node:test';
-import assert from 'node:assert/strict';
-import { writeFile, readFile, unlink, mkdir, rm } from 'fs/promises';
-import { randomBytes, createHash } from 'crypto';
-import { tmpdir } from 'os';
-import { join } from 'path';
-import net from 'net';
-import { chunkFile, assembleChunks } from '../src/chunker.js';
-import { getMerkleProof } from '../src/crypto.js';
-import { sendJSON, sendChunk, createFramer, parseMessage, MSG, TYPE } from '../src/protocol.js';
-
-async function makeTempFile(size) {
-    const filePath = join(tmpdir(), `mesh-transfer-${Date.now()}.bin`);
-    await writeFile(filePath, randomBytes(size));
-    return filePath;
-}
-
-function startMiniSender(filePath, port) {
-    return new Promise(async (resolveSender, rejectSender) => {
-       const { chunks, hashes, tree, merkleRoot, totalChunks, fileSize } = await chunkFile(filePath);
-
-        const server = net.createServer((socket) => {
-            socket.setNoDelay(true);
-            socket.setMaxListeners(200);
-
-            const framer = createFramer((body) => {
-                const msg = parseMessage(body);
-                if (msg.type !== TYPE.JSON) return;
-
-                if (msg.data.type === MSG.CHUNK_REQUEST) {
-                    const { index } = msg.data;
-                    const proof = getMerkleProof(tree, index);
-                    sendChunk(socket, index, hashes[index], proof, chunks[index]);
-                }
-
-                if (msg.data.type === MSG.TRANSFER_COMPLETE) {
-                    server.close();
-                    resolveSender();
-                }
-            });
-
-            socket.on('data', framer);
-            socket.on('error', (e) => {
-                if (e.code !== 'ECONNRESET') rejectSender(e);
-            });
-            socket.on('close', () => resolveSender());
-
-            sendJSON(socket, {
-                type: MSG.FILE_OFFER,
-                fileName: 'testfile.bin',
-                fileSize,
-                totalChunks,
-                merkleRoot,
-                hashes,
-            });
-        });
-
-        server.listen(port, '127.0.0.1');
-        server.on('error', rejectSender);
-    });
-}
-
-function waitForPort(port, retries = 30, delay = 50) {
-    return new Promise((resolve, reject) => {
-        function attempt(n) {
-            const socket = net.createConnection({ host: '127.0.0.1', port });
-            socket.once('connect', () => { socket.destroy(); resolve(); });
-            socket.once('error', () => {
-                if (n <= 0) { reject(new Error(`Port ${port} not ready`)); return; }
-                setTimeout(() => attempt(n - 1), delay);
-            });
-        }
-        attempt(retries);
-    });
-}
-
-function runMiniReceiver(port, outputDir) {
-    return new Promise((resolve, reject) => {
-        const received = new Map();
-        let metadata = null;
-        const PIPELINE = 32;
-        let nextRequest = 0;
-        const inFlight = new Set();
-        let done = false;
-
-        const socket = net.createConnection({ host: '127.0.0.1', port });
-        socket.setNoDelay(true);
-        socket.setMaxListeners(200);
-
-        function requestNext() {
-            if (!metadata || done) return;
-            while (inFlight.size < PIPELINE && nextRequest < metadata.totalChunks) {
-                if (!received.has(nextRequest)) {
-                    inFlight.add(nextRequest);
-                    sendJSON(socket, { type: MSG.CHUNK_REQUEST, index: nextRequest });
-                }
-                nextRequest++;
-            }
-        }
-
-        const framer = createFramer(async (body) => {
-            if (done) return;
-            const msg = parseMessage(body);
-
-            if (msg.type === TYPE.JSON && msg.data.type === MSG.FILE_OFFER) {
-                metadata = msg.data;
-                sendJSON(socket, { type: MSG.FILE_ACCEPT });
-                requestNext();
-                return;
-            }
-
-            if (msg.type === TYPE.CHUNK) {
-                const { chunkIndex, chunkHash, proof, chunkData } = msg;
-                inFlight.delete(chunkIndex);
-                const hashMatch = createHash('sha256').update(chunkData).digest('hex') === chunkHash;
-                if (!hashMatch) { reject(new Error(`Chunk ${chunkIndex} hash mismatch`)); return; }
-                const { verifyChunk } = await import('../src/crypto.js');
-                const proofValid = verifyChunk(chunkData, proof, metadata.merkleRoot);
-                if (!proofValid) { reject(new Error(`Chunk ${chunkIndex} Merkle proof invalid`)); return; }
-                received.set(chunkIndex, chunkData);
-                if (received.size === metadata.totalChunks) {
-                    const assembled = assembleChunks(received, metadata.totalChunks);
-                    const outPath = join(outputDir, metadata.fileName);
-                    await writeFile(outPath, assembled);
-                    sendJSON(socket, { type: MSG.TRANSFER_COMPLETE });
-                    socket.destroy();
-                    resolve(outPath);
-                    return;
-                }
-                requestNext();
-            }
-        });
-
-        socket.on('data', framer);
-        socket.on('error', (e) => {
-            if (!done && e.code !== 'ECONNRESET') reject(e);
-        });
-    });
-}
-
-async function runTransferTest(sizeBytes, port) {
-    const filePath = await makeTempFile(sizeBytes);
-    const outDir = join(tmpdir(), `mesh-out-${Date.now()}`);
-    await mkdir(outDir, { recursive: true });
-
-    const senderReady = startMiniSender(filePath, port);
-    await waitForPort(port);
-    const outPath = await runMiniReceiver(port, outDir);
-    await senderReady;
-
-    const original = await readFile(filePath);
-    const received = await readFile(outPath);
-    const match =
-        createHash('sha256').update(original).digest('hex') ===
-        createHash('sha256').update(received).digest('hex');
-
-    await unlink(filePath);
-    await rm(outDir, { recursive: true });
-
-    return match;
-}
-
-describe('transfer', () => {
-    it('transfers a 10MB file correctly with hash match', async () => {
-        const match = await runTransferTest(10 * 1024 * 1024, 19001);
-        assert.equal(match, true);
-    });
-
-    it('transfers a 100MB file correctly with hash match', { timeout: 60000 }, async () => {
-        const match = await runTransferTest(100 * 1024 * 1024, 19002);
-        assert.equal(match, true);
-    });
-});
-```
-
 ### sig-test-out.txt
 
-Binary or non-UTF-8 file omitted from markdown snapshot (6300 bytes).
+Binary or non-UTF-8 file omitted from markdown snapshot (7062 bytes).
 
 ### test-out.txt
 
-Binary or non-UTF-8 file omitted from markdown snapshot (28940 bytes).
-
-### testfile.bin
-
-Binary or non-UTF-8 file omitted from markdown snapshot (52428800 bytes).
+Binary or non-UTF-8 file omitted from markdown snapshot (32030 bytes).
 
 ### web-test-out.txt
 
-Binary or non-UTF-8 file omitted from markdown snapshot (722 bytes).
+Binary or non-UTF-8 file omitted from markdown snapshot (1462 bytes).
 

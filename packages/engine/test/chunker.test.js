@@ -5,7 +5,7 @@ import { randomBytes, createHash } from 'crypto';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { chunkFile, assembleChunks } from '../src/chunker.js';
-import { sha256, buildMerkleRoot, buildMerkleTree, getMerkleProof, verifyChunk } from '../src/crypto.js';
+import { sha256, buildMerkleTree, getMerkleProof, verifyChunk } from '../src/crypto.js';
 
 async function makeTempFile(size) {
   const filePath = join(tmpdir(), `mesh-test-${Date.now()}.bin`);
@@ -34,15 +34,23 @@ describe('chunker', () => {
     await unlink(filePath);
   });
 
-  it('merkle root changes when any chunk is modified', () => {
-    const hashes = ['aaa', 'bbb', 'ccc', 'ddd'];
-    const root1 = buildMerkleRoot([...hashes]);
+it('merkle root changes when any chunk is modified', () => {
+    const hashes = ['aa'.repeat(32), 'bb'.repeat(32), 'cc'.repeat(32), 'dd'.repeat(32)];
+    const root1 = buildMerkleTree([...hashes]).root;
     const tampered = [...hashes];
-    tampered[2] = 'TAMPERED';
-    const root2 = buildMerkleRoot(tampered);
+    tampered[2] = 'ee'.repeat(32);
+    const root2 = buildMerkleTree(tampered).root;
     assert.notEqual(root1, root2);
   });
-
+it('handles a 0-byte file without crashing', async () => {
+    const filePath = join(tmpdir(), `mesh-empty-${Date.now()}.bin`);
+    await import('fs/promises').then(fs => fs.writeFile(filePath, Buffer.alloc(0)));
+    const { totalChunks, fileSize, merkleRoot } = await import('../src/chunker.js').then(m => m.indexFile(filePath));
+    assert.equal(totalChunks, 0);
+    assert.equal(fileSize, 0);
+    assert.equal(typeof merkleRoot, 'string');
+    await unlink(filePath);
+  });
   it('merkle proof verification passes for valid chunk', async () => {
     const filePath = await makeTempFile(300 * 1024);
     const { chunks, tree } = await chunkFile(filePath);

@@ -1,6 +1,7 @@
 import { WebSocketServer } from 'ws';
 import { randomBytes, createHash } from 'crypto';
 import { pathToFileURL } from 'url';
+import { recordRoomCreated, recordRoomExpiredOrClosed, recordPeerJoined, recordPeerLeft } from './metrics.js';
 
 export const MSG_TYPE = {
   CREATE_ROOM:  'CREATE_ROOM',
@@ -42,15 +43,28 @@ export class SignalingServer {
     this._expiryTimer = null;
   }
 
-  listen(port = 0) {
-    return new Promise((resolve) => {
-      this.wss = new WebSocketServer({ port }, () => {
+listen(port = 0) {
+    return new Promise((resolve, reject) => {
+      this.wss = new WebSocketServer({ port });
+
+      this.wss.once('error', reject);
+
+      this.wss.once('listening', () => {
+        this.wss.removeListener('error', reject);
+
+        this.wss.on('error', (err) => {
+          this.emit ? this.emit('error', err) : console.error('Signaling server error:', err.message);
+        });
+
         this.wss.on('connection', (ws, req) => {
           ws._ip = req.socket.remoteAddress || '127.0.0.1';
           this._handleConnection(ws);
         });
 
-        this._expiryTimer = setInterval(() => this._expireRooms(), 60 * 1000);
+        this._expiryTimer = setInterval(() => {
+          this._expireRooms();
+          this._pruneRateLimits();
+        }, 60 * 1000);
 
         resolve(this.wss.address());
       });
@@ -71,7 +85,7 @@ export class SignalingServer {
     }
   }
 
-  _checkRateLimit(ip, action) {
+_checkRateLimit(ip, action) {
     const key  = `${ip}:${action}`;
     const now  = Date.now();
     const max  = action === 'create' ? this.maxCreates : this.maxJoins;
@@ -84,6 +98,18 @@ export class SignalingServer {
     return recent.length <= max;
   }
 
+  _pruneRateLimits() {
+    const now = Date.now();
+    for (const [key, list] of this.rateLimits) {
+      const recent = list.filter(t => now - t < RATE_WINDOW_MS);
+      if (recent.length === 0) {
+        this.rateLimits.delete(key);
+      } else {
+        this.rateLimits.set(key, recent);
+      }
+    }
+  }
+
   _expireRooms() {
     const now = Date.now();
     for (const [code, room] of this.rooms) {
@@ -93,6 +119,7 @@ export class SignalingServer {
           ws.close();
         }
         this.rooms.delete(code);
+        recordRoomExpiredOrClosed();
       }
     }
   }
@@ -149,7 +176,9 @@ export class SignalingServer {
       lastActivity: Date.now(),
     });
 
-    ws.roomCode = roomCode;
+ws.roomCode = roomCode;
+    recordRoomCreated();
+    recordPeerJoined();
     this._send(ws, { type: MSG_TYPE.ROOM_CREATED, roomCode, peerId: ws.peerId });
   }
 
@@ -177,6 +206,7 @@ export class SignalingServer {
     room.peers.set(ws.peerId, ws);
     room.lastActivity = Date.now();
     ws.roomCode = roomCode;
+    recordPeerJoined();
 
     this._send(ws, {
       type: MSG_TYPE.ROOM_JOINED,
@@ -223,6 +253,7 @@ export class SignalingServer {
     if (!room) return;
 
     room.peers.delete(ws.peerId);
+    recordPeerLeft();
 
     for (const peerWs of room.peers.values()) {
       this._send(peerWs, { type: MSG_TYPE.PEER_LEFT, peerId: ws.peerId });
@@ -230,6 +261,7 @@ export class SignalingServer {
 
     if (room.peers.size === 0) {
       this.rooms.delete(ws.roomCode);
+      recordRoomExpiredOrClosed();
     }
   }
 }

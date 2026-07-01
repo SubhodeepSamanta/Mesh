@@ -6,21 +6,6 @@ export function sha256(buffer) {
   return createHash('sha256').update(buffer).digest('hex');
 }
 
-export function buildMerkleRoot(hashes) {
-  if (hashes.length === 0) throw new Error('No hashes provided');
-  if (hashes.length === 1) return hashes[0];
-  let level = hashes.map(h => Buffer.from(h, 'hex'));
-  if (level.length % 2 !== 0) level.push(level[level.length - 1]);
-  while (level.length > 1) {
-    const next = [];
-    for (let i = 0; i < level.length; i += 2) {
-      next.push(Buffer.from(createHash('sha256').update(Buffer.concat([level[i], level[i + 1]])).digest()));
-    }
-    level = next;
-    if (level.length > 1 && level.length % 2 !== 0) level.push(level[level.length - 1]);
-  }
-  return level[0].toString('hex');
-}
 
 export function buildMerkleTree(hashes) {
   if (hashes.length === 0) throw new Error('No hashes provided');
@@ -79,7 +64,7 @@ export function importPublicKey(derBytes) {
 }
 
 export function deriveSharedKey(myPrivateKey, theirPublicKeyDER) {
-  const theirPublicKey = createPublicKey({ key: Buffer.from(theirPublicKeyDER), type: 'spki', format: 'der' });
+  const theirPublicKey = importPublicKey(theirPublicKeyDER);
   const raw = diffieHellman({ privateKey: myPrivateKey, publicKey: theirPublicKey });
   return Buffer.from(hkdfSync('sha256', raw, Buffer.from('mesh-v1'), Buffer.from('mesh-encryption-key'), 32));
 }
