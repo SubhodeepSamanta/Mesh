@@ -24,15 +24,18 @@ Excluded: node_modules, .git, package-lock.json, .env
 - packages/engine/receiver.js
 - packages/engine/sender.js
 - packages/engine/src/chunker.js
+- packages/engine/src/chunkServer.js
 - packages/engine/src/crypto.js
 - packages/engine/src/dht.js
 - packages/engine/src/index.js
 - packages/engine/src/peer.js
 - packages/engine/src/protocol.js
 - packages/engine/src/resume.js
+- packages/engine/src/seed.js
 - packages/engine/src/swarm.js
 - packages/engine/src/transfer.js
 - packages/engine/test/chunker.test.js
+- packages/engine/test/chunkServer.test.js
 - packages/engine/test/crypto.test.js
 - packages/engine/test/dht.test.js
 - packages/engine/test/dhtfiles.test.js
@@ -41,6 +44,7 @@ Excluded: node_modules, .git, package-lock.json, .env
 - packages/engine/test/peer.test.js
 - packages/engine/test/protocol.test.js
 - packages/engine/test/resume.test.js
+- packages/engine/test/seed.test.js
 - packages/engine/test/swarm.test.js
 - packages/engine/test/transfer.test.js
 - packages/signaling/Dockerfile
@@ -55,13 +59,33 @@ Excluded: node_modules, .git, package-lock.json, .env
 - packages/web/public/favicon.svg
 - packages/web/public/icons.svg
 - packages/web/README.md
-- packages/web/src/App.css
 - packages/web/src/App.jsx
-- packages/web/src/assets/hero.png
-- packages/web/src/assets/react.svg
-- packages/web/src/assets/vite.svg
+- packages/web/src/components/layout/Header.jsx
+- packages/web/src/components/layout/Layout.jsx
+- packages/web/src/components/layout/ThemeToggle.jsx
+- packages/web/src/components/receive/IncomingFileCard.jsx
+- packages/web/src/components/receive/RoomCodeInput.jsx
+- packages/web/src/components/send/ConnectionStatus.jsx
+- packages/web/src/components/send/DropZone.jsx
+- packages/web/src/components/send/RoomCodeDisplay.jsx
+- packages/web/src/components/shared/Button.jsx
+- packages/web/src/components/shared/Card.jsx
+- packages/web/src/components/shared/ProgressBar.jsx
+- packages/web/src/hooks/useReceiveTransfer.js
+- packages/web/src/hooks/useSendTransfer.js
 - packages/web/src/index.css
+- packages/web/src/lib/browserCrypto.js
+- packages/web/src/lib/fileChunker.js
+- packages/web/src/lib/format.js
 - packages/web/src/main.jsx
+- packages/web/src/pages/DashboardPage.jsx
+- packages/web/src/pages/HistoryPage.jsx
+- packages/web/src/pages/LandingPage.jsx
+- packages/web/src/pages/ReceivePage.jsx
+- packages/web/src/pages/SendPage.jsx
+- packages/web/src/store/useSignalingStore.js
+- packages/web/src/store/useTransferStore.js
+- packages/web/src/store/useUIStore.js
 - packages/web/src/webrtc-test.html
 - packages/web/src/webrtc/protocol.js
 - packages/web/src/webrtc/signalingClient.js
@@ -70,9 +94,6 @@ Excluded: node_modules, .git, package-lock.json, .env
 - packages/web/test/webrtc.test.js
 - packages/web/test/webrtcProtocol.test.js
 - packages/web/vite.config.js
-- sig-test-out.txt
-- test-out.txt
-- web-test-out.txt
 
 ## Contents
 
@@ -676,7 +697,7 @@ export function TransferTUI() { return null; }
   "main": "src/index.js",
   "type": "module",
   "scripts": {
-"test": "node --test test/protocol.test.js test/chunker.test.js test/crypto.test.js test/transfer.test.js test/dht.test.js test/dhtnode.test.js test/dhtfiles.test.js test/swarm.test.js test/peer.test.js test/integration.test.js test/resume.test.js"
+"test": "node --test test/protocol.test.js test/chunker.test.js test/crypto.test.js test/transfer.test.js test/dht.test.js test/dhtnode.test.js test/dhtfiles.test.js test/swarm.test.js test/peer.test.js test/integration.test.js test/resume.test.js test/chunkServer.test.js test/seed.test.js"
   },
   "license": "ISC"
 }
@@ -906,14 +927,11 @@ main().catch((e) => {
 ### packages/engine/sender.js
 
 ```text
-import net from 'net';
 import { basename, resolve } from 'path';
 import { open } from 'fs/promises';
-import { getMerkleProof } from './src/crypto.js';
-import { sendJSON, sendChunk, createFramer, parseMessage, MSG, TYPE } from './src/protocol.js';
-import { indexFile, readChunk, computeCacheSize } from './src/chunker.js';
-import { generateKeyPair, exportPublicKey, deriveSharedKey, encrypt } from './src/crypto.js';
+import { indexFile } from './src/chunker.js';
 import { DHTNode } from './src/dht.js';
+import { createChunkServer } from './src/chunkServer.js';
 
 const FILE_PATH       = resolve(process.argv[2]);
 const PORT             = parseInt(process.argv[3] || '9000');
@@ -933,18 +951,6 @@ async function main() {
   console.log(`Chunk size: ${(chunkSize / 1024).toFixed(0)} KB`);
 
   const fileHandle = await open(FILE_PATH, 'r');
-  const chunkCache = new Map();
-  const CACHE_MAX = computeCacheSize(chunkSize);
-
-  async function readChunkCached(index) {
-    if (chunkCache.has(index)) return chunkCache.get(index);
-    const data = await readChunk(fileHandle, index, chunkSize);
-    if (chunkCache.size >= CACHE_MAX) {
-      chunkCache.delete(chunkCache.keys().next().value);
-    }
-    chunkCache.set(index, data);
-    return data;
-  }
 
   const dhtNode = new DHTNode();
   await dhtNode.listen();
@@ -957,85 +963,16 @@ async function main() {
     }
   }
 
-  const server = net.createServer((socket) => {
-    socket.setMaxListeners(0);
-    socket.setNoDelay(true);
-    console.log(`Receiver connected from ${socket.remoteAddress}`);
-    const keyPair = generateKeyPair();
-    let sharedKey = null;
-    let peerAlive = true;
-    const keepaliveCheck = setInterval(() => {
-      if (!peerAlive) {
-        console.log('Peer unresponsive — closing connection');
-        clearInterval(keepaliveCheck);
-        socket.destroy();
-        return;
-      }
-      peerAlive = false;
-    }, 35000);
-
-    const framer = createFramer(async (body) => {
-      peerAlive = true;
-      const msg = parseMessage(body);
-      if (msg.type !== TYPE.JSON) return;
-      const { data } = msg;
-
-      if (data.type === MSG.FILE_ACCEPT) {
-        console.log('Receiver accepted transfer');
-      }
-
-      if (data.type === MSG.KEEPALIVE) {
-        return;
-      }
-
-      if (data.type === MSG.KEY_EXCHANGE) {
-        const theirPublicKeyDER = Buffer.from(data.publicKey, 'base64');
-        sharedKey = deriveSharedKey(keyPair.privateKey, theirPublicKeyDER);
-        const myPublicKey = exportPublicKey(keyPair).toString('base64');
-        sendJSON(socket, { type: MSG.KEY_EXCHANGE, publicKey: myPublicKey });
-      }
-
-      if (data.type === MSG.CHUNK_REQUEST) {
-        const { index } = data;
-        if (index < 0 || index >= totalChunks) return;
-        if (!sharedKey) return;
-        const chunkData = await readChunkCached(index);
-        const encryptedData = encrypt(chunkData, sharedKey);
-        const proof = getMerkleProof(tree, index);
-        await sendChunk(socket, index, hashes[index], proof, encryptedData);
-      }
-
-      if (data.type === MSG.TRANSFER_COMPLETE) {
-        console.log('Transfer confirmed complete');
-        clearInterval(keepaliveCheck);
-        await fileHandle.close().catch(() => {});
-        server.close(() => process.exit(0));
-      }
-    });
-
-    socket.on('data',  framer);
-    socket.on('error', (e) => {
-      clearInterval(keepaliveCheck);
-      if (e.code !== 'ECONNRESET') console.error('Socket error:', e.message);
-    });
-    socket.on('close', () => {
-      clearInterval(keepaliveCheck);
-      console.log('Connection closed');
-    });
-
-    sendJSON(socket, {
-      type: MSG.FILE_OFFER,
-      fileName: basename(FILE_PATH),
-      fileSize,
-      totalChunks,
-      chunkSize,
-      merkleRoot,
-    });
+  const server = createChunkServer({
+    fileHandle, hashes, tree, merkleRoot,
+    fileName: basename(FILE_PATH), fileSize, totalChunks, chunkSize,
   });
+
+  server.on('peerError', (e) => console.error('Peer connection error:', e.message));
 
   server.listen(PORT, '127.0.0.1', async () => {
     console.log(`Sender listening on 127.0.0.1:${PORT}`);
-    console.log(`Run receiver: node packages/engine/receiver.js 127.0.0.1 ${PORT} ./received`);
+    console.log(`Serves any number of peers concurrently. Run receiver: node packages/engine/receiver.js 127.0.0.1 ${PORT} ./received`);
     try {
       await dhtNode.announceFile(merkleRoot, PORT);
       console.log(`Announced to DHT. File id: ${merkleRoot}`);
@@ -1050,6 +987,9 @@ async function main() {
   });
 
   process.on('SIGINT', async () => {
+    console.log('\nShutting down...');
+    await new Promise((resolve) => server.close(resolve));
+    await fileHandle.close().catch(() => {});
     await dhtNode.close();
     process.exit(0);
   });
@@ -1153,6 +1093,94 @@ export function assembleChunks(chunks, totalChunks) {
     ordered.push(chunks.get(i));
   }
   return Buffer.concat(ordered);
+}
+```
+
+### packages/engine/src/chunkServer.js
+
+```text
+import net from 'net';
+import { sendJSON, sendChunk, createFramer, parseMessage, MSG, TYPE } from './protocol.js';
+import { generateKeyPair, exportPublicKey, deriveSharedKey, encrypt, getMerkleProof } from './crypto.js';
+import { readChunk, computeCacheSize } from './chunker.js';
+
+export function createChunkServer({ fileHandle, hashes, tree, merkleRoot, fileName, fileSize, totalChunks, chunkSize }) {
+  const chunkCache = new Map();
+  const CACHE_MAX = computeCacheSize(chunkSize);
+
+  async function readChunkCached(index) {
+    if (chunkCache.has(index)) return chunkCache.get(index);
+    const data = await readChunk(fileHandle, index, chunkSize);
+    if (chunkCache.size >= CACHE_MAX) {
+      chunkCache.delete(chunkCache.keys().next().value);
+    }
+    chunkCache.set(index, data);
+    return data;
+  }
+
+  const server = net.createServer((socket) => {
+    socket.setMaxListeners(0);
+    socket.setNoDelay(true);
+
+    const keyPair = generateKeyPair();
+    let sharedKey = null;
+    let peerAlive = true;
+
+    const keepaliveCheck = setInterval(() => {
+      if (!peerAlive) {
+        clearInterval(keepaliveCheck);
+        socket.destroy();
+        return;
+      }
+      peerAlive = false;
+    }, 35000);
+
+    const framer = createFramer(async (body) => {
+      peerAlive = true;
+      const msg = parseMessage(body);
+      if (msg.type !== TYPE.JSON) return;
+      const { data } = msg;
+
+      if (data.type === MSG.KEEPALIVE) return;
+
+      if (data.type === MSG.KEY_EXCHANGE) {
+        const theirPublicKeyDER = Buffer.from(data.publicKey, 'base64');
+        sharedKey = deriveSharedKey(keyPair.privateKey, theirPublicKeyDER);
+        const myPublicKey = exportPublicKey(keyPair).toString('base64');
+        sendJSON(socket, { type: MSG.KEY_EXCHANGE, publicKey: myPublicKey });
+        return;
+      }
+
+      if (data.type === MSG.CHUNK_REQUEST) {
+        const { index } = data;
+        if (index < 0 || index >= totalChunks) return;
+        if (!sharedKey) return;
+        const chunkData = await readChunkCached(index);
+        const encryptedData = encrypt(chunkData, sharedKey);
+        const proof = getMerkleProof(tree, index);
+        await sendChunk(socket, index, hashes[index], proof, encryptedData);
+        return;
+      }
+
+      if (data.type === MSG.TRANSFER_COMPLETE) {
+        clearInterval(keepaliveCheck);
+      }
+    });
+
+    socket.on('data', framer);
+    socket.on('error', (e) => {
+      clearInterval(keepaliveCheck);
+      if (e.code !== 'ECONNRESET') server.emit('peerError', e);
+    });
+    socket.on('close', () => clearInterval(keepaliveCheck));
+
+    sendJSON(socket, {
+      type: MSG.FILE_OFFER,
+      fileName, fileSize, totalChunks, chunkSize, merkleRoot,
+    });
+  });
+
+  return server;
 }
 ```
 
@@ -1616,16 +1644,17 @@ _handleMessage(msgBuf, rinfo) {
   }
 
 async announceFile(fileHash, myPort) {
+  const localPeers = this.fileStore.get(fileHash) || [];
+  const existsLocally = localPeers.some(p => p.addr === this.address && p.port === myPort);
+  if (!existsLocally) {
+    localPeers.push({ addr: this.address, port: myPort, announcedAt: Date.now() });
+  }
+  this.fileStore.set(fileHash, localPeers);
+
   const dhtKey = fileHashToDhtKey(fileHash);
   const closest = await this.iterativeFindNode(dhtKey);
 
   if (closest.length === 0) {
-    const peers = this.fileStore.get(fileHash) || [];
-    const exists = peers.some(p => p.addr === this.address && p.port === myPort);
-    if (!exists) {
-      peers.push({ addr: this.address, port: myPort, announcedAt: Date.now() });
-    }
-    this.fileStore.set(fileHash, peers);
     return [];
   }
 
@@ -1677,6 +1706,8 @@ export * from './swarm.js';
 export * from './peer.js';
 export * from './transfer.js';
 export * from './resume.js';
+export * from './chunkServer.js';
+export * from './seed.js';
 ```
 
 ### packages/engine/src/peer.js
@@ -1966,6 +1997,73 @@ export function resumeStateMatches(state, { fileHash, totalChunks, chunkSize, me
     state.merkleRoot === merkleRoot &&
     state.fileSize === fileSize
   );
+}
+```
+
+### packages/engine/src/seed.js
+
+```text
+import { open } from 'fs/promises';
+import { basename } from 'path';
+import { indexFile } from './chunker.js';
+import { createChunkServer } from './chunkServer.js';
+
+export class SeedManager {
+  constructor(dhtNode) {
+    this.dhtNode = dhtNode;
+    this.seeds = new Map();
+  }
+
+async seedFile(filePath, { fileName, chunkSize: chunkSizeOverride } = {}) {
+    const { fileSize, hashes, tree, merkleRoot, totalChunks, chunkSize } = await indexFile(filePath, chunkSizeOverride);
+    const existing = this.seeds.get(merkleRoot);
+    if (existing) return existing;
+
+    const fileHandle = await open(filePath, 'r');
+    const server = createChunkServer({
+      fileHandle, hashes, tree, merkleRoot,
+      fileName: fileName || basename(filePath),
+      fileSize, totalChunks, chunkSize,
+    });
+
+    const port = await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', () => {
+        server.removeListener('error', reject);
+        resolve(server.address().port);
+      });
+    });
+
+    await this.dhtNode.announceFile(merkleRoot, port);
+
+    const entry = { server, fileHandle, port, merkleRoot, filePath, totalChunks, fileSize, chunkSize };
+    this.seeds.set(merkleRoot, entry);
+    return entry;
+  }
+
+  async stopSeeding(merkleRoot) {
+    const entry = this.seeds.get(merkleRoot);
+    if (!entry) return;
+    await new Promise((resolve) => entry.server.close(resolve));
+    await entry.fileHandle.close().catch(() => {});
+    this.seeds.delete(merkleRoot);
+  }
+
+  async stopAll() {
+    for (const merkleRoot of [...this.seeds.keys()]) {
+      await this.stopSeeding(merkleRoot);
+    }
+  }
+
+  isSeeding(merkleRoot) {
+    return this.seeds.has(merkleRoot);
+  }
+
+  getSeedingList() {
+    return [...this.seeds.values()].map(({ merkleRoot, filePath, port, totalChunks, fileSize }) => ({
+      merkleRoot, filePath, port, totalChunks, fileSize,
+    }));
+  }
 }
 ```
 
@@ -2385,7 +2483,21 @@ export async function downloadFileByHash({ fileHash, outputPath, dhtNode, signal
     signal,
   });
 }
+export async function downloadAndSeed({ fileHash, fileSize, totalChunks, chunkSize, merkleRoot, outputPath, dhtNode, signal, seedManager }) {
+  const result = await downloadFile({ fileHash, fileSize, totalChunks, chunkSize, merkleRoot, outputPath, dhtNode, signal });
 
+  if (result.status === 'complete' && seedManager) {
+    const seedEntry = await seedManager.seedFile(outputPath, { chunkSize });
+    if (seedEntry.merkleRoot !== merkleRoot) {
+      throw new Error(
+        `Re-seed verification failed: recomputed root (${seedEntry.merkleRoot}) does not match expected root (${merkleRoot}). The downloaded file may not match what was requested.`
+      );
+    }
+    return { ...result, seeding: true, seedPort: seedEntry.port };
+  }
+
+  return { ...result, seeding: false };
+}
 export async function startDownloadSession({ fileHash, fileSize, totalChunks, chunkSize, merkleRoot, outputPath, bootstrapAddr, bootstrapPort, signal }) {
   const dhtNode = new DHTNode();
   await dhtNode.listen();
@@ -2549,6 +2661,91 @@ it('handles a 0-byte file without crashing', async () => {
     assert.ok(totalChunks > 0);
     assert.equal(typeof merkleRoot, 'string');
     assert.equal(merkleRoot.length, 64);
+    await unlink(filePath);
+  });
+});
+```
+
+### packages/engine/test/chunkServer.test.js
+
+```text
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { open } from 'fs/promises';
+import { writeFile, unlink } from 'fs/promises';
+import { randomBytes } from 'crypto';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { PeerConnection } from '../src/peer.js';
+import { createChunkServer } from '../src/chunkServer.js';
+import { indexFile } from '../src/chunker.js';
+
+async function makeTempFile(size) {
+  const filePath = join(tmpdir(), `mesh-cs-${Date.now()}.bin`);
+  await writeFile(filePath, randomBytes(size));
+  return filePath;
+}
+
+describe('chunk server', () => {
+  it('serves a correct encrypted chunk with valid proof to a connecting peer', async () => {
+    const filePath = await makeTempFile(50 * 1024);
+    const { fileSize, hashes, tree, merkleRoot, totalChunks, chunkSize } = await indexFile(filePath);
+    const fileHandle = await open(filePath, 'r');
+
+    const server = createChunkServer({
+      fileHandle, hashes, tree, merkleRoot,
+      fileName: 'test.bin', fileSize, totalChunks, chunkSize,
+    });
+
+    const port = await new Promise((resolve) => {
+      server.listen(0, '127.0.0.1', () => resolve(server.address().port));
+    });
+
+    const conn = new PeerConnection('127.0.0.1', port);
+    await conn.connect();
+    assert.ok(conn.metadata);
+    assert.equal(conn.metadata.merkleRoot, merkleRoot);
+
+    const chunkMsg = await conn.requestChunk(0);
+    assert.equal(chunkMsg.chunkHash, hashes[0]);
+
+    conn.close();
+    await new Promise((resolve) => server.close(resolve));
+    await fileHandle.close();
+    await unlink(filePath);
+  });
+
+  it('serves multiple concurrent peers to completion without shutting down after the first', async () => {
+    const filePath = await makeTempFile(30 * 1024);
+    const { fileSize, hashes, tree, merkleRoot, totalChunks, chunkSize } = await indexFile(filePath);
+    const fileHandle = await open(filePath, 'r');
+
+    const server = createChunkServer({
+      fileHandle, hashes, tree, merkleRoot,
+      fileName: 'test.bin', fileSize, totalChunks, chunkSize,
+    });
+
+    const port = await new Promise((resolve) => {
+      server.listen(0, '127.0.0.1', () => resolve(server.address().port));
+    });
+
+    const connA = new PeerConnection('127.0.0.1', port);
+    const connB = new PeerConnection('127.0.0.1', port);
+    await connA.connect();
+    await connB.connect();
+
+    const chunkA = await connA.requestChunk(0);
+    assert.equal(chunkA.chunkHash, hashes[0]);
+
+    const chunkB = await connB.requestChunk(0);
+    assert.equal(chunkB.chunkHash, hashes[0]);
+
+    assert.equal(server.listening, true);
+
+    connA.close();
+    connB.close();
+    await new Promise((resolve) => server.close(resolve));
+    await fileHandle.close();
     await unlink(filePath);
   });
 });
@@ -2814,7 +3011,28 @@ describe('dht announce and get peers', () => {
 
     await nodeA.close();
   });
+it('an announcing node remains discoverable directly even after the peer it replicated to goes offline', async () => {
+    const seeder = new DHTNode();
+    const relay = new DHTNode();
+    const finder = new DHTNode();
+    await seeder.listen();
+    await relay.listen();
+    await finder.listen();
 
+    seeder.routingTable.addPeer({ id: relay.nodeId, addr: '127.0.0.1', port: relay.port });
+    finder.routingTable.addPeer({ id: seeder.nodeId, addr: '127.0.0.1', port: seeder.port });
+
+    const fileHash = sha256(Buffer.from('offline relay test'));
+    await seeder.announceFile(fileHash, 6100);
+
+    await relay.close();
+
+    const peers = await finder.getPeersForFile(fileHash);
+    assert.ok(peers.some(p => p.port === 6100));
+
+    await seeder.close();
+    await finder.close();
+  }, { timeout: 10000 });
   it('peer announces, different peer finds it across the network', async () => {
     const seeder   = new DHTNode();
     const finder   = new DHTNode();
@@ -3120,7 +3338,8 @@ import { join } from 'path';
 import { DHTNode } from '../src/dht.js';
 import { buildMerkleTree, getMerkleProof, sha256, generateKeyPair, exportPublicKey, deriveSharedKey, encrypt } from '../src/crypto.js';
 import { sendJSON, sendChunk, createFramer, parseMessage, MSG, TYPE } from '../src/protocol.js';
-import { downloadFile, downloadFileByHash, MAX_CONCURRENT_CONNECTIONS } from '../src/transfer.js';
+import { downloadFile, downloadFileByHash, downloadAndSeed, MAX_CONCURRENT_CONNECTIONS } from '../src/transfer.js';
+import { SeedManager } from '../src/seed.js';
 
 function startTestSeeder(chunks, hashes, tree, merkleRoot, fileSize, port) {
   return new Promise((resolveListen) => {
@@ -3501,6 +3720,70 @@ await assert.rejects(
     await seederNode.close();
     await downloaderNode.close();
   });
+it('a downloader becomes a seeder and a second downloader can chain-download from it', { timeout: 20000 }, async () => {
+    const numChunks = 12;
+    const chunkSize = 1024;
+    const chunks = [];
+    const hashes = [];
+    for (let i = 0; i < numChunks; i++) {
+      const chunk = randomBytes(chunkSize);
+      chunks.push(chunk);
+      hashes.push(sha256(chunk));
+    }
+    const tree = buildMerkleTree(hashes);
+    const fileHash = tree.root;
+    const fileSize = numChunks * chunkSize;
+
+    const originalSeederNode = new DHTNode();
+    const relaySeederDownloaderNode = new DHTNode();
+    const finalDownloaderNode = new DHTNode();
+    await originalSeederNode.listen();
+    await relaySeederDownloaderNode.listen();
+    await finalDownloaderNode.listen();
+
+    relaySeederDownloaderNode.routingTable.addPeer({
+      id: originalSeederNode.nodeId, addr: '127.0.0.1', port: originalSeederNode.port,
+    });
+    finalDownloaderNode.routingTable.addPeer({
+      id: relaySeederDownloaderNode.nodeId, addr: '127.0.0.1', port: relaySeederDownloaderNode.port,
+    });
+
+    const originalTcpPort = 19300 + Math.floor(Math.random() * 500);
+    const server = await startTestSeeder(chunks, hashes, tree, tree.root, fileSize, originalTcpPort);
+    await originalSeederNode.announceFile(fileHash, originalTcpPort);
+
+    const relayOutputPath = join(tmpdir(), `mesh-relay-${Date.now()}.bin`);
+    const relaySeedManager = new SeedManager(relaySeederDownloaderNode);
+
+    const relayResult = await downloadAndSeed({
+      fileHash, fileSize, totalChunks: numChunks, chunkSize,
+      merkleRoot: tree.root, outputPath: relayOutputPath,
+      dhtNode: relaySeederDownloaderNode, seedManager: relaySeedManager,
+    });
+
+    assert.equal(relayResult.status, 'complete');
+    assert.equal(relayResult.seeding, true);
+
+    server.close();
+    await originalSeederNode.close();
+
+    const finalOutputPath = join(tmpdir(), `mesh-final-${Date.now()}.bin`);
+    const finalResult = await downloadFile({
+      fileHash, fileSize, totalChunks: numChunks, chunkSize,
+      merkleRoot: tree.root, outputPath: finalOutputPath,
+      dhtNode: finalDownloaderNode,
+    });
+
+    assert.equal(finalResult.status, 'complete');
+    const finalBuf = await readFile(finalOutputPath);
+    assert.deepEqual(finalBuf, Buffer.concat(chunks));
+
+    await unlink(relayOutputPath);
+    await unlink(finalOutputPath);
+    await relaySeedManager.stopAll();
+    await relaySeederDownloaderNode.close();
+    await finalDownloaderNode.close();
+  });
 });
 ```
 
@@ -3772,6 +4055,107 @@ describe('resume state', () => {
     assert.equal(resumeStateMatches(null, {
       fileHash: 'c'.repeat(64), fileSize: 1024, totalChunks: 10, chunkSize: 64, merkleRoot: 'c'.repeat(64),
     }), false);
+  });
+});
+```
+
+### packages/engine/test/seed.test.js
+
+```text
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { writeFile, readFile, unlink } from 'fs/promises';
+import { randomBytes } from 'crypto';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { DHTNode } from '../src/dht.js';
+import { SeedManager } from '../src/seed.js';
+import { indexFile } from '../src/chunker.js';
+import { downloadFile } from '../src/transfer.js';
+
+async function makeTempFile(size) {
+  const filePath = join(tmpdir(), `mesh-seed-${Date.now()}.bin`);
+  await writeFile(filePath, randomBytes(size));
+  return filePath;
+}
+
+describe('seed manager', () => {
+  it('seeds a file, announces it to the DHT, and a downloader can retrieve it', async () => {
+    const filePath = await makeTempFile(40 * 1024);
+    const { merkleRoot, totalChunks, chunkSize, fileSize } = await indexFile(filePath);
+
+    const seederDht = new DHTNode();
+    const downloaderDht = new DHTNode();
+    await seederDht.listen();
+    await downloaderDht.listen();
+
+    downloaderDht.routingTable.addPeer({
+      id: seederDht.nodeId, addr: '127.0.0.1', port: seederDht.port,
+    });
+
+    const seedManager = new SeedManager(seederDht);
+    const seedEntry = await seedManager.seedFile(filePath);
+
+    assert.equal(seedManager.isSeeding(merkleRoot), true);
+    assert.equal(seedManager.getSeedingList().length, 1);
+
+    const outputPath = join(tmpdir(), `mesh-seed-out-${Date.now()}.bin`);
+    await downloadFile({
+      fileHash: merkleRoot, fileSize, totalChunks, chunkSize,
+      merkleRoot, outputPath, dhtNode: downloaderDht,
+    });
+
+    const original = await readFile(filePath);
+    const downloaded = await readFile(outputPath);
+    assert.deepEqual(downloaded, original);
+
+    await unlink(outputPath);
+    await unlink(filePath);
+    await seedManager.stopAll();
+    await seederDht.close();
+    await downloaderDht.close();
+  });
+
+  it('stopSeeding closes the server so new connections fail', async () => {
+    const filePath = await makeTempFile(20 * 1024);
+    const { merkleRoot } = await indexFile(filePath);
+
+    const dhtNode = new DHTNode();
+    await dhtNode.listen();
+
+    const seedManager = new SeedManager(dhtNode);
+    const seedEntry = await seedManager.seedFile(filePath);
+    const port = seedEntry.port;
+
+    await seedManager.stopSeeding(merkleRoot);
+    assert.equal(seedManager.isSeeding(merkleRoot), false);
+
+    const net = await import('net');
+    await assert.rejects(() => new Promise((resolve, reject) => {
+      const socket = net.default.createConnection({ host: '127.0.0.1', port });
+      socket.once('connect', resolve);
+      socket.once('error', reject);
+    }));
+
+    await unlink(filePath);
+    await dhtNode.close();
+  });
+
+  it('calling seedFile twice for the same file reuses the existing seed entry', async () => {
+    const filePath = await makeTempFile(15 * 1024);
+    const dhtNode = new DHTNode();
+    await dhtNode.listen();
+
+    const seedManager = new SeedManager(dhtNode);
+    const first = await seedManager.seedFile(filePath);
+    const second = await seedManager.seedFile(filePath);
+
+    assert.equal(first.port, second.port);
+    assert.equal(seedManager.getSeedingList().length, 1);
+
+    await unlink(filePath);
+    await seedManager.stopAll();
+    await dhtNode.close();
   });
 });
 ```
@@ -5162,12 +5546,16 @@ export default defineConfig([
     "test": "vitest run"
   },
   "dependencies": {
+    "@tailwindcss/vite": "^4.3.2",
     "d3": "^7.9.0",
     "framer-motion": "^12.42.0",
+    "qrcode.react": "^4.2.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-dropzone": "^15.0.0",
+    "react-router-dom": "^7.18.1",
     "recharts": "^3.9.0",
+    "tailwindcss": "^4.3.2",
     "zustand": "^5.0.14"
   },
   "devDependencies": {
@@ -5214,447 +5602,706 @@ The React Compiler is not enabled on this template because of its impact on dev 
 If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
 ```
 
-### packages/web/src/App.css
-
-```text
-.counter {
-  font-size: 16px;
-  padding: 5px 10px;
-  border-radius: 5px;
-  color: var(--accent);
-  background: var(--accent-bg);
-  border: 2px solid transparent;
-  transition: border-color 0.3s;
-  margin-bottom: 24px;
-
-  &:hover {
-    border-color: var(--accent-border);
-  }
-  &:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-  }
-}
-
-.hero {
-  position: relative;
-
-  .base,
-  .framework,
-  .vite {
-    inset-inline: 0;
-    margin: 0 auto;
-  }
-
-  .base {
-    width: 170px;
-    position: relative;
-    z-index: 0;
-  }
-
-  .framework,
-  .vite {
-    position: absolute;
-  }
-
-  .framework {
-    z-index: 1;
-    top: 34px;
-    height: 28px;
-    transform: perspective(2000px) rotateZ(300deg) rotateX(44deg) rotateY(39deg)
-      scale(1.4);
-  }
-
-  .vite {
-    z-index: 0;
-    top: 107px;
-    height: 26px;
-    width: auto;
-    transform: perspective(2000px) rotateZ(300deg) rotateX(40deg) rotateY(39deg)
-      scale(0.8);
-  }
-}
-
-#center {
-  display: flex;
-  flex-direction: column;
-  gap: 25px;
-  place-content: center;
-  place-items: center;
-  flex-grow: 1;
-
-  @media (max-width: 1024px) {
-    padding: 32px 20px 24px;
-    gap: 18px;
-  }
-}
-
-#next-steps {
-  display: flex;
-  border-top: 1px solid var(--border);
-  text-align: left;
-
-  & > div {
-    flex: 1 1 0;
-    padding: 32px;
-    @media (max-width: 1024px) {
-      padding: 24px 20px;
-    }
-  }
-
-  .icon {
-    margin-bottom: 16px;
-    width: 22px;
-    height: 22px;
-  }
-
-  @media (max-width: 1024px) {
-    flex-direction: column;
-    text-align: center;
-  }
-}
-
-#docs {
-  border-right: 1px solid var(--border);
-
-  @media (max-width: 1024px) {
-    border-right: none;
-    border-bottom: 1px solid var(--border);
-  }
-}
-
-#next-steps ul {
-  list-style: none;
-  padding: 0;
-  display: flex;
-  gap: 8px;
-  margin: 32px 0 0;
-
-  .logo {
-    height: 18px;
-  }
-
-  a {
-    color: var(--text-h);
-    font-size: 16px;
-    border-radius: 6px;
-    background: var(--social-bg);
-    display: flex;
-    padding: 6px 12px;
-    align-items: center;
-    gap: 8px;
-    text-decoration: none;
-    transition: box-shadow 0.3s;
-
-    &:hover {
-      box-shadow: var(--shadow);
-    }
-    .button-icon {
-      height: 18px;
-      width: 18px;
-    }
-  }
-
-  @media (max-width: 1024px) {
-    margin-top: 20px;
-    flex-wrap: wrap;
-    justify-content: center;
-
-    li {
-      flex: 1 1 calc(50% - 8px);
-    }
-
-    a {
-      width: 100%;
-      justify-content: center;
-      box-sizing: border-box;
-    }
-  }
-}
-
-#spacer {
-  height: 88px;
-  border-top: 1px solid var(--border);
-  @media (max-width: 1024px) {
-    height: 48px;
-  }
-}
-
-.ticks {
-  position: relative;
-  width: 100%;
-
-  &::before,
-  &::after {
-    content: '';
-    position: absolute;
-    top: -4.5px;
-    border: 5px solid transparent;
-  }
-
-  &::before {
-    left: 0;
-    border-left-color: var(--border);
-  }
-  &::after {
-    right: 0;
-    border-right-color: var(--border);
-  }
-}
-```
-
 ### packages/web/src/App.jsx
 
 ```text
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import heroImg from './assets/hero.png'
-import './App.css'
+import { Routes, Route } from 'react-router-dom'
+import { useEffect } from 'react'
+import Layout from './components/layout/Layout.jsx'
+import LandingPage from './pages/LandingPage.jsx'
+import SendPage from './pages/SendPage.jsx'
+import ReceivePage from './pages/ReceivePage.jsx'
+import DashboardPage from './pages/DashboardPage.jsx'
+import HistoryPage from './pages/HistoryPage.jsx'
+import { useUIStore } from './store/useUIStore.js'
 
 function App() {
-  const [count, setCount] = useState(0)
+  const initTheme = useUIStore((s) => s.initTheme)
+
+  useEffect(() => {
+    initTheme()
+  }, [initTheme])
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
-
-      <div className="ticks"></div>
-
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
+    <Layout>
+      <Routes>
+        <Route path="/" element={<LandingPage />} />
+        <Route path="/send" element={<SendPage />} />
+        <Route path="/receive" element={<ReceivePage />} />
+        <Route path="/dashboard" element={<DashboardPage />} />
+        <Route path="/history" element={<HistoryPage />} />
+      </Routes>
+    </Layout>
   )
 }
 
 export default App
 ```
 
-### packages/web/src/assets/hero.png
+### packages/web/src/components/layout/Header.jsx
 
-Binary file omitted from markdown snapshot (13057 bytes).
+```text
+import { Link, useLocation } from 'react-router-dom'
+import ThemeToggle from './ThemeToggle.jsx'
 
-### packages/web/src/assets/react.svg
+const NAV_LINKS = [
+  { to: '/send', label: 'Send' },
+  { to: '/receive', label: 'Receive' },
+  { to: '/history', label: 'History' },
+]
 
-Binary file omitted from markdown snapshot (4126 bytes).
+export default function Header() {
+  const location = useLocation()
 
-### packages/web/src/assets/vite.svg
+  return (
+    <header className="sticky top-0 z-40 border-b border-black/5 dark:border-white/5 bg-white/80 dark:bg-[#0e0e14]/80 backdrop-blur-md">
+      <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
+        <Link to="/" className="flex items-center gap-2 text-lg font-semibold tracking-tight">
+          <span className="inline-block h-2.5 w-2.5 rounded-full bg-brand-500" />
+          Mesh
+        </Link>
 
-Binary file omitted from markdown snapshot (8709 bytes).
+        <nav className="hidden items-center gap-1 sm:flex">
+          {NAV_LINKS.map((link) => (
+            <Link
+              key={link.to}
+              to={link.to}
+              className={`rounded-full px-4 py-2 text-sm font-medium transition ${
+                location.pathname === link.to
+                  ? 'bg-brand-500 text-white'
+                  : 'text-black/70 hover:bg-black/5 dark:text-white/70 dark:hover:bg-white/10'
+              }`}
+            >
+              {link.label}
+            </Link>
+          ))}
+        </nav>
+
+        <ThemeToggle />
+      </div>
+    </header>
+  )
+}
+```
+
+### packages/web/src/components/layout/Layout.jsx
+
+```text
+import Header from './Header.jsx'
+
+export default function Layout({ children }) {
+  return (
+    <div className="min-h-screen flex flex-col">
+      <Header />
+      <main className="flex-1">{children}</main>
+    </div>
+  )
+}
+```
+
+### packages/web/src/components/layout/ThemeToggle.jsx
+
+```text
+import { useUIStore } from '../../store/useUIStore.js'
+
+export default function ThemeToggle() {
+  const theme = useUIStore((s) => s.theme)
+  const toggleTheme = useUIStore((s) => s.toggleTheme)
+
+  return (
+    <button
+      onClick={toggleTheme}
+      aria-label="Toggle theme"
+      className="flex h-9 w-9 items-center justify-center rounded-full border border-black/10 dark:border-white/10 text-lg transition hover:bg-black/5 dark:hover:bg-white/10"
+    >
+      {theme === 'dark' ? '☀️' : '🌙'}
+    </button>
+  )
+}
+```
+
+### packages/web/src/components/receive/IncomingFileCard.jsx
+
+```text
+import { formatBytes } from '../../lib/format.js'
+import Card from '../shared/Card.jsx'
+
+export default function IncomingFileCard({ fileMeta }) {
+  if (!fileMeta) return null
+  return (
+    <Card className="w-full max-w-sm text-center">
+      <p className="text-sm text-black/50 dark:text-white/50">Incoming file</p>
+      <p className="mt-1 truncate text-lg font-medium">{fileMeta.fileName}</p>
+      <p className="mt-1 text-black/60 dark:text-white/60">{formatBytes(fileMeta.fileSize)}</p>
+    </Card>
+  )
+}
+```
+
+### packages/web/src/components/receive/RoomCodeInput.jsx
+
+```text
+import { useState } from 'react'
+import Button from '../shared/Button.jsx'
+
+export default function RoomCodeInput({ onJoin, joining, defaultValue = '' }) {
+  const [code, setCode] = useState(defaultValue)
+
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault()
+        if (code.trim().length === 6) onJoin(code.trim().toUpperCase())
+      }}
+      className="flex flex-col items-center gap-4"
+    >
+      <input
+        value={code}
+        onChange={(e) => setCode(e.target.value.toUpperCase().slice(0, 6))}
+        placeholder="ROOMCODE"
+        className="w-64 rounded-xl border border-black/10 bg-transparent px-4 py-3 text-center font-mono text-2xl tracking-[0.2em] outline-none focus:border-brand-500 dark:border-white/10"
+      />
+      <Button type="submit" disabled={code.length !== 6 || joining}>
+        {joining ? 'Joining…' : 'Join'}
+      </Button>
+    </form>
+  )
+}
+```
+
+### packages/web/src/components/send/ConnectionStatus.jsx
+
+```text
+const LABELS = {
+  idle: 'Idle',
+  'waiting-for-peer': 'Waiting for receiver…',
+  'file-offered': 'Sending file info…',
+  transferring: 'Transferring…',
+  complete: 'Complete',
+  paused: 'Paused',
+  error: 'Error',
+}
+
+export default function ConnectionStatus({ status }) {
+  const dotColor =
+    status === 'transferring' ? 'bg-green-500 animate-pulse'
+    : status === 'error' ? 'bg-red-500'
+    : status === 'complete' ? 'bg-green-500'
+    : 'bg-amber-500'
+
+  return (
+    <div className="inline-flex items-center gap-2 rounded-full bg-black/5 px-4 py-2 text-sm dark:bg-white/10">
+      <span className={`h-2 w-2 rounded-full ${dotColor}`} />
+      {LABELS[status] || status}
+    </div>
+  )
+}
+```
+
+### packages/web/src/components/send/DropZone.jsx
+
+```text
+import { useCallback, useState } from 'react'
+import { useDropzone } from 'react-dropzone'
+
+export default function DropZone({ onFileReady }) {
+  const [indexing, setIndexing] = useState(false)
+
+  const onDrop = useCallback(async (accepted) => {
+    const file = accepted[0]
+    if (!file) return
+    setIndexing(true)
+    const { indexFile } = await import('../../lib/fileChunker.js')
+    const fileIndex = await indexFile(file)
+    setIndexing(false)
+    onFileReady(file, fileIndex)
+  }, [onFileReady])
+
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({ onDrop, multiple: false })
+
+  return (
+    <div
+      {...getRootProps()}
+      className={`flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed p-16 text-center transition ${
+        isDragActive
+          ? 'border-brand-500 bg-brand-50 dark:bg-brand-900/20'
+          : 'border-black/15 dark:border-white/15'
+      }`}
+    >
+      <input {...getInputProps()} />
+      {indexing ? (
+        <p className="text-black/60 dark:text-white/60">Indexing file…</p>
+      ) : isDragActive ? (
+        <p className="font-medium text-brand-500">Drop it here</p>
+      ) : (
+        <>
+          <p className="font-medium">Drag a file here, or click to browse</p>
+          <p className="mt-1 text-sm text-black/50 dark:text-white/50">Any file, any size</p>
+        </>
+      )}
+    </div>
+  )
+}
+```
+
+### packages/web/src/components/send/RoomCodeDisplay.jsx
+
+```text
+import { QRCodeSVG } from 'qrcode.react'
+
+export default function RoomCodeDisplay({ roomCode }) {
+  const shareUrl = `${window.location.origin}/receive?code=${roomCode}`
+
+  return (
+    <div className="flex flex-col items-center gap-4">
+      <div className="rounded-xl bg-white p-3">
+        <QRCodeSVG value={shareUrl} size={140} />
+      </div>
+      <div className="text-center">
+        <p className="text-sm text-black/50 dark:text-white/50">Room code</p>
+        <p className="font-mono text-4xl font-semibold tracking-[0.2em]">{roomCode}</p>
+      </div>
+    </div>
+  )
+}
+```
+
+### packages/web/src/components/shared/Button.jsx
+
+```text
+const VARIANTS = {
+  primary: 'bg-brand-500 text-white hover:bg-brand-600 shadow-sm shadow-brand-500/20',
+  secondary:
+    'bg-black/5 text-black hover:bg-black/10 dark:bg-white/10 dark:text-white dark:hover:bg-white/15',
+  ghost: 'text-black/70 hover:bg-black/5 dark:text-white/70 dark:hover:bg-white/10',
+}
+
+export default function Button({ variant = 'primary', className = '', children, ...props }) {
+  return (
+    <button
+      className={`inline-flex items-center justify-center gap-2 rounded-full px-6 py-3 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-40 ${VARIANTS[variant]} ${className}`}
+      {...props}
+    >
+      {children}
+    </button>
+  )
+}
+```
+
+### packages/web/src/components/shared/Card.jsx
+
+```text
+export default function Card({ className = '', children }) {
+  return (
+    <div
+      className={`rounded-2xl border border-black/5 bg-white p-6 shadow-sm dark:border-white/5 dark:bg-white/[0.03] ${className}`}
+    >
+      {children}
+    </div>
+  )
+}
+```
+
+### packages/web/src/components/shared/ProgressBar.jsx
+
+```text
+export default function ProgressBar({ percent }) {
+  return (
+    <div className="h-2 w-full overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
+      <div
+        className="h-full rounded-full bg-brand-500 transition-all duration-300"
+        style={{ width: `${Math.min(100, percent)}%` }}
+      />
+    </div>
+  )
+}
+```
+
+### packages/web/src/hooks/useReceiveTransfer.js
+
+```text
+import { useCallback, useRef } from 'react'
+import { WebRTCPeer } from '../webrtc/webrtcPeer.js'
+import { MSG } from '../webrtc/protocol.js'
+import { verifyChunk } from '../lib/browserCrypto.js'
+import { useTransferStore } from '../store/useTransferStore.js'
+
+const PIPELINE_DEPTH = 8
+
+export function useReceiveTransfer() {
+  const chunksRef = useRef([])
+  const metaRef = useRef(null)
+  const nextRequestRef = useRef(0)
+  const inFlightRef = useRef(0)
+  const startTimeRef = useRef(0)
+  const bytesReceivedRef = useRef(0)
+
+  const fillPipeline = useCallback((peer) => {
+    const meta = metaRef.current
+    while (inFlightRef.current < PIPELINE_DEPTH && nextRequestRef.current < meta.totalChunks) {
+      inFlightRef.current++
+      peer.sendJSON({ type: MSG.CHUNK_REQUEST, index: nextRequestRef.current })
+      nextRequestRef.current++
+    }
+  }, [])
+
+  const requestOne = useCallback((peer, index) => {
+    inFlightRef.current++
+    peer.sendJSON({ type: MSG.CHUNK_REQUEST, index })
+  }, [])
+
+  const handleChunk = useCallback(async (peer, msg) => {
+    const meta = metaRef.current
+    inFlightRef.current--
+
+    const view = msg.chunkData
+    const buf = view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength)
+    const valid = await verifyChunk(buf, msg.proof, meta.merkleRoot)
+
+    if (!valid) {
+      requestOne(peer, msg.chunkIndex)
+      return
+    }
+
+    chunksRef.current[msg.chunkIndex] = view
+    bytesReceivedRef.current += view.byteLength
+
+    const verifiedCount = chunksRef.current.filter(Boolean).length
+    useTransferStore.getState().updateProgress({
+      verified: verifiedCount,
+      total: meta.totalChunks,
+      percent: (verifiedCount / meta.totalChunks) * 100,
+    })
+
+    const elapsedSec = (Date.now() - startTimeRef.current) / 1000
+    if (elapsedSec > 0.2) {
+      useTransferStore.getState().recordSpeedSample(bytesReceivedRef.current / 1024 / 1024 / elapsedSec)
+    }
+
+    if (verifiedCount === meta.totalChunks) {
+      useTransferStore.getState().setComplete()
+      return
+    }
+
+    fillPipeline(peer)
+  }, [fillPipeline, requestOne])
+
+  const connectToPeer = useCallback(async (client, remotePeerId) => {
+    const peer = new WebRTCPeer(client, remotePeerId, { initiator: false })
+
+    peer.addEventListener('jsonMessage', (e) => {
+      if (e.detail.type === MSG.FILE_OFFER) {
+        metaRef.current = e.detail
+        chunksRef.current = new Array(e.detail.totalChunks)
+        useTransferStore.getState().setIncomingFile(e.detail)
+      }
+    })
+    peer.addEventListener('chunkMessage', (e) => handleChunk(peer, e.detail))
+    peer.addEventListener('close', () => {
+      if (useTransferStore.getState().status !== 'complete') {
+        useTransferStore.getState().setError('Connection closed')
+      }
+    })
+
+    await peer.connect()
+    return peer
+  }, [handleChunk])
+
+  const startDownload = useCallback((peer) => {
+    startTimeRef.current = Date.now()
+    bytesReceivedRef.current = 0
+    nextRequestRef.current = 0
+    useTransferStore.getState().setTransferring()
+    fillPipeline(peer)
+  }, [fillPipeline])
+
+  const getAssembledBlob = useCallback(() => {
+    return new Blob(chunksRef.current, { type: 'application/octet-stream' })
+  }, [])
+
+  return { connectToPeer, startDownload, getAssembledBlob }
+}
+```
+
+### packages/web/src/hooks/useSendTransfer.js
+
+```text
+import { useCallback, useRef } from 'react'
+import { WebRTCPeer } from '../webrtc/webrtcPeer.js'
+import { MSG } from '../webrtc/protocol.js'
+import { readChunk } from '../lib/fileChunker.js'
+import { getMerkleProof } from '../lib/browserCrypto.js'
+import { useSignalingStore } from '../store/useSignalingStore.js'
+import { useTransferStore } from '../store/useTransferStore.js'
+
+export function useSendTransfer() {
+  const fileRef = useRef(null)
+  const indexRef = useRef(null)
+  const servedRef = useRef(new Set())
+
+  const startSending = useCallback(async (file, fileIndex) => {
+    fileRef.current = file
+    indexRef.current = fileIndex
+    servedRef.current = new Set()
+    useTransferStore.getState().startAsSender({
+      fileName: fileIndex.fileName,
+      fileSize: fileIndex.fileSize,
+      totalChunks: fileIndex.totalChunks,
+      chunkSize: fileIndex.chunkSize,
+      merkleRoot: fileIndex.merkleRoot,
+    })
+  }, [])
+
+  const handleChunkRequest = useCallback(async (peer, index) => {
+    const file = fileRef.current
+    const idx = indexRef.current
+    const buf = await readChunk(file, index, idx.chunkSize)
+    const proof = getMerkleProof(idx.tree, index)
+    peer.sendChunk(index, idx.hashes[index], proof, new Uint8Array(buf))
+
+    servedRef.current.add(index)
+    const total = idx.totalChunks
+    useTransferStore.getState().updateProgress({
+      verified: servedRef.current.size,
+      total,
+      percent: (servedRef.current.size / total) * 100,
+    })
+    if (servedRef.current.size === total) {
+      useTransferStore.getState().setComplete()
+    }
+  }, [])
+
+  const connectToPeer = useCallback(async (remotePeerId) => {
+    const client = useSignalingStore.getState().client
+    const peer = new WebRTCPeer(client, remotePeerId, { initiator: true })
+
+    peer.addEventListener('jsonMessage', (e) => {
+      if (e.detail.type === MSG.CHUNK_REQUEST) {
+        handleChunkRequest(peer, e.detail.index)
+      }
+    })
+    peer.addEventListener('close', () => {
+      if (useTransferStore.getState().status !== 'complete') {
+        useTransferStore.getState().setError('Connection closed')
+      }
+    })
+
+    await peer.connect()
+
+    const idx = indexRef.current
+    peer.sendJSON({
+      type: MSG.FILE_OFFER,
+      fileName: idx.fileName,
+      fileSize: idx.fileSize,
+      totalChunks: idx.totalChunks,
+      chunkSize: idx.chunkSize,
+      merkleRoot: idx.merkleRoot,
+    })
+    useTransferStore.getState().setTransferring()
+    return peer
+  }, [handleChunkRequest])
+
+  return { startSending, connectToPeer }
+}
+```
 
 ### packages/web/src/index.css
 
 ```text
-:root {
-  --text: #6b6375;
-  --text-h: #08060d;
-  --bg: #fff;
-  --border: #e5e4e7;
-  --code-bg: #f4f3ec;
-  --accent: #aa3bff;
-  --accent-bg: rgba(170, 59, 255, 0.1);
-  --accent-border: rgba(170, 59, 255, 0.5);
-  --social-bg: rgba(244, 243, 236, 0.5);
-  --shadow:
-    rgba(0, 0, 0, 0.1) 0 10px 15px -3px, rgba(0, 0, 0, 0.05) 0 4px 6px -2px;
+@import "tailwindcss";
 
-  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --mono: ui-monospace, Consolas, monospace;
+@custom-variant dark (&:where(.dark, .dark *));
 
-  font: 18px/145% var(--sans);
-  letter-spacing: 0.18px;
-  color-scheme: light dark;
-  color: var(--text);
-  background: var(--bg);
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+@theme {
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
 
-  @media (max-width: 1024px) {
-    font-size: 16px;
-  }
+  --color-brand-50: #f0f4ff;
+  --color-brand-100: #dfe7ff;
+  --color-brand-200: #c2d0ff;
+  --color-brand-300: #9caeff;
+  --color-brand-400: #7885ff;
+  --color-brand-500: #6060f5;
+  --color-brand-600: #4f42dd;
+  --color-brand-700: #4234b3;
+  --color-brand-800: #362d8f;
+  --color-brand-900: #2e2872;
+
+  --color-surface-light: #ffffff;
+  --color-surface-dark: #0e0e14;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --text: #9ca3af;
-    --text-h: #f3f4f6;
-    --bg: #16171d;
-    --border: #2e303a;
-    --code-bg: #1f2028;
-    --accent: #c084fc;
-    --accent-bg: rgba(192, 132, 252, 0.15);
-    --accent-border: rgba(192, 132, 252, 0.5);
-    --social-bg: rgba(47, 48, 58, 0.5);
-    --shadow:
-      rgba(0, 0, 0, 0.4) 0 10px 15px -3px, rgba(0, 0, 0, 0.25) 0 4px 6px -2px;
-  }
+html {
+  color-scheme: light;
+}
 
-  #social .button-icon {
-    filter: invert(1) brightness(2);
-  }
+html.dark {
+  color-scheme: dark;
 }
 
 body {
   margin: 0;
+  font-family: var(--font-sans);
+  background: var(--color-surface-light);
+  color: #16161f;
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
 
-#root {
-  width: 1126px;
-  max-width: 100%;
-  margin: 0 auto;
-  text-align: center;
-  border-inline: 1px solid var(--border);
-  min-height: 100svh;
-  display: flex;
-  flex-direction: column;
+html.dark body {
+  background: var(--color-surface-dark);
+  color: #e8e8f0;
+}
+
+* {
   box-sizing: border-box;
 }
+```
 
-h1,
-h2 {
-  font-family: var(--heading);
-  font-weight: 500;
-  color: var(--text-h);
+### packages/web/src/lib/browserCrypto.js
+
+```text
+export async function sha256Hex(buffer) {
+  const digest = await crypto.subtle.digest('SHA-256', buffer)
+  return bytesToHex(new Uint8Array(digest))
 }
 
-h1 {
-  font-size: 56px;
-  letter-spacing: -1.68px;
-  margin: 32px 0;
-  @media (max-width: 1024px) {
-    font-size: 36px;
-    margin: 20px 0;
+function bytesToHex(bytes) {
+  return Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+function hexToBytes(hex) {
+  const out = new Uint8Array(hex.length / 2)
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.substr(i * 2, 2), 16)
+  return out
+}
+
+async function hashPair(hexA, hexB) {
+  const combined = new Uint8Array(64)
+  combined.set(hexToBytes(hexA), 0)
+  combined.set(hexToBytes(hexB), 32)
+  return sha256Hex(combined.buffer)
+}
+
+export async function buildMerkleTree(hashes) {
+  if (hashes.length === 0) throw new Error('No hashes provided')
+  let level = [...hashes]
+  if (level.length % 2 !== 0) level.push(level[level.length - 1])
+  const levels = [level]
+  while (level.length > 1) {
+    const next = []
+    for (let i = 0; i < level.length; i += 2) {
+      next.push(await hashPair(level[i], level[i + 1]))
+    }
+    level = next
+    if (level.length > 1 && level.length % 2 !== 0) level.push(level[level.length - 1])
+    levels.push(level)
+  }
+  return { root: level[0], levels }
+}
+
+export function getMerkleProof(tree, index) {
+  const proof = []
+  let i = index
+  for (let lvl = 0; lvl < tree.levels.length - 1; lvl++) {
+    const level = tree.levels[lvl]
+    const isLeft = i % 2 === 0
+    const siblingIndex = isLeft ? i + 1 : i - 1
+    if (siblingIndex < level.length) {
+      proof.push({ hash: level[siblingIndex], position: isLeft ? 'right' : 'left' })
+    }
+    i = Math.floor(i / 2)
+  }
+  return proof
+}
+
+export async function verifyChunk(chunkBuffer, proof, expectedRoot) {
+  let current = await sha256Hex(chunkBuffer)
+  for (const { hash: sibling, position } of proof) {
+    current = position === 'right' ? await hashPair(current, sibling) : await hashPair(sibling, current)
+  }
+  return current === expectedRoot
+}
+```
+
+### packages/web/src/lib/fileChunker.js
+
+```text
+import { sha256Hex, buildMerkleTree } from './browserCrypto.js'
+
+const DEFAULT_CHUNK_SIZE = 65536
+const MAX_CHUNK_SIZE = 4 * 1024 * 1024
+const TARGET_CHUNK_COUNT = 20000
+
+export function computeChunkSize(fileSize) {
+  if (fileSize <= DEFAULT_CHUNK_SIZE * TARGET_CHUNK_COUNT) return DEFAULT_CHUNK_SIZE
+  const raw = Math.ceil(fileSize / TARGET_CHUNK_COUNT)
+  let size = DEFAULT_CHUNK_SIZE
+  while (size < raw && size < MAX_CHUNK_SIZE) size *= 2
+  return size
+}
+
+export async function indexFile(file) {
+  const chunkSize = computeChunkSize(file.size)
+  const totalChunks = file.size === 0 ? 0 : Math.ceil(file.size / chunkSize)
+  const hashes = []
+
+  for (let i = 0; i < totalChunks; i++) {
+    const start = i * chunkSize
+    const end = Math.min(start + chunkSize, file.size)
+    const buf = await file.slice(start, end).arrayBuffer()
+    hashes.push(await sha256Hex(buf))
+  }
+
+  const tree = totalChunks > 0
+    ? await buildMerkleTree(hashes)
+    : { root: await sha256Hex(new ArrayBuffer(0)), levels: [] }
+
+  return {
+    fileName: file.name,
+    fileSize: file.size,
+    chunkSize,
+    totalChunks,
+    hashes,
+    tree,
+    merkleRoot: tree.root,
   }
 }
-h2 {
-  font-size: 24px;
-  line-height: 118%;
-  letter-spacing: -0.24px;
-  margin: 0 0 8px;
-  @media (max-width: 1024px) {
-    font-size: 20px;
-  }
+
+export async function readChunk(file, index, chunkSize) {
+  const start = index * chunkSize
+  const end = Math.min(start + chunkSize, file.size)
+  return file.slice(start, end).arrayBuffer()
 }
-p {
-  margin: 0;
+```
+
+### packages/web/src/lib/format.js
+
+```text
+export function formatBytes(bytes) {
+  if (bytes === 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  const i = Math.floor(Math.log(bytes) / Math.log(1024))
+  const value = bytes / Math.pow(1024, i)
+  return `${value.toFixed(i === 0 ? 0 : 1)} ${units[i]}`
 }
 
-code,
-.counter {
-  font-family: var(--mono);
-  display: inline-flex;
-  border-radius: 4px;
-  color: var(--text-h);
+export function formatSpeed(mbps) {
+  if (mbps < 0.1) return '< 0.1 MB/s'
+  return `${mbps.toFixed(1)} MB/s`
 }
 
-code {
-  font-size: 15px;
-  line-height: 135%;
-  padding: 4px 8px;
-  background: var(--code-bg);
+export function formatDuration(seconds) {
+  if (!isFinite(seconds) || seconds < 0) return '—'
+  if (seconds < 60) return `${Math.round(seconds)}s`
+  const m = Math.floor(seconds / 60)
+  const s = Math.round(seconds % 60)
+  return `${m}m ${s}s`
+}
+
+export function formatEta(bytesRemaining, mbpsCurrent) {
+  if (!mbpsCurrent || mbpsCurrent <= 0) return '—'
+  const secondsRemaining = bytesRemaining / (mbpsCurrent * 1024 * 1024)
+  return formatDuration(secondsRemaining)
 }
 ```
 
@@ -5663,14 +6310,412 @@ code {
 ```text
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+import { BrowserRouter } from 'react-router-dom'
 import './index.css'
 import App from './App.jsx'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <App />
+    <BrowserRouter>
+      <App />
+    </BrowserRouter>
   </StrictMode>,
 )
+```
+
+### packages/web/src/pages/DashboardPage.jsx
+
+```text
+export default function DashboardPage() {
+  return (
+    <div className="mx-auto max-w-6xl px-6 py-16">
+      <h1 className="text-3xl font-semibold">Transfer Dashboard</h1>
+      <p className="mt-2 text-black/60 dark:text-white/60">Peer graph, chunk grid, speed chart coming next.</p>
+    </div>
+  )
+}
+```
+
+### packages/web/src/pages/HistoryPage.jsx
+
+```text
+export default function HistoryPage() {
+  return (
+    <div className="mx-auto max-w-3xl px-6 py-16">
+      <h1 className="text-3xl font-semibold">History</h1>
+      <p className="mt-2 text-black/60 dark:text-white/60">Past transfers coming later.</p>
+    </div>
+  )
+}
+```
+
+### packages/web/src/pages/LandingPage.jsx
+
+```text
+import { Link } from 'react-router-dom'
+import Button from '../components/shared/Button.jsx'
+
+export default function LandingPage() {
+  return (
+    <div className="mx-auto flex max-w-4xl flex-col items-center px-6 py-24 text-center">
+      <span className="mb-4 rounded-full border border-black/10 px-3 py-1 text-xs font-medium text-black/60 dark:border-white/10 dark:text-white/60">
+        Peer-to-peer · Encrypted · No server storage
+      </span>
+      <h1 className="text-5xl font-semibold tracking-tight sm:text-6xl">
+        Send files, directly.
+      </h1>
+      <p className="mt-6 max-w-xl text-lg text-black/60 dark:text-white/60">
+        Mesh moves files straight between browsers over an encrypted connection.
+        Nothing is ever uploaded to a server in between.
+      </p>
+      <div className="mt-10 flex flex-col gap-3 sm:flex-row">
+        <Link to="/send">
+          <Button variant="primary" className="w-48">Send a file</Button>
+        </Link>
+        <Link to="/receive">
+          <Button variant="secondary" className="w-48">Receive a file</Button>
+        </Link>
+      </div>
+    </div>
+  )
+}
+```
+
+### packages/web/src/pages/ReceivePage.jsx
+
+```text
+import { useEffect, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import RoomCodeInput from '../components/receive/RoomCodeInput.jsx'
+import IncomingFileCard from '../components/receive/IncomingFileCard.jsx'
+import ProgressBar from '../components/shared/ProgressBar.jsx'
+import Button from '../components/shared/Button.jsx'
+import Card from '../components/shared/Card.jsx'
+import { useSignalingStore } from '../store/useSignalingStore.js'
+import { useTransferStore } from '../store/useTransferStore.js'
+import { useReceiveTransfer } from '../hooks/useReceiveTransfer.js'
+
+export default function ReceivePage() {
+  const [searchParams] = useSearchParams()
+  const [joining, setJoining] = useState(false)
+  const peerRef = useRef(null)
+
+  const joinRoom = useSignalingStore((s) => s.joinRoom)
+
+  const status = useTransferStore((s) => s.status)
+  const fileMeta = useTransferStore((s) => s.fileMeta)
+  const progress = useTransferStore((s) => s.progress)
+  const startAsReceiver = useTransferStore((s) => s.startAsReceiver)
+
+  const { connectToPeer, startDownload, getAssembledBlob } = useReceiveTransfer()
+
+  async function handleJoin(code) {
+    setJoining(true)
+    startAsReceiver()
+    try {
+      const result = await joinRoom(code)
+      if (result.existingPeers.length > 0) {
+        peerRef.current = await connectToPeer(useSignalingStore.getState().client, result.existingPeers[0])
+      }
+    } finally {
+      setJoining(false)
+    }
+  }
+
+  useEffect(() => {
+    if (status === 'complete' && fileMeta) {
+      const blob = getAssembledBlob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = fileMeta.fileName
+      a.click()
+      URL.revokeObjectURL(url)
+    }
+  }, [status, fileMeta, getAssembledBlob])
+
+  const prefillCode = searchParams.get('code') || ''
+
+  if (status === 'idle') {
+    return (
+      <div className="mx-auto max-w-2xl px-6 py-16 text-center">
+        <h1 className="text-3xl font-semibold">Receive a file</h1>
+        <p className="mt-2 text-black/60 dark:text-white/60">Enter the room code from the sender.</p>
+        <div className="mt-8">
+          <RoomCodeInput onJoin={handleJoin} joining={joining} defaultValue={prefillCode} />
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="mx-auto max-w-2xl px-6 py-16">
+      <Card className="flex flex-col items-center gap-6">
+        {status === 'waiting-for-file' && <p className="text-black/60 dark:text-white/60">Connecting…</p>}
+
+        {fileMeta && <IncomingFileCard fileMeta={fileMeta} />}
+
+        {status === 'file-offered' && (
+          <Button onClick={() => startDownload(peerRef.current)}>Accept and download</Button>
+        )}
+
+        {status === 'transferring' && (
+          <div className="w-full">
+            <ProgressBar percent={progress.percent} />
+            <p className="mt-2 text-center text-sm text-black/50 dark:text-white/50">
+              {progress.verified} / {progress.total} chunks received
+            </p>
+          </div>
+        )}
+
+        {status === 'complete' && <p className="font-medium text-green-600">Download complete</p>}
+      </Card>
+    </div>
+  )
+}
+```
+
+### packages/web/src/pages/SendPage.jsx
+
+```text
+import { useEffect, useRef, useState } from 'react'
+import DropZone from '../components/send/DropZone.jsx'
+import RoomCodeDisplay from '../components/send/RoomCodeDisplay.jsx'
+import ConnectionStatus from '../components/send/ConnectionStatus.jsx'
+import ProgressBar from '../components/shared/ProgressBar.jsx'
+import Card from '../components/shared/Card.jsx'
+import { formatBytes } from '../lib/format.js'
+import { useSignalingStore } from '../store/useSignalingStore.js'
+import { useTransferStore } from '../store/useTransferStore.js'
+import { useSendTransfer } from '../hooks/useSendTransfer.js'
+
+export default function SendPage() {
+  const [fileIndex, setFileIndex] = useState(null)
+  const connectedRef = useRef(false)
+
+  const roomCode = useSignalingStore((s) => s.roomCode)
+  const peers = useSignalingStore((s) => s.peers)
+  const createRoom = useSignalingStore((s) => s.createRoom)
+
+  const status = useTransferStore((s) => s.status)
+  const progress = useTransferStore((s) => s.progress)
+  const fileMeta = useTransferStore((s) => s.fileMeta)
+
+  const { startSending, connectToPeer } = useSendTransfer()
+
+  async function handleFileReady(file, index) {
+    setFileIndex(index)
+    await startSending(file, index)
+    await createRoom()
+  }
+
+  useEffect(() => {
+    if (peers.length > 0 && !connectedRef.current) {
+      connectedRef.current = true
+      connectToPeer(peers[0])
+    }
+  }, [peers, connectToPeer])
+
+  if (!fileIndex) {
+    return (
+      <div className="mx-auto max-w-2xl px-6 py-16">
+        <h1 className="text-3xl font-semibold">Send a file</h1>
+        <p className="mt-2 text-black/60 dark:text-white/60">Pick a file to share directly with someone.</p>
+        <div className="mt-8">
+          <DropZone onFileReady={handleFileReady} />
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="mx-auto max-w-2xl px-6 py-16">
+      <Card className="flex flex-col items-center gap-6">
+        <div className="text-center">
+          <p className="truncate text-lg font-medium">{fileMeta?.fileName}</p>
+          <p className="text-sm text-black/50 dark:text-white/50">{formatBytes(fileMeta?.fileSize || 0)}</p>
+        </div>
+
+        {roomCode && !connectedRef.current && <RoomCodeDisplay roomCode={roomCode} />}
+
+        <ConnectionStatus status={status} />
+
+        {status === 'transferring' && (
+          <div className="w-full">
+            <ProgressBar percent={progress.percent} />
+            <p className="mt-2 text-center text-sm text-black/50 dark:text-white/50">
+              {progress.verified} / {progress.total} chunks sent
+            </p>
+          </div>
+        )}
+
+        {status === 'complete' && <p className="font-medium text-green-600">Transfer complete</p>}
+      </Card>
+    </div>
+  )
+}
+```
+
+### packages/web/src/store/useSignalingStore.js
+
+```text
+import { create } from 'zustand'
+import { SignalingClient } from '../webrtc/signalingClient.js'
+
+const SIGNALING_URL = import.meta.env.VITE_SIGNALING_URL || 'ws://localhost:8080'
+
+export const useSignalingStore = create((set, get) => ({
+  client: null,
+  status: 'idle',
+  roomCode: null,
+  peerId: null,
+  peers: [],
+  error: null,
+
+  connect: async () => {
+    if (get().client) return get().client
+    set({ status: 'connecting', error: null })
+    const client = new SignalingClient(SIGNALING_URL)
+
+    client.addEventListener('peerJoined', (e) => {
+      set((state) => ({ peers: [...state.peers, e.detail.peerId] }))
+    })
+    client.addEventListener('peerLeft', (e) => {
+      set((state) => ({ peers: state.peers.filter((id) => id !== e.detail.peerId) }))
+    })
+    client.addEventListener('signalingError', (e) => {
+      set({ error: e.detail.message })
+    })
+    client.addEventListener('close', () => {
+      set({ status: 'idle' })
+    })
+
+    try {
+      await client.connect()
+      set({ client, status: 'connected' })
+      return client
+    } catch (err) {
+      set({ status: 'error', error: err.message })
+      throw err
+    }
+  },
+
+  createRoom: async (password) => {
+    const client = await get().connect()
+    const result = await client.createRoom(password)
+    set({ roomCode: result.roomCode, peerId: result.peerId, peers: [] })
+    return result
+  },
+
+  joinRoom: async (roomCode, password) => {
+    const client = await get().connect()
+    const result = await client.joinRoom(roomCode, password)
+    set({ roomCode: result.roomCode, peerId: result.peerId, peers: result.existingPeers })
+    return result
+  },
+
+  disconnect: () => {
+    const client = get().client
+    if (client) client.close()
+    set({ client: null, status: 'idle', roomCode: null, peerId: null, peers: [], error: null })
+  },
+}))
+```
+
+### packages/web/src/store/useTransferStore.js
+
+```text
+import { create } from 'zustand'
+
+export const useTransferStore = create((set, get) => ({
+  role: null,
+  status: 'idle',
+  fileMeta: null,
+  progress: { verified: 0, total: 0, percent: 0 },
+  peerStats: [],
+  speedHistory: [],
+  error: null,
+
+  startAsSender: (fileMeta) => {
+    set({ role: 'sender', status: 'waiting-for-peer', fileMeta, error: null })
+  },
+
+  startAsReceiver: () => {
+    set({ role: 'receiver', status: 'waiting-for-file', fileMeta: null, error: null })
+  },
+
+  setIncomingFile: (fileMeta) => {
+    set({ fileMeta, status: 'file-offered' })
+  },
+
+  setTransferring: () => {
+    set({ status: 'transferring', speedHistory: [] })
+  },
+
+  updateProgress: (progress) => {
+    set({ progress })
+  },
+
+  updatePeerStats: (peerStats) => {
+    set({ peerStats })
+  },
+
+  recordSpeedSample: (mbps) => {
+    set((state) => ({
+      speedHistory: [...state.speedHistory.slice(-59), { t: Date.now(), mbps }],
+    }))
+  },
+
+  setComplete: () => {
+    set({ status: 'complete' })
+  },
+
+  setPaused: () => {
+    set({ status: 'paused' })
+  },
+
+  setError: (message) => {
+    set({ status: 'error', error: message })
+  },
+
+  reset: () => {
+    set({
+      role: null,
+      status: 'idle',
+      fileMeta: null,
+      progress: { verified: 0, total: 0, percent: 0 },
+      peerStats: [],
+      speedHistory: [],
+      error: null,
+    })
+  },
+}))
+```
+
+### packages/web/src/store/useUIStore.js
+
+```text
+import { create } from 'zustand'
+
+const THEME_KEY = 'mesh-theme'
+
+export const useUIStore = create((set, get) => ({
+  theme: 'light',
+
+  initTheme: () => {
+    const stored = localStorage.getItem(THEME_KEY)
+    const theme = stored === 'dark' ? 'dark' : 'light'
+    document.documentElement.classList.toggle('dark', theme === 'dark')
+    set({ theme })
+  },
+
+  toggleTheme: () => {
+    const next = get().theme === 'dark' ? 'light' : 'dark'
+    document.documentElement.classList.toggle('dark', next === 'dark')
+    localStorage.setItem(THEME_KEY, next)
+    set({ theme: next })
+  },
+}))
 ```
 
 ### packages/web/src/webrtc-test.html
@@ -6656,22 +7701,10 @@ describe('webrtc binary protocol', () => {
 ```text
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
 
-// https://vite.dev/config/
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
 })
 ```
-
-### sig-test-out.txt
-
-Binary or non-UTF-8 file omitted from markdown snapshot (7062 bytes).
-
-### test-out.txt
-
-Binary or non-UTF-8 file omitted from markdown snapshot (40688 bytes).
-
-### web-test-out.txt
-
-Binary or non-UTF-8 file omitted from markdown snapshot (1462 bytes).
 

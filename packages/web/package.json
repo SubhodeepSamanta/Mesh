@@ -11,12 +11,16 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@tailwindcss/vite": "^4.3.2",
     "d3": "^7.9.0",
     "framer-motion": "^12.42.0",
+    "qrcode.react": "^4.2.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-dropzone": "^15.0.0",
+    "react-router-dom": "^7.18.1",
     "recharts": "^3.9.0",
+    "tailwindcss": "^4.3.2",
     "zustand": "^5.0.14"
   },
   "devDependencies": {
