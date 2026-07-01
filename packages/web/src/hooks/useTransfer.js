@@ -499,6 +499,11 @@ export function useTransfer() {
 
   const stopSeeding = useCallback(() => {
     useTransferStore.getState().setSeeding(false)
+    M.stopSeederListener()
+    for (const [id, t] of M.transports) {
+      t.close()
+    }
+    M.transports.clear()
   }, [])
 
   const resumeSeeding = useCallback(() => {

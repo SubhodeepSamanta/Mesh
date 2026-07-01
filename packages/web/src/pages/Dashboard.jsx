@@ -61,7 +61,10 @@ export default function Dashboard() {
 
   useEffect(() => {
     const c = useSignalingStore.getState().client
-    if (!c || !fileMeta) return
+    if (!c || !fileMeta || !seeding) {
+      M.stopSeederListener()
+      return
+    }
     const hasData = M.indexRef || (M.receivedMeta && M.chunks.length > 0)
     if (!hasData) return
     const idx = M.indexRef || {
@@ -78,7 +81,7 @@ export default function Dashboard() {
       t.connect().then(() => addSenderPeer(t, idx)).catch(() => {})
     })
     return () => M.stopSeederListener()
-  }, [fileMeta, addSenderPeer])
+  }, [fileMeta, seeding, addSenderPeer])
 
   const handleDismiss = useCallback(() => {
     const currentStatus = useTransferStore.getState().status
