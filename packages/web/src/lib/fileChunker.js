@@ -1,8 +1,8 @@
 import { sha256Hex, buildMerkleTree } from './browserCrypto.js'
 
 const DEFAULT_CHUNK_SIZE = 65536
-const MAX_CHUNK_SIZE = 4 * 1024 * 1024
-const TARGET_CHUNK_COUNT = 20000
+const MAX_CHUNK_SIZE = 262144
+const TARGET_CHUNK_COUNT = 50000
 
 export function computeChunkSize(fileSize) {
   if (fileSize <= DEFAULT_CHUNK_SIZE * TARGET_CHUNK_COUNT) return DEFAULT_CHUNK_SIZE

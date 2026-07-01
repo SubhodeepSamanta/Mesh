@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import * as d3 from 'd3'
 
-const COLORS = { pending: '#3a3a3a', requested: '#f59e0b', verified: '#22c55e', failed: '#ef4444' }
+const COLORS = { pending: 'var(--border-light)', requested: 'var(--accent)', verified: 'var(--success)', failed: 'var(--error)' }
 
 export default function PeerGraph({ className = '', chunkStates = [], role = null, peerStats = [], seeding = false }) {
   const svgRef = useRef(null)
@@ -61,29 +61,29 @@ export default function PeerGraph({ className = '', chunkStates = [], role = nul
     const g = svg.append('g')
 
     const link = g.append('g').selectAll('line').data(allLinks).join('line')
-      .attr('stroke', '#2a2a2a').attr('stroke-width', 0.3).attr('stroke-opacity', 0.2)
+      .attr('stroke', 'var(--border-light)').attr('stroke-width', 0.5).attr('stroke-opacity', 0.5)
 
     const node = g.append('g').selectAll('circle').data(allNodes).join('circle')
       .attr('r', d => d.id === 'sender' || d.id === 'receiver' ? 12 : 5)
       .attr('fill', d => {
-        if (d.id === 'sender') return '#f59e0b'
-        if (d.id === 'receiver') return '#22c55e'
-        return COLORS[d.state] || '#3a3a3a'
+        if (d.id === 'sender') return 'var(--accent)'
+        if (d.id === 'receiver') return 'var(--success)'
+        return COLORS[d.state] || 'var(--border-light)'
       })
-      .attr('stroke', d => d.id === 'sender' || d.id === 'receiver' ? 'none' : 'rgba(255,255,255,0.08)')
+      .attr('stroke', d => d.id === 'sender' || d.id === 'receiver' ? 'none' : 'var(--bg-primary)')
       .attr('stroke-width', 1)
 
     const label = g.append('g')
-    const txt = (x, y, text, color = '#6b7280', bold = false) => {
-      const t = label.append('text').attr('text-anchor', 'middle').attr('font-family', 'monospace').attr('font-size', '10px').attr('fill', color).attr('x', x).attr('y', y)
+    const txt = (x, y, text, color = 'var(--txt-secondary)', bold = false) => {
+      const t = label.append('text').attr('text-anchor', 'middle').attr('font-family', 'var(--font-sans)').attr('font-size', '10px').attr('fill', color).attr('x', x).attr('y', y)
       if (bold) t.attr('font-weight', 'bold')
       t.text(text)
     }
 
-    txt(leftX, centerY + 20, role === 'sender' ? youLabel : 'SEEDER', role === 'sender' ? '#f59e0b' : '#6b7280', role === 'sender')
-    txt(rightX, centerY + 20, role === 'receiver' ? youLabel : 'LEECHER', role === 'receiver' ? '#22c55e' : '#6b7280', role === 'receiver')
+    txt(leftX, centerY + 20, role === 'sender' ? youLabel : 'SEEDER', role === 'sender' ? 'var(--accent)' : 'var(--txt-secondary)', role === 'sender')
+    txt(rightX, centerY + 20, role === 'receiver' ? youLabel : 'LEECHER', role === 'receiver' ? 'var(--success)' : 'var(--txt-secondary)', role === 'receiver')
     if (seeding) {
-      txt(rightX, centerY + 32, '+ SEEDING', '#f59e0b', false)
+      txt(rightX, centerY + 32, '+ SEEDING', 'var(--accent)', false)
     }
 
     const verified = chunkStates.filter(s => s === 'verified').length
@@ -126,9 +126,9 @@ export default function PeerGraph({ className = '', chunkStates = [], role = nul
     })
     if (nodeRef.current) {
       nodeRef.current.transition().duration(400).attr('fill', d => {
-        if (d.id === 'sender') return '#f59e0b'
-        if (d.id === 'receiver') return '#22c55e'
-        return COLORS[d.state] || '#3a3a3a'
+        if (d.id === 'sender') return 'var(--accent)'
+        if (d.id === 'receiver') return 'var(--success)'
+        return COLORS[d.state] || 'var(--border-light)'
       })
     }
     const verified = chunkStates.filter(s => s === 'verified').length

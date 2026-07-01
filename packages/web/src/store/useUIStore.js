@@ -19,5 +19,4 @@ export const useUIStore = create((set, get) => ({
     set({ theme: next })
   },
 
-  setPage: (page) => set({ page }),
 }))

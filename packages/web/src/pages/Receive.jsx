@@ -4,6 +4,7 @@ import { useSignalingStore } from '../store/useSignalingStore.js'
 import { useTransferStore } from '../store/useTransferStore.js'
 import { useTransfer } from '../hooks/useTransfer.js'
 import { WebRTCTransport } from '../lib/webrtc.js'
+import { transferManager as M } from '../lib/transferManager.js'
 import { MSG } from '../webrtc/protocol.js'
 import { motion, AnimatePresence } from 'framer-motion'
 import Button from '../components/shared/Button.jsx'
@@ -20,9 +21,16 @@ export default function Receive() {
   const [joining, setJoining] = useState(false)
   const [joinError, setJoinError] = useState(null)
   const [roomClosed, setRoomClosed] = useState(false)
+  const [startingTransfer, setStartingTransfer] = useState(false)
   const swarmRef = useRef(null)
   const transportsRef = useRef([])
   const downloadGuardRef = useRef(false)
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
 
   const joinRoom = useSignalingStore((s) => s.joinRoom)
   const roomCode = useSignalingStore((s) => s.roomCode)
@@ -36,25 +44,69 @@ export default function Receive() {
   const setSaveMode = useTransferStore((s) => s.setSaveMode)
   const setComplete = useTransferStore((s) => s.setComplete)
 
-  const { startReceiving, addReceiverPeer, triggerDownload, resetDownload, disconnectAll } = useTransfer()
+  const { startReceiving, addReceiverPeer, triggerDownload, disconnectAll } = useTransfer()
 
   async function handleJoin(code) {
     setJoining(true)
     setJoinError(null)
     try {
       const result = await joinRoom(code)
+      if (!mountedRef.current) return
       useTransferStore.getState().setRoomCode(code.toUpperCase())
       useTransferStore.getState().startAsReceiver()
-      for (const peerId of result.existingPeers || []) {
-        const client = useSignalingStore.getState().client
-        const transport = new WebRTCTransport(client, peerId, { initiator: true })
-        transport.onJSON(async (msg) => {
-          if (msg.type === MSG.FILE_OFFER && !swarmRef.current) {
-            swarmRef.current = await startReceiving(msg)
+      const client = useSignalingStore.getState().client
+      const connectResults = await Promise.allSettled(
+        (result.existingPeers || []).map(async (peerId) => {
+          const transport = new WebRTCTransport(client, peerId, { initiator: true })
+          
+          let resolved = false
+          const offerTimeout = setTimeout(() => {
+            if (!resolved) {
+              resolved = true
+              transport.close()
+              transportsRef.current = transportsRef.current.filter(x => x !== transport)
+            }
+          }, 10000)
+
+          transport.onJSON(async (msg) => {
+            if (msg.type === MSG.FILE_OFFER) {
+              transport.offeredRoot = msg.merkleRoot
+              if (!swarmRef.current) {
+                swarmRef.current = await startReceiving(msg)
+              }
+              if (swarmRef.current && msg.merkleRoot === swarmRef.current.merkleRoot) {
+                if (!resolved) {
+                  resolved = true
+                  clearTimeout(offerTimeout)
+                }
+              } else {
+                if (!resolved) {
+                  resolved = true
+                  clearTimeout(offerTimeout)
+                }
+                transport.close()
+                transportsRef.current = transportsRef.current.filter(x => x !== transport)
+              }
+            }
+          })
+
+          M.pendingDials++
+          try {
+            await transport.connect()
+          } finally {
+            M.pendingDials = Math.max(0, M.pendingDials - 1)
           }
+          if (!mountedRef.current) {
+            clearTimeout(offerTimeout)
+            transport.close()
+            return
+          }
+          transportsRef.current.push(transport)
         })
-        await transport.connect()
-        transportsRef.current.push(transport)
+      )
+      const failed = connectResults.filter(r => r.status === 'rejected')
+      if (failed.length > 0 && (result.existingPeers || []).length > 0 && transportsRef.current.length === 0) {
+        setJoinError(failed[0].reason?.message || 'Failed to connect to any peer')
       }
     } catch (err) {
       setJoinError(err.message || 'Failed to join room')
@@ -63,21 +115,41 @@ export default function Receive() {
     }
   }
 
-  function handleBeginTransfer() {
-    if (!swarmRef.current) return
+  async function handleBeginTransfer() {
+    if (!swarmRef.current || startingTransfer) return
+    setStartingTransfer(true)
+    const isFileSystemAccess = typeof window !== 'undefined' && (
+      ('showDirectoryPicker' in window) || ('showSaveFilePicker' in window)
+    )
+    const meta = useTransferStore.getState().fileMeta
+    if (meta && isFileSystemAccess && useTransferStore.getState().saveMode === 'auto') {
+      try {
+        const dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' })
+        if (dirHandle) {
+          M.streamHandle = { dirHandle }
+        }
+      } catch {}
+    }
     for (const transport of transportsRef.current) {
-      addReceiverPeer(transport, swarmRef.current)
+      if (swarmRef.current && transport.offeredRoot === swarmRef.current.merkleRoot) {
+        addReceiverPeer(transport, swarmRef.current)
+      }
     }
   }
 
-  function handleDismiss() {
+  function handleRetry() {
     try { useSignalingStore.getState().disconnect() } catch {}
     disconnectAll()
+    M.streamHandle = null
     swarmRef.current = null
     transportsRef.current = []
     downloadGuardRef.current = false
     setRoomClosed(false)
     navigate('/receive')
+  }
+
+  function handleDismiss() {
+    handleRetry()
   }
 
   useEffect(() => {
@@ -100,9 +172,47 @@ export default function Receive() {
       if (prev.status === 'connected' && s.status === 'disconnected' && status !== 'complete') {
         setRoomClosed(true)
       }
+      if (s.peers.length > prev.peers.length && swarmRef.current) {
+        const newPeerIds = s.peers.filter(p => !prev.peers.includes(p))
+        const client = s.client
+        if (!client) return
+        for (const peerId of newPeerIds) {
+          const t = new WebRTCTransport(client, peerId, { initiator: true })
+          M.pendingDials++
+          t.connect().then(() => {
+            M.pendingDials = Math.max(0, M.pendingDials - 1)
+            
+            let resolved = false
+            const offerTimeout = setTimeout(() => {
+              if (!resolved) {
+                resolved = true
+                t.close()
+              }
+            }, 10000)
+
+            t.onJSON((msg) => {
+              if (msg.type === MSG.FILE_OFFER) {
+                if (!resolved) {
+                  resolved = true
+                  clearTimeout(offerTimeout)
+                  if (swarmRef.current && msg.merkleRoot === swarmRef.current.merkleRoot) {
+                    t.offeredRoot = msg.merkleRoot
+                    transportsRef.current.push(t)
+                    addReceiverPeer(t, swarmRef.current)
+                  } else {
+                    t.close()
+                  }
+                }
+              }
+            })
+          }).catch(() => {
+            M.pendingDials = Math.max(0, M.pendingDials - 1)
+          })
+        }
+      }
     })
     return unsub
-  }, [roomCode, status])
+  }, [roomCode, status, addReceiverPeer])
 
   const prefillCode = searchParams.get('code') || ''
   const showFileMeta = !!fileMeta
@@ -371,11 +481,20 @@ export default function Receive() {
                   </p>
                 </div>
                 <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4">
-                  <Button onClick={handleBeginTransfer} className="w-full py-3.5 text-sm font-bold tracking-widest uppercase">
-                    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                    </svg>
-                    Begin Transfer
+                  <Button onClick={handleBeginTransfer} disabled={startingTransfer} className="w-full py-3.5 text-sm font-bold tracking-widest uppercase">
+                    {startingTransfer ? (
+                      <span className="flex items-center gap-2">
+                        <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                        Starting…
+                      </span>
+                    ) : (
+                      <>
+                        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                        </svg>
+                        Begin Transfer
+                      </>
+                    )}
                   </Button>
                   <div className="mt-3 flex items-center justify-between">
                     <p className="text-xs text-[var(--txt-dim)]">Files transferred directly peer-to-peer. Browser must stay open.</p>
@@ -423,7 +542,7 @@ export default function Receive() {
                   File has been saved to your downloads. You can close this page.
                 </p>
                 <div className="mt-5 flex gap-3">
-                  <Button onClick={() => { resetDownload(); triggerDownload() }} variant="secondary" className="flex-1 py-3 text-sm font-semibold">
+                  <Button onClick={handleRetry} variant="secondary" className="flex-1 py-3 text-sm font-semibold">
                     RECEIVE AGAIN
                   </Button>
                   <Button onClick={handleDismiss} variant="primary" className="flex-1 py-3 text-sm font-semibold">
@@ -441,8 +560,8 @@ export default function Receive() {
                 <p className="text-lg font-medium text-[var(--error)]">Transfer Failed</p>
                 <p className="mt-1 text-sm text-[var(--error)]/60">Something went wrong — the connection may have dropped or a chunk failed verification.</p>
                 <div className="mt-5 flex gap-3">
-                  <Button onClick={() => { resetDownload(); triggerDownload() }} variant="secondary" className="flex-1 py-3 text-sm font-semibold">
-                    RETRY
+                  <Button onClick={handleRetry} variant="secondary" className="flex-1 py-3 text-sm font-semibold">
+                    TRY AGAIN
                   </Button>
                   <Button onClick={handleDismiss} variant="primary" className="flex-1 py-3 text-sm font-semibold">
                     RECEIVE ANOTHER FILE

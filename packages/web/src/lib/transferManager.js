@@ -12,6 +12,9 @@ export const transferManager = {
   downloadGuard: false,
   receivedMeta: null,
   streamHandle: null,
+  streamWriters: new Map(),
+  pendingDials: 0,
+  _peerCheckTimer: null,
   _relayHandler: null,
   _relayClient: null,
 
@@ -48,5 +51,8 @@ export const transferManager = {
     this.downloadGuard = false
     this.receivedMeta = null
     this.streamHandle = null
+    this.streamWriters.clear()
+    this.pendingDials = 0
+    if (this._peerCheckTimer) { clearTimeout(this._peerCheckTimer); this._peerCheckTimer = null }
   },
 }

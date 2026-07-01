@@ -12,6 +12,7 @@ import PeerList from '../components/PeerList.jsx'
 import ChunkGrid from '../components/ChunkGrid.jsx'
 import SpeedChart from '../components/SpeedChart.jsx'
 import PeerGraph from '../components/PeerGraph.jsx'
+import { formatEta } from '../lib/format.js'
 
 export default function Dashboard() {
   const navigate = useNavigate()
@@ -24,20 +25,7 @@ export default function Dashboard() {
   const timerRef = useRef(null)
 
   useEffect(() => {
-    if (status !== 'idle') return
-    try {
-      const raw = localStorage.getItem('mesh-transfer-state')
-      if (!raw) { navigate('/', { replace: true }); return }
-      const saved = JSON.parse(raw)
-      if (!saved || !saved.fileMeta || saved.status === 'idle') { navigate('/', { replace: true }); return }
-      const store = useTransferStore.getState()
-      if (store.status !== 'idle') return
-      const chunks = saved.progress?.total ? new Array(saved.progress.total).fill('pending') : []
-      if (saved.progress?.verified > 0) {
-        for (let i = 0; i < saved.progress.verified && i < chunks.length; i++) chunks[i] = 'verified'
-      }
-      useTransferStore.setState({ ...saved, chunkStates: chunks })
-    } catch { navigate('/', { replace: true }) }
+    if (status === 'idle') navigate('/', { replace: true })
   }, [status])
 
   useEffect(() => {
@@ -93,6 +81,12 @@ export default function Dashboard() {
   }, [fileMeta, addSenderPeer])
 
   const handleDismiss = useCallback(() => {
+    const currentStatus = useTransferStore.getState().status
+    if (currentStatus !== 'complete' && currentStatus !== 'error') {
+      if (!window.confirm('Active transfer in progress. Are you sure you want to abort?')) {
+        return
+      }
+    }
     const currentRole = useTransferStore.getState().role
     M.stopSeederListener()
     try {
@@ -112,6 +106,9 @@ export default function Dashboard() {
   const percent = totalChunks > 0 ? (verifiedChunks / totalChunks) * 100 : 0
   const speed = speedHistory.length > 0 ? speedHistory[speedHistory.length - 1].mbps || 0 : 0
   const done = status === 'complete' || status === 'error'
+
+  const bytesRemaining = fileMeta ? Math.max(0, fileMeta.fileSize - (verifiedChunks * (fileMeta.chunkSize || 65536))) : 0
+  const eta = formatEta(bytesRemaining, speed)
 
   if (status === 'idle') {
     return (
@@ -170,15 +167,30 @@ export default function Dashboard() {
         </div>
         <div className="flex items-center gap-4">
           <span className="font-mono text-2xl font-bold tracking-wider text-[var(--txt-primary)]">{mmss}</span>
-          <div className="hidden items-center gap-1 text-xs text-[var(--txt-secondary)] sm:flex">
+          <div className="hidden items-center gap-1.5 text-xs text-[var(--txt-secondary)] sm:flex">
             <span>{verifiedChunks}/{totalChunks} chunks</span>
             <span className="text-[var(--txt-dim)]">·</span>
             <span className={speed > 0 ? 'text-[var(--accent)]' : ''}>{speed.toFixed(1)} MB/s</span>
+            {status === 'transferring' && speed > 0 && (
+              <>
+                <span className="text-[var(--txt-dim)]">·</span>
+                <span>ETA: {eta}</span>
+              </>
+            )}
           </div>
-          {!done && role === 'sender' && (
-            <Button variant="secondary" onClick={seeding ? stopSeeding : resumeSeeding}>
-              {seeding ? 'STOP SEED' : 'RESUME SEED'}
-            </Button>
+          {(status === 'transferring' || status === 'complete') && (
+            <div className="flex flex-col items-end gap-1">
+              <Button
+                variant="secondary"
+                disabled={role === 'receiver' && M.receivedMeta?.tree == null}
+                onClick={seeding ? stopSeeding : resumeSeeding}
+              >
+                {seeding ? 'STOP SEED' : 'RESUME SEED'}
+              </Button>
+              {role === 'receiver' && M.receivedMeta?.tree == null && (
+                <span className="text-[10px] text-[var(--txt-secondary)]">Seeding disabled for streamed folders</span>
+              )}
+            </div>
           )}
           <Button variant={done ? 'primary' : 'danger'} onClick={handleDismiss}>
             {done ? 'DISMISS' : 'ABORT'}
@@ -186,8 +198,8 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <div className="flex flex-1 gap-4">
-        <div className="w-80 shrink-0">
+      <div className="flex flex-1 flex-col gap-4 lg:flex-row">
+        <div className="w-full shrink-0 lg:w-80">
           <Card className="h-full">
             <PeerList peerStats={peerStats} />
             <div className="mt-4 border-t border-[var(--border)] pt-4 space-y-3">
@@ -214,6 +226,12 @@ export default function Dashboard() {
                   <span>Speed</span>
                   <span className="font-mono text-[var(--accent)]">{speed.toFixed(1)} MB/s</span>
                 </div>
+                {status === 'transferring' && (
+                  <div className="flex justify-between">
+                    <span>ETA</span>
+                    <span className="font-mono text-[var(--txt-primary)]">{eta}</span>
+                  </div>
+                )}
               </div>
               <div className="border-t border-[var(--border)] pt-3 space-y-1.5 text-[10px] leading-relaxed text-[var(--txt-muted)]">
                 <p>🔐 <span className="text-[var(--txt-secondary)]">DTLS 1.3 encrypted · P2P channel</span></p>
@@ -227,8 +245,8 @@ export default function Dashboard() {
           </Card>
         </div>
 
-        <div className="flex flex-1 flex-col gap-4">
-          <Card>
+        <div className="flex flex-1 flex-col gap-4 min-w-0">
+          <Card role="status" aria-live="polite">
             <div className="mb-2 flex items-center justify-between">
               <span className="text-xs uppercase tracking-widest text-[var(--txt-secondary)]">
                 {role === 'sender' ? 'Upload Progress' : 'Download Progress'}
@@ -248,7 +266,9 @@ export default function Dashboard() {
             </div>
           </Card>
 
-          <ChunkGrid chunkStates={chunkStates} transferStatus={status} />
+          <div className="hidden lg:block">
+            <ChunkGrid chunkStates={chunkStates} transferStatus={status} />
+          </div>
 
           <Card className="flex-1">
             <PeerGraph className="h-80 w-full" chunkStates={chunkStates} role={role} peerStats={peerStats} seeding={seeding} />

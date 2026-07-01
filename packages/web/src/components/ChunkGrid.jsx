@@ -15,13 +15,15 @@ export default function ChunkGrid({ chunkStates = [], transferStatus }) {
     const total = chunkStates.length
     if (total === 0) return { displayStates: [], cols: 0, completePercent: 0 }
 
-    let compressed = chunkStates
+    let compressed = []
     if (total > 1000) {
       const ratio = total / 1000
-      compressed = []
       for (let i = 0; i < 1000; i++) {
-        compressed.push(chunkStates[Math.floor(i * ratio)])
+        const realIdx = Math.floor(i * ratio)
+        compressed.push({ state: chunkStates[realIdx], index: realIdx })
       }
+    } else {
+      compressed = chunkStates.map((state, i) => ({ state, index: i }))
     }
 
     const sqrt = Math.ceil(Math.sqrt(compressed.length))
@@ -70,11 +72,11 @@ export default function ChunkGrid({ chunkStates = [], transferStatus }) {
           className="grid gap-[2px]"
           style={{ gridTemplateColumns: `repeat(${cols}, 1fr)` }}
         >
-          {displayStates.map((state, i) => (
+          {displayStates.map((item, i) => (
             <div
               key={i}
-              className={`aspect-square rounded-sm ${CHUNK_COLORS[state] || CHUNK_COLORS.pending}`}
-              title={`Chunk ${i}: ${state}`}
+              className={`aspect-square rounded-sm ${CHUNK_COLORS[item.state] || CHUNK_COLORS.pending}`}
+              title={`Chunk ${item.index}: ${item.state}`}
             />
           ))}
         </div>

@@ -1,18 +1,14 @@
 import { useMemo } from 'react'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 
-const AMBER_SHADES = ['#f59e0b', '#d97706', '#b45309', '#a16207', '#fbbf24']
-
 function CustomTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null
   return (
     <div className="rounded-md border border-[var(--border-light)] bg-[var(--surface)] px-3 py-2 text-xs text-[var(--txt-primary)] shadow-lg">
       <p className="mb-1 text-[var(--txt-secondary)]">{label}</p>
-      {[...payload].reverse().map((entry, i) => (
-        <p key={i} style={{ color: entry.color }}>
-          {entry.name}: {Number(entry.value) < 0.01 ? '<0.01' : Number(entry.value).toFixed(2)} MB/s
-        </p>
-      ))}
+      <p style={{ color: 'var(--accent)' }}>
+        Throughput: {Number(payload[0].value) < 0.01 ? '<0.01' : Number(payload[0].value).toFixed(2)} MB/s
+      </p>
     </div>
   )
 }
@@ -21,9 +17,6 @@ export default function SpeedChart({ data = [], peerCount = 1 }) {
   const total = useMemo(() => {
     if (data.length === 0) return 0
     const last = data[data.length - 1]
-    if (last.peers) {
-      return last.peers.reduce((s, p) => s + (p.mbps || 0), 0)
-    }
     return last.mbps || 0
   }, [data])
 
@@ -33,28 +26,8 @@ export default function SpeedChart({ data = [], peerCount = 1 }) {
         i % 10 === 0 || i === data.length - 1
           ? new Date(d.t).toLocaleTimeString('en-US', { minute: '2-digit', second: '2-digit' })
           : ''
-      const entry = { t: label }
-      if (d.peers) {
-        d.peers.forEach((p, j) => {
-          entry[`peer_${j}`] = p.mbps || 0
-        })
-      } else {
-        entry.total = d.mbps || 0
-      }
-      return entry
+      return { t: label, total: d.mbps || 0 }
     })
-  }, [data])
-
-  const bars = useMemo(() => {
-    if (data.length === 0) return []
-    if (data[0].peers) {
-      return data[0].peers.map((_, j) => ({
-        dataKey: `peer_${j}`,
-        fill: AMBER_SHADES[j % AMBER_SHADES.length],
-        stackId: 'speed',
-      }))
-    }
-    return [{ dataKey: 'total', fill: '#f59e0b', stackId: 'speed' }]
   }, [data])
 
   if (data.length === 0) {
@@ -109,15 +82,11 @@ export default function SpeedChart({ data = [], peerCount = 1 }) {
               width={32}
             />
             <Tooltip content={<CustomTooltip />} cursor={{ fill: '#1a1a1a' }} />
-            {bars.map((bar) => (
-              <Bar
-                key={bar.dataKey}
-                dataKey={bar.dataKey}
-                fill={bar.fill}
-                stackId={bar.stackId}
-                radius={[1, 1, 0, 0]}
-              />
-            ))}
+            <Bar
+              dataKey="total"
+              fill="var(--accent)"
+              radius={[1, 1, 0, 0]}
+            />
           </BarChart>
         </ResponsiveContainer>
       </div>

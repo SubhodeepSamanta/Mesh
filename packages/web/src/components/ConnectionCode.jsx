@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import jsQR from 'jsqr'
 import Button from './shared/Button.jsx'
+import { useToastStore } from '../store/useToastStore.js'
 
 export default function ConnectionCode({ onJoin, joining = false, defaultValue = '' }) {
   const [code, setCode] = useState(defaultValue)
@@ -44,8 +45,9 @@ export default function ConnectionCode({ onJoin, joining = false, defaultValue =
       if (!videoRef.current) { stopCamera(); return }
       try { await videoRef.current.play() } catch { stopCamera(); return }
       scanFrame()
-    } catch {
+    } catch (err) {
       setScanning(false)
+      useToastStore.getState().addToast('Camera access denied or unavailable', 'error')
     }
   }
 
@@ -64,7 +66,7 @@ export default function ConnectionCode({ onJoin, joining = false, defaultValue =
     const result = jsQR(imageData.data, imageData.width, imageData.height)
 
     if (result) {
-      const match = result.data.match(/[?&]code=([A-Z0-9-]{6,9})/)
+      const match = result.data.match(/[?&]code=([A-Z2-9]{6})/)
       if (match) {
         setCode(match[1])
         stopCamera()
@@ -78,7 +80,7 @@ export default function ConnectionCode({ onJoin, joining = false, defaultValue =
   function handleSubmit(e) {
     e.preventDefault()
     const cleaned = code.trim().toUpperCase()
-    if (cleaned.length >= 6) onJoin(cleaned)
+    if (cleaned.length === 6) onJoin(cleaned)
   }
 
   return (
@@ -86,16 +88,17 @@ export default function ConnectionCode({ onJoin, joining = false, defaultValue =
       <div className="relative">
         <input
           value={code}
-          onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, '').slice(0, 9))}
-          placeholder="e.g. WOLF-4821"
+          onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z2-9]/g, '').slice(0, 6))}
+          placeholder="e.g. WLF482"
           className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] px-4 py-3 font-mono text-lg tracking-widest text-[var(--txt-primary)] placeholder:text-[var(--txt-secondary)] outline-none transition-colors focus:border-[var(--accent)]/50"
-          maxLength={9}
+          maxLength={6}
         />
         <button
           type="button"
           onClick={scanning ? stopCamera : startCamera}
           className="absolute right-2.5 top-1/2 -translate-y-1/2 cursor-pointer rounded-md p-1.5 text-[var(--txt-secondary)] transition-colors hover:text-[var(--accent)]"
           title={scanning ? 'Close scanner' : 'Scan QR code'}
+          aria-label={scanning ? 'Close scanner' : 'Scan QR code'}
         >
           <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M3 7V5a2 2 0 0 1 2-2h2" />
@@ -123,7 +126,7 @@ export default function ConnectionCode({ onJoin, joining = false, defaultValue =
         </div>
       )}
 
-      <Button type="submit" disabled={code.trim().length < 6 || joining} className="w-full">
+      <Button type="submit" disabled={code.trim().length !== 6 || joining} className="w-full">
         {joining ? 'CONNECTING...' : 'ESTABLISH LINK'}
       </Button>
     </form>

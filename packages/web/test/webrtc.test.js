@@ -1,15 +1,25 @@
 ﻿import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { WebRTCPeer, CONNECT_TIMEOUT_MS } from '../src/webrtc/webrtcPeer.js';
+import { WebRTCTransport, CONNECT_TIMEOUT_MS } from '../src/lib/webrtc.js';
+import { buildJSONBody, parseMessage } from '../src/webrtc/protocol.js';
 
 class FakeDataChannel extends EventTarget {
   constructor() {
     super();
     this.readyState = 'connecting';
     this.peer = null;
+    this.binaryType = 'arraybuffer';
+  }
+
+  dispatchEvent(ev) {
+    if (ev.type === 'open' && this.onopen) this.onopen(ev);
+    if (ev.type === 'message' && this.onmessage) this.onmessage(ev);
+    return super.dispatchEvent(ev);
   }
 
   send(data) {
-    this.peer.dispatchEvent(new MessageEvent('message', { data }));
+    if (this.peer) {
+      this.peer.dispatchEvent(new MessageEvent('message', { data }));
+    }
   }
 
   open() {
@@ -19,7 +29,6 @@ class FakeDataChannel extends EventTarget {
 
   close() {
     this.readyState = 'closed';
-    this.dispatchEvent(new Event('close'));
   }
 }
 
@@ -35,6 +44,11 @@ class FakeRTCPeerConnection extends EventTarget {
     this.channel = null;
     this.localDescription = null;
     this.remoteDescription = null;
+  }
+
+  dispatchEvent(ev) {
+    if (ev.type === 'datachannel' && this.ondatachannel) this.ondatachannel(ev);
+    return super.dispatchEvent(ev);
   }
 
   createDataChannel() {
@@ -80,7 +94,7 @@ class FakeSignalingClient extends EventTarget {
   relay(targetPeerId, payload) {
     this.sentPayloads.push(payload);
     queueMicrotask(() => {
-      this.partner.dispatchEvent(new CustomEvent('relay', {
+      this.partner?.dispatchEvent(new CustomEvent('relay', {
         detail: { fromPeerId: this.peerId, payload },
       }));
     });
@@ -92,13 +106,13 @@ function linkSignaling(a, b) {
   b.partner = a;
 }
 
-async function flush(times = 3) {
+async function flush(times = 10) {
   for (let i = 0; i < times; i++) {
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
 }
 
-describe('WebRTCPeer', () => {
+describe('WebRTCTransport', () => {
   let originalRTCPeerConnection;
 
   beforeEach(() => {
@@ -121,11 +135,11 @@ describe('WebRTCPeer', () => {
     const sigB = new FakeSignalingClient('peerB');
     linkSignaling(sigA, sigB);
 
-    const peerA = new WebRTCPeer(sigA, 'peerB', { initiator: true });
-    const peerB = new WebRTCPeer(sigB, 'peerA', { initiator: false });
+    const transportA = new WebRTCTransport(sigA, 'peerB', { initiator: true });
+    const transportB = new WebRTCTransport(sigB, 'peerA', { initiator: false });
 
-    const connectA = peerA.connect();
-    const connectB = peerB.connect();
+    const connectA = transportA.connect();
+    const connectB = transportB.connect();
 
     await flush();
 
@@ -136,19 +150,18 @@ describe('WebRTCPeer', () => {
     pcA.channel.open();
     channelB.open();
 
-    const [resolvedA, resolvedB] = await Promise.all([connectA, connectB]);
-    expect(resolvedA).toBe(peerA);
-    expect(resolvedB).toBe(peerB);
+    await expect(connectA).resolves.toBeUndefined();
+    await expect(connectB).resolves.toBeUndefined();
 
     const received = new Promise((resolve) => {
-      peerB.addEventListener('jsonMessage', (e) => resolve(e.detail));
+      transportB.onJSON((data) => resolve(data));
     });
-    peerA.send({ hello: 'world' });
+    transportA.sendJSON({ hello: 'world' });
     await expect(received).resolves.toEqual({ hello: 'world' });
 
     expect(pcB.remoteDescription.sdp).toBe('fake-offer-sdp');
     expect(pcA.remoteDescription.sdp).toBe('fake-answer-sdp');
-  });
+  }, 10000);
 
   it('ignores relay messages from peers other than the remote peer', async () => {
     const pcA = new FakeRTCPeerConnection();
@@ -157,8 +170,8 @@ describe('WebRTCPeer', () => {
     const sigA = new FakeSignalingClient('peerA');
     sigA.partner = sigA;
 
-    const peerA = new WebRTCPeer(sigA, 'peerB', { initiator: true });
-    peerA.connect().catch(() => {});
+    const transportA = new WebRTCTransport(sigA, 'peerB', { initiator: true });
+    transportA.connect().catch(() => {});
 
     await flush();
 
@@ -169,7 +182,7 @@ describe('WebRTCPeer', () => {
     await flush();
 
     expect(pcA.remoteDescription).toBeNull();
-    peerA.close();
+    transportA.close();
   });
 
   it('rejects if the data channel never opens before the timeout', async () => {
@@ -185,10 +198,10 @@ describe('WebRTCPeer', () => {
     const sigB = new FakeSignalingClient('peerB');
     linkSignaling(sigA, sigB);
 
-    const peerA = new WebRTCPeer(sigA, 'peerB', { initiator: true });
-    const connectA = peerA.connect();
+    const transportA = new WebRTCTransport(sigA, 'peerB', { initiator: true });
+    const connectA = transportA.connect();
 
-    const assertion = expect(connectA).rejects.toThrow('WebRTC connection timeout');
+    const assertion = expect(connectA).rejects.toThrow('Connection timeout');
     await vi.advanceTimersByTimeAsync(CONNECT_TIMEOUT_MS + 100);
     await assertion;
   });

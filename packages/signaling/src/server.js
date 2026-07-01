@@ -1,7 +1,8 @@
 import { WebSocketServer } from 'ws';
+import http from 'http';
 import { randomBytes, createHash } from 'crypto';
 import { pathToFileURL } from 'url';
-import { recordRoomCreated, recordRoomExpiredOrClosed, recordPeerJoined, recordPeerLeft } from './metrics.js';
+import { metrics, recordRoomCreated, recordRoomExpiredOrClosed, recordPeerJoined, recordPeerLeft } from './metrics.js';
 
 export const MSG_TYPE = {
   CREATE_ROOM:  'CREATE_ROOM',
@@ -19,6 +20,8 @@ const ROOM_TTL_MS      = 30 * 60 * 1000;
 const RATE_WINDOW_MS   = 60 * 1000;
 const MAX_CREATES_PER_MIN = 10;
 const MAX_JOINS_PER_MIN   = 20;
+const MAX_RELAY_PAYLOAD_BYTES = 16 * 1024;
+const MAX_RELAY_PER_MIN = 300;
 
 function generateRoomCode(length = 6) {
   let code = '';
@@ -36,28 +39,75 @@ export class SignalingServer {
   constructor(opts = {}) {
     this.rooms        = new Map();
     this.wss          = null;
+    this._httpServer  = null;
     this.rateLimits   = new Map();
     this.roomTtlMs    = opts.roomTtlMs    ?? ROOM_TTL_MS;
     this.maxCreates   = opts.maxCreates   ?? MAX_CREATES_PER_MIN;
     this.maxJoins     = opts.maxJoins     ?? MAX_JOINS_PER_MIN;
+    this.maxPeersPerRoom = opts.maxPeersPerRoom ?? parseInt(process.env.MAX_PEERS_PER_ROOM || '16', 10);
+    this.maxRooms     = opts.maxRooms     ?? parseInt(process.env.MAX_ROOMS || '5000', 10);
+    this.trustProxy   = opts.trustProxy   ?? (process.env.TRUST_PROXY === '1');
+    this.allowedOrigins = opts.allowedOrigins ?? (process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',').map(s => s.trim()).filter(Boolean) : null);
     this._expiryTimer = null;
   }
 
-listen(port = 0) {
+    listen(port = 0) {
     return new Promise((resolve, reject) => {
-      this.wss = new WebSocketServer({ port });
+      let active = true;
+      const errorHandler = (err) => {
+        if (active) {
+          active = false;
+          reject(err);
+        }
+      };
 
-      this.wss.once('error', reject);
+      this._httpServer = http.createServer((req, res) => {
+        if (req.url === '/health') {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({
+            status: 'ok',
+            uptime: process.uptime(),
+            ...metrics,
+          }));
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
 
-      this.wss.once('listening', () => {
-        this.wss.removeListener('error', reject);
+      this.wss = new WebSocketServer({
+        server: this._httpServer,
+        maxPayload: 64 * 1024,
+      });
 
+      this._httpServer.on('error', errorHandler);
+      this.wss.on('error', errorHandler);
+
+      this._httpServer.listen(port, '0.0.0.0', () => {
+        active = false;
+        this._httpServer.removeListener('error', errorHandler);
+        this.wss.removeListener('error', errorHandler);
+
+        this._httpServer.on('error', (err) => {
+          this.emit ? this.emit('error', err) : console.error('Signaling HTTP server error:', err.message);
+        });
         this.wss.on('error', (err) => {
-          this.emit ? this.emit('error', err) : console.error('Signaling server error:', err.message);
+          this.emit ? this.emit('error', err) : console.error('Signaling WS server error:', err.message);
         });
 
         this.wss.on('connection', (ws, req) => {
-          ws._ip = req.socket.remoteAddress || '127.0.0.1';
+          ws._ip = this.trustProxy
+            ? (req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress || '127.0.0.1')
+            : (req.socket.remoteAddress || '127.0.0.1');
+
+          if (this.allowedOrigins) {
+            const origin = req.headers.origin || '';
+            if (!this.allowedOrigins.includes(origin)) {
+              ws.close(4003, 'Origin not allowed');
+              return;
+            }
+          }
+
           this._handleConnection(ws);
         });
 
@@ -66,7 +116,7 @@ listen(port = 0) {
           this._pruneRateLimits();
         }, 60 * 1000);
 
-        resolve(this.wss.address());
+        resolve(this._httpServer.address());
       });
     });
   }
@@ -74,8 +124,14 @@ listen(port = 0) {
   close() {
     return new Promise((resolve) => {
       clearInterval(this._expiryTimer);
-      if (!this.wss) { resolve(); return; }
-      this.wss.close(() => resolve());
+      if (!this._httpServer) { resolve(); return; }
+      if (this.wss) {
+        this.wss.close(() => {
+          this._httpServer.close(() => resolve());
+        });
+      } else {
+        this._httpServer.close(() => resolve());
+      }
     });
   }
 
@@ -85,10 +141,10 @@ listen(port = 0) {
     }
   }
 
-_checkRateLimit(ip, action) {
+  _checkRateLimit(ip, action) {
     const key  = `${ip}:${action}`;
     const now  = Date.now();
-    const max  = action === 'create' ? this.maxCreates : this.maxJoins;
+    const max  = action === 'create' ? this.maxCreates : (action === 'join' ? this.maxJoins : MAX_RELAY_PER_MIN);
     const list = this.rateLimits.get(key) || [];
 
     const recent = list.filter(t => now - t < RATE_WINDOW_MS);
@@ -153,6 +209,9 @@ _checkRateLimit(ip, action) {
       case MSG_TYPE.RELAY:
         this._relay(ws, msg);
         break;
+      case 'PING':
+        this._send(ws, { type: 'PONG' });
+        break;
       default:
         this._send(ws, { type: MSG_TYPE.ERROR, message: `Unknown message type: ${msg.type}` });
     }
@@ -161,6 +220,11 @@ _checkRateLimit(ip, action) {
   _createRoom(ws, password) {
     if (!this._checkRateLimit(ws._ip, 'create')) {
       this._send(ws, { type: MSG_TYPE.ERROR, message: 'Rate limit exceeded: too many rooms created' });
+      return;
+    }
+
+    if (this.rooms.size >= this.maxRooms) {
+      this._send(ws, { type: MSG_TYPE.ERROR, message: 'Server at capacity — try again later' });
       return;
     }
 
@@ -176,7 +240,7 @@ _checkRateLimit(ip, action) {
       lastActivity: Date.now(),
     });
 
-ws.roomCode = roomCode;
+    ws.roomCode = roomCode;
     recordRoomCreated();
     recordPeerJoined();
     this._send(ws, { type: MSG_TYPE.ROOM_CREATED, roomCode, peerId: ws.peerId });
@@ -202,6 +266,11 @@ ws.roomCode = roomCode;
       }
     }
 
+    if (room.peers.size >= this.maxPeersPerRoom) {
+      this._send(ws, { type: MSG_TYPE.ERROR, message: 'Room is full' });
+      return;
+    }
+
     const existingPeerIds = [...room.peers.keys()];
     room.peers.set(ws.peerId, ws);
     room.lastActivity = Date.now();
@@ -225,6 +294,17 @@ ws.roomCode = roomCode;
   _relay(ws, msg) {
     if (!ws.roomCode) {
       this._send(ws, { type: MSG_TYPE.ERROR, message: 'Not in a room' });
+      return;
+    }
+
+    if (!this._checkRateLimit(ws._ip, 'relay')) {
+      this._send(ws, { type: MSG_TYPE.ERROR, message: 'Rate limit exceeded: too many relay messages' });
+      return;
+    }
+
+    const payloadStr = JSON.stringify(msg.payload);
+    if (payloadStr.length > MAX_RELAY_PAYLOAD_BYTES) {
+      this._send(ws, { type: MSG_TYPE.ERROR, message: 'Relay payload too large' });
       return;
     }
 
@@ -269,7 +349,8 @@ ws.roomCode = roomCode;
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const PORT = process.env.PORT || 8080;
   const server = new SignalingServer();
-  server.listen(PORT).then(() => {
-    console.log(`Signaling server running on port ${PORT}`);
+  server.listen(PORT).then((addr) => {
+    console.log(`Signaling server running on 0.0.0.0:${addr.port}`);
+    console.log(`Health check: http://localhost:${addr.port}/health`);
   });
 }

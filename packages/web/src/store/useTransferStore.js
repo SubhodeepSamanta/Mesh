@@ -31,6 +31,13 @@ function loadSaved() {
         saved.chunkStates[i] = 'verified'
       }
     }
+    saved.peerStats = []
+    saved.speedHistory = []
+    const liveStatuses = ['transferring', 'waiting-for-peer', 'waiting-for-file', 'file-offered']
+    if (liveStatuses.includes(saved.status)) {
+      saved.status = 'error'
+      saved.error = 'Transfer interrupted — connection lost on refresh'
+    }
     return saved
   } catch { return null }
 }
@@ -89,7 +96,7 @@ export const useTransferStore = create((set) => {
     setSeeding: (seeding) => set({ seeding }),
     setSaveMode: (saveMode) => set({ saveMode }),
 
-    setComplete: () => set((s) => {
+    setComplete: (canSeed = true) => set((s) => {
       if (!s.fileMeta || s.role === null) return s
       const meta = s.fileMeta
       const fileCount = meta?.files?.length || 1
@@ -111,7 +118,7 @@ export const useTransferStore = create((set) => {
         avgSpeed: avgMbps,
         peers: s.peerStats.length,
       })
-      return { status: 'complete', seeding: true }
+      return { status: 'complete', seeding: canSeed }
     }),
     setPaused: () => set({ status: 'paused' }),
     setError: (message) => set((s) => {
@@ -142,25 +149,31 @@ export const useTransferStore = create((set) => {
 })
 
 const KEY = STORAGE_KEY
+let _persistTimer = null
 useTransferStore.subscribe((state) => {
   if (state.status === 'idle') {
     localStorage.removeItem(KEY)
     return
   }
-  try {
-    const toSave = {
-      role: state.role,
-      status: state.status,
-      fileMeta: state.fileMeta,
-      progress: state.progress,
-      chunkStates: state.chunkStates,
-      peerStats: state.peerStats,
-      speedHistory: state.speedHistory,
-      error: state.error,
-      seeding: state.seeding,
-      saveMode: state.saveMode,
-      roomCode: state.roomCode,
-    }
-    localStorage.setItem(KEY, JSON.stringify(toSave))
-  } catch { /* storage full */ }
+  const persistNow = state.status === 'complete' || state.status === 'error'
+  const toSave = {
+    role: state.role,
+    status: state.status,
+    error: state.error,
+    fileMeta: state.fileMeta,
+    progress: { verified: state.progress.verified, total: state.progress.total },
+    saveMode: state.saveMode,
+    seeding: state.seeding,
+    roomCode: state.roomCode,
+  }
+  if (persistNow) {
+    if (_persistTimer) { clearTimeout(_persistTimer); _persistTimer = null }
+    try { localStorage.setItem(KEY, JSON.stringify(toSave)) } catch { /* storage full */ }
+    return
+  }
+  if (_persistTimer) clearTimeout(_persistTimer)
+  _persistTimer = setTimeout(() => {
+    _persistTimer = null
+    try { localStorage.setItem(KEY, JSON.stringify(toSave)) } catch { /* storage full */ }
+  }, 2000)
 })

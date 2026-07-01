@@ -2,6 +2,7 @@ import { Routes, Route, useLocation } from 'react-router-dom'
 import { useEffect } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import Layout from './components/layout/Layout.jsx'
+import ErrorBoundary from './components/ErrorBoundary.jsx'
 import Landing from './pages/Landing.jsx'
 import Send from './pages/Send.jsx'
 import Receive from './pages/Receive.jsx'
@@ -25,18 +26,20 @@ function App() {
   useEffect(() => { initTheme() }, [initTheme])
 
   return (
-    <Layout>
-      <AnimatePresence mode="wait">
-        <Routes location={location} key={location.pathname}>
-          <Route path="/" element={<AnimatedPage><Landing /></AnimatedPage>} />
-          <Route path="/send" element={<AnimatedPage><Send /></AnimatedPage>} />
-          <Route path="/receive" element={<AnimatedPage><Receive /></AnimatedPage>} />
-          <Route path="/dashboard" element={<AnimatedPage><Dashboard /></AnimatedPage>} />
-          <Route path="/history" element={<AnimatedPage><History /></AnimatedPage>} />
-          <Route path="*" element={<AnimatedPage><NotFound /></AnimatedPage>} />
-        </Routes>
-      </AnimatePresence>
-    </Layout>
+    <ErrorBoundary>
+      <Layout>
+        <AnimatePresence mode="wait">
+          <Routes location={location} key={location.pathname}>
+            <Route path="/" element={<AnimatedPage><Landing /></AnimatedPage>} />
+            <Route path="/send" element={<AnimatedPage><Send /></AnimatedPage>} />
+            <Route path="/receive" element={<AnimatedPage><Receive /></AnimatedPage>} />
+            <Route path="/dashboard" element={<AnimatedPage><Dashboard /></AnimatedPage>} />
+            <Route path="/history" element={<AnimatedPage><History /></AnimatedPage>} />
+            <Route path="*" element={<AnimatedPage><NotFound /></AnimatedPage>} />
+          </Routes>
+        </AnimatePresence>
+      </Layout>
+    </ErrorBoundary>
   )
 }
 

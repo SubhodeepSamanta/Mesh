@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { useTransferStore } from '../../store/useTransferStore.js'
 import Header from './Header.jsx'
+import Toaster from '../Toaster.jsx'
 
 export default function Layout({ children }) {
   const status = useTransferStore((s) => s.status)
@@ -18,6 +19,7 @@ export default function Layout({ children }) {
     <div className="min-h-screen flex flex-col bg-[var(--bg-primary)]">
       <Header />
       <main className="flex-1">{children}</main>
+      <Toaster />
     </div>
   )
 }

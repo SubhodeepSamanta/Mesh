@@ -2,6 +2,7 @@ import { sha256Hex, verifyChunk } from './browserCrypto.js';
 
 export const MAX_CONSECUTIVE_FAILURES = 5;
 const CHUNK_TIMEOUT = 30000;
+const MAX_OUTSTANDING_GLOBAL = 20;
 
 const P = 'pending';
 const R = 'requested';
@@ -22,6 +23,7 @@ export class SwarmManager extends EventTarget {
     this.done = false;
     this.aborted = false;
     this._chunkTimeouts = new Map();
+    this._outstandingCount = 0;
 
     const vs = new Set(alreadyVerified);
     for (const idx of vs) {
@@ -59,7 +61,10 @@ export class SwarmManager extends EventTarget {
     if (!peer) return;
     for (const ci of peer.pending) {
       this._clearChunkTimeout(ci);
-      if (this.chunkState[ci] === R) this._requeueChunk(ci);
+      if (this.chunkState[ci] === R) {
+        this._outstandingCount--;
+        this._requeueChunk(ci);
+      }
     }
     this.peers.delete(peerId);
     this.dispatchEvent(new CustomEvent('peerRemoved', { detail: peerId }));
@@ -70,6 +75,7 @@ export class SwarmManager extends EventTarget {
     this.aborted = true;
     for (const [ci, t] of this._chunkTimeouts) { clearTimeout(t); }
     this._chunkTimeouts.clear();
+    this._outstandingCount = 0;
   }
 
   _markPeerFailed(peerId) {
@@ -96,12 +102,15 @@ export class SwarmManager extends EventTarget {
   _fillPipeline(peerId) {
     const peer = this.peers.get(peerId);
     if (!peer || peer.failed || this.done || this.aborted) return;
-    while (peer.pending.size < this.pipelineSize && this.queueHead < this.pendingQueue.length) {
+    const peerCount = this.peers.size
+    const effectivePipeline = Math.max(1, Math.min(this.pipelineSize, Math.floor(MAX_OUTSTANDING_GLOBAL / Math.max(1, peerCount))))
+    while (peer.pending.size < effectivePipeline && this.queueHead < this.pendingQueue.length && this._outstandingCount < MAX_OUTSTANDING_GLOBAL) {
       const i = this.pendingQueue[this.queueHead++];
       if (this.chunkState[i] !== P) continue;
       this.chunkState[i] = R;
       this.chunkPeer[i] = peerId;
       peer.pending.add(i);
+      this._outstandingCount++;
       this._chunkTimeouts.set(i, setTimeout(() => this._handleChunkTimeout(peerId, i), CHUNK_TIMEOUT));
       const p = peer.requestChunk(i)
       if (p && typeof p.catch === 'function') p.catch(() => this._handleChunkFailure(peerId, i))
@@ -126,7 +135,10 @@ export class SwarmManager extends EventTarget {
       peer.pending.delete(ci);
       peer.consecutiveFailures++;
     }
-    if (this.chunkState[ci] === R) this._requeueChunk(ci);
+    if (this.chunkState[ci] === R) {
+      this._outstandingCount--;
+      this._requeueChunk(ci);
+    }
     if (peer && peer.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
       this._markPeerFailed(peerId);
       return;
@@ -139,7 +151,9 @@ export class SwarmManager extends EventTarget {
     if (this.aborted) return false;
     const peer = this.peers.get(peerId);
     if (!peer) return false;
+    const wasPending = peer.pending.has(ci)
     peer.pending.delete(ci);
+    if (wasPending) this._outstandingCount--;
     if (this.chunkState[ci] === V) {
       this._fillPipeline(peerId);
       return true;
@@ -157,7 +171,19 @@ export class SwarmManager extends EventTarget {
       }
       return false;
     }
-    if (proof && !(await verifyChunk(data, proof, this.merkleRoot))) {
+    // Proof is mandatory for multi-chunk files (transitive integrity)
+    if (this.totalChunks > 1 && (!proof || !Array.isArray(proof))) {
+      peer.consecutiveFailures++;
+      this.dispatchEvent(new CustomEvent('chunkFailed', { detail: { peerId, chunkIndex: ci, reason: 'missing_proof' } }));
+      this._requeueChunk(ci);
+      if (peer.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        this._markPeerFailed(peerId);
+      } else {
+        this._fillPipeline(peerId);
+      }
+      return false;
+    }
+    if (proof && proof.length > 0 && !(await verifyChunk(data, proof, this.merkleRoot))) {
       peer.consecutiveFailures++;
       this.dispatchEvent(new CustomEvent('chunkFailed', { detail: { peerId, chunkIndex: ci, reason: 'proof_invalid' } }));
       this._requeueChunk(ci);

@@ -25,8 +25,10 @@ export const useSignalingStore = create((set, get) => ({
       })
       c.addEventListener('close', () => {
         const s = get()
-        set({ client: null, status: 'disconnected', peerId: null, peers: [] })
-        if (!s.roomCode) set({ roomCode: null })
+        set({ status: 'disconnected', peers: [] })
+      })
+      c.addEventListener('reconnect', () => {
+        set({ status: 'connected' })
       })
       await c.connect()
       set({ client: c, status: 'connected' })

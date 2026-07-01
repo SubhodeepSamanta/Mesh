@@ -21,7 +21,7 @@ export default function Landing() {
           </motion.div>
 
           <motion.p {...fadeUp} className="max-w-md text-sm leading-relaxed text-[var(--txt-secondary)] sm:text-base">
-            Mesh moves files straight between browsers over an encrypted P2P connection. Nothing touches a server.
+            Mesh moves files straight between browsers over an encrypted P2P connection. Files never touch a server — only encrypted connection setup is relayed.
           </motion.p>
 
           <motion.div {...fadeUp} className="flex flex-wrap gap-3">
@@ -30,9 +30,9 @@ export default function Landing() {
           </motion.div>
 
           <motion.div {...fadeUp} className="flex flex-wrap gap-2">
-            <Badge color="green">6 PEERS ACTIVE</Badge>
-            <Badge color="amber">132 GB TRANSFERRED</Badge>
             <Badge color="gray" dot={false}>AES-256-GCM E2EE</Badge>
+            <Badge color="gray" dot={false}>WebRTC DTLS</Badge>
+            <Badge color="gray" dot={false}>Merkle verified</Badge>
           </motion.div>
         </div>
 

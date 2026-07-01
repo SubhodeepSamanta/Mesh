@@ -1,6 +1,22 @@
 import { buildJSONBody, buildChunkBody, parseMessage } from '../webrtc/protocol.js';
 
-export const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
+function buildIceServers() {
+  const servers = [{ urls: import.meta.env.VITE_STUN_URL || 'stun:stun.l.google.com:19302' }]
+  const turnUrl = import.meta.env.VITE_TURN_URL
+  const turnUser = import.meta.env.VITE_TURN_USERNAME
+  const turnCred = import.meta.env.VITE_TURN_CREDENTIAL
+  if (turnUrl) {
+    const entry = { urls: turnUrl }
+    if (turnUser && turnCred) {
+      entry.username = turnUser
+      entry.credential = turnCred
+    }
+    servers.push(entry)
+  }
+  return servers
+}
+
+export const ICE_SERVERS = buildIceServers();
 export const CONNECT_TIMEOUT_MS = 15000;
 
 export class WebRTCTransport {
@@ -26,7 +42,7 @@ export class WebRTCTransport {
       });
     };
 
-    this._relayHandler = (event) => this._handleSignal(event.detail);
+    this._relayHandler = (event) => { this._handleSignal(event.detail).catch(() => {}) };
     this.signalingClient.addEventListener('relay', this._relayHandler);
 
     if (initiator) {
@@ -117,10 +133,21 @@ export class WebRTCTransport {
     }
   }
 
-  sendChunk(index, hashHex, proof, data) {
-    if (this.channel && this.channel.readyState === 'open') {
-      this.channel.send(buildChunkBody(index, hashHex, proof, data));
+  async sendChunk(index, hashHex, proof, data) {
+    if (!this.channel || this.channel.readyState !== 'open') return
+    const HIGH_WATER = 8 * 1024 * 1024
+    if (this.channel.bufferedAmount > HIGH_WATER) {
+      this.channel.bufferedAmountLowThreshold = 1024 * 1024
+      await new Promise(resolve => {
+        const handler = () => {
+          this.channel.removeEventListener('bufferedamountlow', handler)
+          resolve()
+        }
+        this.channel.addEventListener('bufferedamountlow', handler)
+      })
     }
+    if (!this.channel || this.channel.readyState !== 'open') return
+    this.channel.send(buildChunkBody(index, hashHex, proof, data))
   }
 
   onJSON(handler) { this.jsonHandler = handler; }

@@ -7,6 +7,7 @@
   PEER_LEFT:    'PEER_LEFT',
   RELAY:        'RELAY',
   ERROR:        'ERROR',
+  PONG:         'PONG',
 };
 
 export class SignalingClient extends EventTarget {
@@ -18,6 +19,13 @@ export class SignalingClient extends EventTarget {
     this.roomCode = null;
     this._pending = null;
     this._relayBuffer = [];
+    this._intentionalClose = false;
+    this._reconnectAttempts = 0;
+    this._maxReconnectAttempts = 5;
+    this._reconnectTimer = null;
+    this._heartbeatTimer = null;
+    this._lastPing = 0;
+    this._closed = false;
   }
 
   addEventListener(type, handler) {
@@ -31,17 +39,71 @@ export class SignalingClient extends EventTarget {
 
   connect() {
     return new Promise((resolve, reject) => {
+      this._intentionalClose = false;
+      this._closed = false;
       this.ws = new WebSocket(this.url);
 
-      this.ws.addEventListener('open', () => resolve(this), { once: true });
-      this.ws.addEventListener('error', () => reject(new Error('Signaling connection failed')), { once: true });
+      const onOpen = () => {
+        this._reconnectAttempts = 0;
+        this._startHeartbeat();
+        if (this.peerId) {
+          this.dispatchEvent(new Event('reconnect'));
+        }
+        resolve(this);
+      };
+      this.ws.addEventListener('open', onOpen, { once: true });
+      this.ws.addEventListener('error', () => {
+        this._stopHeartbeat();
+        reject(new Error('Signaling connection failed'));
+      }, { once: true });
       this.ws.addEventListener('message', (event) => this._handleMessage(event));
-      this.ws.addEventListener('close', () => this.dispatchEvent(new Event('close')));
+      this.ws.addEventListener('close', () => {
+        this._stopHeartbeat();
+        this.dispatchEvent(new Event('close'));
+        if (!this._intentionalClose && !this._closed) this._scheduleReconnect();
+      });
     });
   }
 
+  _scheduleReconnect() {
+    if (this._reconnectAttempts >= this._maxReconnectAttempts) return;
+    const delay = Math.min(1000 * Math.pow(2, this._reconnectAttempts), 15000);
+    this._reconnectAttempts++;
+    this._reconnectTimer = setTimeout(() => {
+      this.connect().catch(() => {});
+    }, delay);
+  }
+
+  _startHeartbeat() {
+    this._stopHeartbeat();
+    this._lastPing = Date.now();
+    this._heartbeatTimer = setInterval(() => {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        try { this.ws.send(JSON.stringify({ type: 'PING' })); } catch {}
+      }
+      if (Date.now() - this._lastPing > 45000) {
+        if (this.ws) this.ws.close();
+      }
+    }, 15000);
+  }
+
+  _stopHeartbeat() {
+    if (this._heartbeatTimer) { clearInterval(this._heartbeatTimer); this._heartbeatTimer = null; }
+  }
+
+  _cleanup() {
+    this._stopHeartbeat();
+    if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null; }
+    if (this._pending) {
+      this._pending.reject(new Error('Connection closed'));
+      this._pending = null;
+    }
+  }
+
   _send(msg) {
-    this.ws.send(JSON.stringify(msg));
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(msg));
+    }
   }
 
   _handleMessage(event) {
@@ -49,6 +111,11 @@ export class SignalingClient extends EventTarget {
     try {
       msg = JSON.parse(event.data);
     } catch {
+      return;
+    }
+
+    if (msg.type === MSG_TYPE.PONG || msg.type === 'PONG') {
+      this._lastPing = Date.now();
       return;
     }
 
@@ -112,6 +179,9 @@ export class SignalingClient extends EventTarget {
   }
 
   close() {
+    this._intentionalClose = true;
+    this._closed = true;
+    this._cleanup();
     if (this.ws) this.ws.close();
   }
 }

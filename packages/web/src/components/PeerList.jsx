@@ -25,6 +25,7 @@ export default function PeerList({ peerStats = [] }) {
                   className={`h-2 w-2 shrink-0 rounded-full ${connected ? 'bg-[var(--success)]' : 'bg-[var(--error)]'}`}
                   title={connected ? 'Connected' : 'Disconnected'}
                 />
+                <span className="sr-only">{connected ? 'Connected' : 'Disconnected'}</span>
                 <span className="font-mono text-[var(--txt-primary)] break-all">
                   {peer.id}
                 </span>

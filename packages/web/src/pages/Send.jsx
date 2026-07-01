@@ -69,8 +69,11 @@ export default function Send() {
 
   useEffect(() => {
     if (st === 'transferring') navigate('/dashboard')
-    return () => M.stopSeederListener()
   }, [st, navigate])
+
+  useEffect(() => {
+    return () => M.stopSeederListener()
+  }, [])
 
   useEffect(() => {
     if (st === 'complete') { addLine('All chunks sent and verified'); addLine('Transfer complete!') }
@@ -78,9 +81,15 @@ export default function Send() {
   }, [st])
 
   function handleCancel() {
+    if (peers.length > 0) {
+      if (!window.confirm('Peers are still connected. Are you sure you want to stop seeding and close the room?')) {
+        return
+      }
+    }
     M.stopSeederListener()
     useSignalingStore.getState().disconnect()
     disconnectAll(); startRef.current = null; fileIdxRef.current = null
+    M.streamHandle = null
     setFileIndex(null); setLines([])
   }
 
