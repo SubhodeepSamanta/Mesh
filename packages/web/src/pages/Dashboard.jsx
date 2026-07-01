@@ -203,7 +203,7 @@ export default function Dashboard() {
           <Card className="h-full">
             <PeerList peerStats={peerStats} />
             <div className="mt-4 border-t border-[var(--border)] pt-4 space-y-3">
-              <div className="space-y-2 text-xs text-[var(--txt-secondary)]">
+              <div className="space-y-2 text-sm text-[var(--txt-secondary)]">
                 <div className="flex justify-between">
                   <span>Role</span>
                   <span className={`font-mono ${role === 'sender' ? 'text-[var(--accent)]' : 'text-[var(--success)]'}`}>
@@ -233,7 +233,7 @@ export default function Dashboard() {
                   </div>
                 )}
               </div>
-              <div className="border-t border-[var(--border)] pt-3 space-y-1.5 text-[10px] leading-relaxed text-[var(--txt-muted)]">
+              <div className="border-t border-[var(--border)] pt-3 space-y-1.5 text-xs leading-relaxed text-[var(--txt-muted)]">
                 <p>🔐 <span className="text-[var(--txt-secondary)]">DTLS 1.3 encrypted · P2P channel</span></p>
                 <p>🧩 <span className="text-[var(--txt-secondary)]">{fileMeta?.chunkSize || '—'} bytes per chunk · Merkle verified</span></p>
                 <p>📡 <span className="text-[var(--txt-secondary)]">{roomCode ? `Room ${roomCode}` : 'Direct connection'}</span></p>
