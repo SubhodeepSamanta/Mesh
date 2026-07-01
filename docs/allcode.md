@@ -3310,20 +3310,24 @@ export const metrics = { totalRooms: 0, totalPeers: 0 };
 
 ```text
 import { WebSocketServer } from 'ws';
-import { randomBytes } from 'crypto';
+import { randomBytes, createHash } from 'crypto';
 
 export const MSG_TYPE = {
-  CREATE_ROOM: 'CREATE_ROOM',
+  CREATE_ROOM:  'CREATE_ROOM',
   ROOM_CREATED: 'ROOM_CREATED',
-  JOIN_ROOM: 'JOIN_ROOM',
-  ROOM_JOINED: 'ROOM_JOINED',
-  PEER_JOINED: 'PEER_JOINED',
-  PEER_LEFT: 'PEER_LEFT',
-  RELAY: 'RELAY',
-  ERROR: 'ERROR',
+  JOIN_ROOM:    'JOIN_ROOM',
+  ROOM_JOINED:  'ROOM_JOINED',
+  PEER_JOINED:  'PEER_JOINED',
+  PEER_LEFT:    'PEER_LEFT',
+  RELAY:        'RELAY',
+  ERROR:        'ERROR',
 };
 
-const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const ROOM_CODE_CHARS  = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const ROOM_TTL_MS      = 30 * 60 * 1000;
+const RATE_WINDOW_MS   = 60 * 1000;
+const MAX_CREATES_PER_MIN = 10;
+const MAX_JOINS_PER_MIN   = 20;
 
 function generateRoomCode(length = 6) {
   let code = '';
@@ -3333,16 +3337,31 @@ function generateRoomCode(length = 6) {
   return code;
 }
 
+function hashPassword(password) {
+  return createHash('sha256').update(password).digest('hex');
+}
+
 export class SignalingServer {
-  constructor() {
-    this.rooms = new Map();
-    this.wss = null;
+  constructor(opts = {}) {
+    this.rooms        = new Map();
+    this.wss          = null;
+    this.rateLimits   = new Map();
+    this.roomTtlMs    = opts.roomTtlMs    ?? ROOM_TTL_MS;
+    this.maxCreates   = opts.maxCreates   ?? MAX_CREATES_PER_MIN;
+    this.maxJoins     = opts.maxJoins     ?? MAX_JOINS_PER_MIN;
+    this._expiryTimer = null;
   }
 
   listen(port = 0) {
     return new Promise((resolve) => {
       this.wss = new WebSocketServer({ port }, () => {
-        this.wss.on('connection', (ws) => this._handleConnection(ws));
+        this.wss.on('connection', (ws, req) => {
+          ws._ip = req.socket.remoteAddress || '127.0.0.1';
+          this._handleConnection(ws);
+        });
+
+        this._expiryTimer = setInterval(() => this._expireRooms(), 60 * 1000);
+
         resolve(this.wss.address());
       });
     });
@@ -3350,6 +3369,7 @@ export class SignalingServer {
 
   close() {
     return new Promise((resolve) => {
+      clearInterval(this._expiryTimer);
       if (!this.wss) { resolve(); return; }
       this.wss.close(() => resolve());
     });
@@ -3361,9 +3381,35 @@ export class SignalingServer {
     }
   }
 
+  _checkRateLimit(ip, action) {
+    const key  = `${ip}:${action}`;
+    const now  = Date.now();
+    const max  = action === 'create' ? this.maxCreates : this.maxJoins;
+    const list = this.rateLimits.get(key) || [];
+
+    const recent = list.filter(t => now - t < RATE_WINDOW_MS);
+    recent.push(now);
+    this.rateLimits.set(key, recent);
+
+    return recent.length <= max;
+  }
+
+  _expireRooms() {
+    const now = Date.now();
+    for (const [code, room] of this.rooms) {
+      if (now - room.lastActivity > this.roomTtlMs) {
+        for (const ws of room.peers.values()) {
+          this._send(ws, { type: MSG_TYPE.ERROR, message: 'Room expired' });
+          ws.close();
+        }
+        this.rooms.delete(code);
+      }
+    }
+  }
+
   _handleConnection(ws) {
     ws.roomCode = null;
-    ws.peerId = randomBytes(8).toString('hex');
+    ws.peerId   = randomBytes(8).toString('hex');
 
     ws.on('message', (raw) => {
       let msg;
@@ -3382,10 +3428,10 @@ export class SignalingServer {
   _handleMessage(ws, msg) {
     switch (msg.type) {
       case MSG_TYPE.CREATE_ROOM:
-        this._createRoom(ws);
+        this._createRoom(ws, msg.password);
         break;
       case MSG_TYPE.JOIN_ROOM:
-        this._joinRoom(ws, msg.roomCode);
+        this._joinRoom(ws, msg.roomCode, msg.password);
         break;
       case MSG_TYPE.RELAY:
         this._relay(ws, msg);
@@ -3395,22 +3441,34 @@ export class SignalingServer {
     }
   }
 
-  _createRoom(ws) {
+  _createRoom(ws, password) {
+    if (!this._checkRateLimit(ws._ip, 'create')) {
+      this._send(ws, { type: MSG_TYPE.ERROR, message: 'Rate limit exceeded: too many rooms created' });
+      return;
+    }
+
     let roomCode;
     do {
       roomCode = generateRoomCode();
     } while (this.rooms.has(roomCode));
 
     this.rooms.set(roomCode, {
-      peers: new Map([[ws.peerId, ws]]),
-      createdAt: Date.now(),
+      peers:        new Map([[ws.peerId, ws]]),
+      passwordHash: password ? hashPassword(password) : null,
+      createdAt:    Date.now(),
+      lastActivity: Date.now(),
     });
 
     ws.roomCode = roomCode;
     this._send(ws, { type: MSG_TYPE.ROOM_CREATED, roomCode, peerId: ws.peerId });
   }
 
-  _joinRoom(ws, roomCode) {
+  _joinRoom(ws, roomCode, password) {
+    if (!this._checkRateLimit(ws._ip, 'join')) {
+      this._send(ws, { type: MSG_TYPE.ERROR, message: 'Rate limit exceeded: too many join attempts' });
+      return;
+    }
+
     const room = this.rooms.get(roomCode);
 
     if (!room) {
@@ -3418,9 +3476,16 @@ export class SignalingServer {
       return;
     }
 
-    const existingPeerIds = [...room.peers.keys()];
+    if (room.passwordHash) {
+      if (!password || hashPassword(password) !== room.passwordHash) {
+        this._send(ws, { type: MSG_TYPE.ERROR, message: 'Incorrect room password' });
+        return;
+      }
+    }
 
+    const existingPeerIds = [...room.peers.keys()];
     room.peers.set(ws.peerId, ws);
+    room.lastActivity = Date.now();
     ws.roomCode = roomCode;
 
     this._send(ws, {
@@ -3445,6 +3510,8 @@ export class SignalingServer {
 
     const room = this.rooms.get(ws.roomCode);
     if (!room) return;
+
+    room.lastActivity = Date.now();
 
     const targetWs = room.peers.get(msg.targetPeerId);
     if (!targetWs) {
@@ -3594,7 +3661,11 @@ describe('signaling server', () => {
 
     const ws2 = await connect(addr.port);
     send(ws2, { type: MSG_TYPE.JOIN_ROOM, roomCode: created.roomCode });
-    const joined = await nextMessage(ws2);
+
+    const [joined] = await Promise.all([
+      nextMessage(ws2),
+      nextMessage(ws1),
+    ]);
 
     const relayPromise = nextMessage(ws1);
     send(ws2, {
@@ -3642,7 +3713,7 @@ describe('signaling server', () => {
 
     const ws1 = await connect(addr.port);
     send(ws1, { type: MSG_TYPE.CREATE_ROOM });
-    const created = await nextMessage(ws1);
+    await nextMessage(ws1);
 
     assert.equal(server.rooms.size, 1);
 
@@ -3680,6 +3751,127 @@ describe('signaling server', () => {
     const msg = await nextMessage(ws);
 
     assert.equal(msg.type, MSG_TYPE.ERROR);
+
+    ws.close();
+    await server.close();
+  });
+
+  it('password protected room rejects wrong password', async () => {
+    const server = new SignalingServer();
+    const addr = await server.listen(0);
+
+    const ws1 = await connect(addr.port);
+    send(ws1, { type: MSG_TYPE.CREATE_ROOM, password: 'secret123' });
+    const created = await nextMessage(ws1);
+
+    const ws2 = await connect(addr.port);
+    send(ws2, { type: MSG_TYPE.JOIN_ROOM, roomCode: created.roomCode, password: 'wrongpass' });
+    const msg = await nextMessage(ws2);
+
+    assert.equal(msg.type, MSG_TYPE.ERROR);
+    assert.match(msg.message, /password/i);
+
+    ws1.close();
+    ws2.close();
+    await server.close();
+  });
+
+  it('password protected room accepts correct password', async () => {
+    const server = new SignalingServer();
+    const addr = await server.listen(0);
+
+    const ws1 = await connect(addr.port);
+    send(ws1, { type: MSG_TYPE.CREATE_ROOM, password: 'secret123' });
+    const created = await nextMessage(ws1);
+
+    const ws2 = await connect(addr.port);
+    send(ws2, { type: MSG_TYPE.JOIN_ROOM, roomCode: created.roomCode, password: 'secret123' });
+    const joined = await nextMessage(ws2);
+
+    assert.equal(joined.type, MSG_TYPE.ROOM_JOINED);
+
+    ws1.close();
+    ws2.close();
+    await server.close();
+  });
+
+  it('joining without password when room has one returns error', async () => {
+    const server = new SignalingServer();
+    const addr = await server.listen(0);
+
+    const ws1 = await connect(addr.port);
+    send(ws1, { type: MSG_TYPE.CREATE_ROOM, password: 'secret' });
+    const created = await nextMessage(ws1);
+
+    const ws2 = await connect(addr.port);
+    send(ws2, { type: MSG_TYPE.JOIN_ROOM, roomCode: created.roomCode });
+    const msg = await nextMessage(ws2);
+
+    assert.equal(msg.type, MSG_TYPE.ERROR);
+
+    ws1.close();
+    ws2.close();
+    await server.close();
+  });
+
+  it('rate limits room creation per IP', async () => {
+    const server = new SignalingServer({ maxCreates: 3 });
+    const addr = await server.listen(0);
+
+    const ws = await connect(addr.port);
+    let lastMsg;
+
+    for (let i = 0; i < 4; i++) {
+      send(ws, { type: MSG_TYPE.CREATE_ROOM });
+      lastMsg = await nextMessage(ws);
+    }
+
+    assert.equal(lastMsg.type, MSG_TYPE.ERROR);
+    assert.match(lastMsg.message, /rate limit/i);
+
+    ws.close();
+    await server.close();
+  });
+
+  it('rate limits join attempts per IP', async () => {
+    const server = new SignalingServer({ maxJoins: 2 });
+    const addr = await server.listen(0);
+
+    const ws1 = await connect(addr.port);
+    send(ws1, { type: MSG_TYPE.CREATE_ROOM });
+    const created = await nextMessage(ws1);
+
+    const ws2 = await connect(addr.port);
+    let lastMsg;
+
+    for (let i = 0; i < 3; i++) {
+      send(ws2, { type: MSG_TYPE.JOIN_ROOM, roomCode: created.roomCode });
+      lastMsg = await nextMessage(ws2);
+    }
+
+    assert.equal(lastMsg.type, MSG_TYPE.ERROR);
+    assert.match(lastMsg.message, /rate limit/i);
+
+    ws1.close();
+    ws2.close();
+    await server.close();
+  });
+
+  it('expired rooms are cleaned up automatically', async () => {
+    const server = new SignalingServer({ roomTtlMs: 100 });
+    const addr = await server.listen(0);
+
+    const ws = await connect(addr.port);
+    send(ws, { type: MSG_TYPE.CREATE_ROOM });
+    await nextMessage(ws);
+
+    assert.equal(server.rooms.size, 1);
+
+    server._expireRooms();
+    await new Promise(r => setTimeout(r, 150));
+    server._expireRooms();
+
+    assert.equal(server.rooms.size, 0);
 
     ws.close();
     await server.close();
@@ -4572,7 +4764,7 @@ describe('transfer', () => {
 
 ### sig-test-out.txt
 
-Binary or non-UTF-8 file omitted from markdown snapshot (5822 bytes).
+Binary or non-UTF-8 file omitted from markdown snapshot (6300 bytes).
 
 ### test-out.txt
 
