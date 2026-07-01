@@ -119,7 +119,7 @@ it('relays a message from one peer to another by peerId', async () => {
     const relayed = await relayPromise;
     assert.equal(relayed.type, MSG_TYPE.RELAY);
     assert.equal(relayed.fromPeerId, joined.peerId);
-    assert.deepEqual(relayed.payload, { sdp: 'fake-offer-data' });
+    assert.deepEqual(relayed.payload, { sdp: 'fake-offer-data' }); 
 
     ws1.close();
     ws2.close();
