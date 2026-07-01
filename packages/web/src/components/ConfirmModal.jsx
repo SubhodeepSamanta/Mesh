@@ -1,5 +1,6 @@
 import { motion, AnimatePresence } from 'framer-motion'
 import { useConfirmStore } from '../store/useConfirmStore.js'
+import Button from './shared/Button.jsx'
 
 export default function ConfirmModal() {
   const { isOpen, title, message, onConfirm, onCancel } = useConfirmStore()
@@ -43,20 +44,18 @@ export default function ConfirmModal() {
 
             {/* Actions */}
             <div className="mt-6 flex justify-end gap-3">
-              <button
-                type="button"
+              <Button
+                variant="secondary"
                 onClick={onCancel}
-                className="cursor-pointer rounded-md border border-[var(--border-light)] bg-transparent px-4 py-2 text-xs font-semibold uppercase tracking-wider text-[var(--txt-secondary)] transition-all hover:border-[var(--border-hover)] hover:text-[var(--txt-primary)] focus:outline-none"
               >
                 Cancel
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
+                variant="primary"
                 onClick={onConfirm}
-                className="cursor-pointer rounded-md bg-[var(--accent)] px-4 py-2 text-xs font-semibold uppercase tracking-wider text-black transition-all hover:bg-[var(--accent-hover)] hover:shadow-[0_0_12px_rgba(245,158,11,0.3)] focus:outline-none"
               >
                 Confirm
-              </button>
+              </Button>
             </div>
           </motion.div>
         </div>

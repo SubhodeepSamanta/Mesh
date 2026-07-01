@@ -1,5 +1,5 @@
 const VARIANTS = {
-  primary: 'bg-[var(--accent)] text-black hover:bg-[var(--accent)] font-medium',
+  primary: 'bg-[var(--accent)] text-black hover:bg-[var(--accent-hover)] font-medium',
   secondary: 'border border-[var(--border-light)] text-[var(--txt-primary)] hover:bg-[var(--surface-hover)] font-medium',
   ghost: 'text-[var(--txt-secondary)] hover:text-[var(--txt-primary)] hover:bg-[var(--surface-hover)]',
   danger: 'bg-[var(--error)] text-white hover:bg-[var(--error)] font-medium',

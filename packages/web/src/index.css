@@ -40,6 +40,7 @@
   --border-light: #2a2a2a;
   --border-hover: #3a3a3a;
   --accent: #f59e0b;
+  --accent-hover: #d97706;
   --accent-dim: #fbbf24;
   --success: #22c55e;
   --error: #ef4444;
@@ -63,6 +64,7 @@
   --border-light: #d1d5db;
   --border-hover: #9ca3af;
   --accent: #d97706;
+  --accent-hover: #b45309;
   --accent-dim: #b45309;
   --success: #16a34a;
   --error: #dc2626;
