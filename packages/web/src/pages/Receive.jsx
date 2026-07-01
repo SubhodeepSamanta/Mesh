@@ -22,7 +22,6 @@ export default function Receive() {
   const [joinError, setJoinError] = useState(null)
   const [roomClosed, setRoomClosed] = useState(false)
   const [startingTransfer, setStartingTransfer] = useState(false)
-  const swarmRef = useRef(null)
   const downloadGuardRef = useRef(false)
   const mountedRef = useRef(true)
 
@@ -68,7 +67,7 @@ export default function Receive() {
   }
 
   async function handleBeginTransfer() {
-    if (!swarmRef.current || startingTransfer) return
+    if (!M.swarm || startingTransfer) return
     setStartingTransfer(true)
     const isFileSystemAccess = typeof window !== 'undefined' && (
       ('showDirectoryPicker' in window) || ('showSaveFilePicker' in window)
@@ -83,8 +82,8 @@ export default function Receive() {
       } catch {}
     }
     for (const [id, transport] of M.transports) {
-      if (swarmRef.current && transport.offeredRoot === swarmRef.current.merkleRoot) {
-        addReceiverPeer(transport, swarmRef.current)
+      if (M.swarm && transport.offeredRoot === M.swarm.merkleRoot) {
+        addReceiverPeer(transport, M.swarm)
       }
     }
   }
@@ -93,7 +92,6 @@ export default function Receive() {
     try { useSignalingStore.getState().disconnect() } catch {}
     disconnectAll()
     M.streamHandle = null
-    swarmRef.current = null
     downloadGuardRef.current = false
     setRoomClosed(false)
     navigate('/receive')
