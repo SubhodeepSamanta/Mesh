@@ -689,11 +689,12 @@ import { join, resolve } from 'path';
 import { createHash } from 'crypto';
 import { sendJSON, createFramer, parseMessage, MSG, TYPE } from './src/protocol.js';
 import { verifyChunk } from './src/crypto.js';
+import { computeSimplePipelineDepth } from './src/chunker.js';
 
 const SENDER_HOST  = process.argv[2] || '127.0.0.1';
 const SENDER_PORT  = parseInt(process.argv[3] || '9000');
 const OUTPUT_DIR   = resolve(process.argv[4] || './received');
-const PIPELINE     = 32;
+const DEFAULT_PIPELINE = 32;
 const TIMEOUT_MS   = 30000;
 const KEEPALIVE_MS = 10000;
 
@@ -701,16 +702,17 @@ async function main() {
   await mkdir(OUTPUT_DIR, { recursive: true });
 
   let metadata         = null;
-  let fileHandle       = null;
-  const received       = new Set();
-  const inFlight       = new Set();
-  const pending        = new Set();
-  let nextRequest      = 0;
-  let startTime        = null;
-  let done             = false;
-  let finishing        = false;
-  let timeoutHandle    = null;
-  let keepaliveHandle  = null;
+  let fileHandle        = null;
+  const received        = new Set();
+  const inFlight         = new Set();
+  const pending          = new Set();
+  let nextRequest        = 0;
+  let startTime          = null;
+  let done               = false;
+  let finishing          = false;
+  let timeoutHandle      = null;
+  let keepaliveHandle    = null;
+  let pipeline           = DEFAULT_PIPELINE;
 
   const socket = net.createConnection({ host: SENDER_HOST, port: SENDER_PORT });
   socket.setMaxListeners(0);
@@ -745,16 +747,16 @@ async function main() {
 
   function requestNext() {
     if (!metadata || done || finishing) return;
-    while (inFlight.size < PIPELINE && nextRequest < metadata.totalChunks) {
+    while (inFlight.size < pipeline && nextRequest < metadata.totalChunks) {
       if (!received.has(nextRequest)) {
         inFlight.add(nextRequest);
         sendJSON(socket, { type: MSG.CHUNK_REQUEST, index: nextRequest });
       }
       nextRequest++;
     }
-    if (nextRequest >= metadata.totalChunks && inFlight.size < PIPELINE) {
+    if (nextRequest >= metadata.totalChunks && inFlight.size < pipeline) {
       for (const idx of pending) {
-        if (inFlight.size >= PIPELINE) break;
+        if (inFlight.size >= pipeline) break;
         inFlight.add(idx);
         pending.delete(idx);
         sendJSON(socket, { type: MSG.CHUNK_REQUEST, index: idx });
@@ -762,33 +764,33 @@ async function main() {
     }
   }
 
-async function finish() {
-  if (finishing || done) return;
-  finishing = true;
-  done = true;
+  async function finish() {
+    if (finishing || done) return;
+    finishing = true;
+    done = true;
 
-  clearTimeout(timeoutHandle);
-  clearInterval(keepaliveHandle);
+    clearTimeout(timeoutHandle);
+    clearInterval(keepaliveHandle);
 
-  if (fileHandle) {
-    await fileHandle.close();
-    fileHandle = null;
+    if (fileHandle) {
+      await fileHandle.close();
+      fileHandle = null;
+    }
+
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+    const speedMB = (metadata.fileSize / 1024 / 1024 / parseFloat(elapsed)).toFixed(2);
+
+    process.stdout.write('\n');
+    console.log('All chunks received and verified.');
+    console.log(`Saved:   ${join(OUTPUT_DIR, metadata.fileName)}`);
+    console.log(`Size:    ${(metadata.fileSize / 1024 / 1024).toFixed(2)} MB`);
+    console.log(`Time:    ${elapsed}s`);
+    console.log(`Speed:   ${speedMB} MB/s`);
+
+    sendJSON(socket, { type: MSG.TRANSFER_COMPLETE });
+    socket.end();
+    process.exit(0);
   }
-
-  const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
-  const speedMB = (metadata.fileSize / 1024 / 1024 / parseFloat(elapsed)).toFixed(2);
-
-  process.stdout.write('\n');
-  console.log('All chunks received and verified.');
-  console.log(`Saved:   ${join(OUTPUT_DIR, metadata.fileName)}`);
-  console.log(`Size:    ${(metadata.fileSize / 1024 / 1024).toFixed(2)} MB`);
-  console.log(`Time:    ${elapsed}s`);
-  console.log(`Speed:   ${speedMB} MB/s`);
-
-  sendJSON(socket, { type: MSG.TRANSFER_COMPLETE });
-  socket.end();
-  process.exit(0);
-}
 
   const framer = createFramer(async (body) => {
     if (done || finishing) return;
@@ -799,6 +801,7 @@ async function finish() {
     if (msg.type === TYPE.JSON && msg.data.type === MSG.FILE_OFFER) {
       metadata  = msg.data;
       startTime = Date.now();
+      pipeline  = computeSimplePipelineDepth(metadata.chunkSize);
 
       const outPath = join(OUTPUT_DIR, metadata.fileName);
       fileHandle = await open(outPath, 'w');
@@ -807,6 +810,7 @@ async function finish() {
       console.log(`Incoming: ${metadata.fileName}`);
       console.log(`Size:     ${(metadata.fileSize / 1024 / 1024).toFixed(2)} MB`);
       console.log(`Chunks:   ${metadata.totalChunks}`);
+      console.log(`Chunk size: ${(metadata.chunkSize / 1024).toFixed(0)} KB`);
       console.log(`Root:     ${metadata.merkleRoot.slice(0, 32)}...`);
 
       for (let i = 0; i < metadata.totalChunks; i++) pending.add(i);
@@ -828,45 +832,45 @@ async function finish() {
     }
 
     if (msg.type === TYPE.CHUNK) {
-  const { chunkIndex, chunkHash, proof, chunkData } = msg;
+      const { chunkIndex, chunkHash, proof, chunkData } = msg;
 
-  if (received.has(chunkIndex)) {
-    requestNext();
-    return;
-  }
+      if (received.has(chunkIndex)) {
+        requestNext();
+        return;
+      }
 
-  inFlight.delete(chunkIndex);
-  pending.delete(chunkIndex);
+      inFlight.delete(chunkIndex);
+      pending.delete(chunkIndex);
 
-  const hashMatch = createHash('sha256').update(chunkData).digest('hex') === chunkHash;
-  if (!hashMatch) {
-    console.warn(`\nChunk ${chunkIndex} hash mismatch — re-requesting`);
-    pending.add(chunkIndex);
-    requestNext();
-    return;
-  }
+      const hashMatch = createHash('sha256').update(chunkData).digest('hex') === chunkHash;
+      if (!hashMatch) {
+        console.warn(`\nChunk ${chunkIndex} hash mismatch — re-requesting`);
+        pending.add(chunkIndex);
+        requestNext();
+        return;
+      }
 
-  const proofValid = verifyChunk(chunkData, proof, metadata.merkleRoot);
-  if (!proofValid) {
-    console.warn(`\nChunk ${chunkIndex} Merkle proof invalid — re-requesting`);
-    pending.add(chunkIndex);
-    requestNext();
-    return;
-  }
+      const proofValid = verifyChunk(chunkData, proof, metadata.merkleRoot);
+      if (!proofValid) {
+        console.warn(`\nChunk ${chunkIndex} Merkle proof invalid — re-requesting`);
+        pending.add(chunkIndex);
+        requestNext();
+        return;
+      }
 
-  await fileHandle.write(chunkData, 0, chunkData.length, chunkIndex * metadata.chunkSize);
-  received.add(chunkIndex);
+      await fileHandle.write(chunkData, 0, chunkData.length, chunkIndex * metadata.chunkSize);
+      received.add(chunkIndex);
 
-  const pct = ((received.size / metadata.totalChunks) * 100).toFixed(1);
-  process.stdout.write(`\rProgress: ${pct}% (${received.size}/${metadata.totalChunks}) — ${inFlight.size} in flight   `);
+      const pct = ((received.size / metadata.totalChunks) * 100).toFixed(1);
+      process.stdout.write(`\rProgress: ${pct}% (${received.size}/${metadata.totalChunks}) — ${inFlight.size} in flight   `);
 
-  if (received.size === metadata.totalChunks) {
-    await finish();
-    return;
-  }
+      if (received.size === metadata.totalChunks) {
+        await finish();
+        return;
+      }
 
-  requestNext();
-}
+      requestNext();
+    }
   });
 
   socket.on('connect', () => {
@@ -902,9 +906,10 @@ main().catch((e) => {
 ```text
 import net from 'net';
 import { basename, resolve } from 'path';
+import { open } from 'fs/promises';
 import { getMerkleProof } from './src/crypto.js';
 import { sendJSON, sendChunk, createFramer, parseMessage, MSG, TYPE } from './src/protocol.js';
-import { indexFile, readChunk } from './src/chunker.js';
+import { indexFile, readChunk, computeCacheSize } from './src/chunker.js';
 import { generateKeyPair, exportPublicKey, deriveSharedKey, encrypt } from './src/crypto.js';
 
 const FILE_PATH = resolve(process.argv[2]);
@@ -915,31 +920,33 @@ if (!process.argv[2]) {
   process.exit(1);
 }
 
-const chunkCache = new Map();
-const CACHE_MAX  = 64;
-
-async function readChunkCached(filePath, index, chunkSize) {
-  if (chunkCache.has(index)) return chunkCache.get(index);
-  const data = await readChunk(filePath, index, chunkSize);
-  if (chunkCache.size >= CACHE_MAX) {
-    chunkCache.delete(chunkCache.keys().next().value);
-  }
-  chunkCache.set(index, data);
-  return data;
-}
-
 async function main() {
   console.log(`Indexing ${FILE_PATH}...`);
   const { fileSize, hashes, tree, merkleRoot, totalChunks, chunkSize } = await indexFile(FILE_PATH);
   console.log(`Ready: ${totalChunks} chunks, root: ${merkleRoot.slice(0, 16)}...`);
   console.log(`File size: ${(fileSize / 1024 / 1024).toFixed(2)} MB`);
+  console.log(`Chunk size: ${(chunkSize / 1024).toFixed(0)} KB`);
+
+  const fileHandle = await open(FILE_PATH, 'r');
+  const chunkCache = new Map();
+  const CACHE_MAX = computeCacheSize(chunkSize);
+
+  async function readChunkCached(index) {
+    if (chunkCache.has(index)) return chunkCache.get(index);
+    const data = await readChunk(fileHandle, index, chunkSize);
+    if (chunkCache.size >= CACHE_MAX) {
+      chunkCache.delete(chunkCache.keys().next().value);
+    }
+    chunkCache.set(index, data);
+    return data;
+  }
 
   const server = net.createServer((socket) => {
     socket.setMaxListeners(0);
     socket.setNoDelay(true);
     console.log(`Receiver connected from ${socket.remoteAddress}`);
     const keyPair = generateKeyPair();
-let sharedKey = null;
+    let sharedKey = null;
     let peerAlive = true;
     const keepaliveCheck = setInterval(() => {
       if (!peerAlive) {
@@ -964,25 +971,28 @@ let sharedKey = null;
       if (data.type === MSG.KEEPALIVE) {
         return;
       }
-if (data.type === MSG.KEY_EXCHANGE) {
-  const theirPublicKeyDER = Buffer.from(data.publicKey, 'base64');
-  sharedKey = deriveSharedKey(keyPair.privateKey, theirPublicKeyDER);
-  const myPublicKey = exportPublicKey(keyPair).toString('base64');
-  sendJSON(socket, { type: MSG.KEY_EXCHANGE, publicKey: myPublicKey });
-}
+
+      if (data.type === MSG.KEY_EXCHANGE) {
+        const theirPublicKeyDER = Buffer.from(data.publicKey, 'base64');
+        sharedKey = deriveSharedKey(keyPair.privateKey, theirPublicKeyDER);
+        const myPublicKey = exportPublicKey(keyPair).toString('base64');
+        sendJSON(socket, { type: MSG.KEY_EXCHANGE, publicKey: myPublicKey });
+      }
+
       if (data.type === MSG.CHUNK_REQUEST) {
-  const { index } = data;
-  if (index < 0 || index >= totalChunks) return;
-  if (!sharedKey) return;
-  const chunkData = await readChunkCached(FILE_PATH, index, chunkSize);
-  const encryptedData = encrypt(chunkData, sharedKey);
-  const proof = getMerkleProof(tree, index);
-  await sendChunk(socket, index, hashes[index], proof, encryptedData);
-}
+        const { index } = data;
+        if (index < 0 || index >= totalChunks) return;
+        if (!sharedKey) return;
+        const chunkData = await readChunkCached(index);
+        const encryptedData = encrypt(chunkData, sharedKey);
+        const proof = getMerkleProof(tree, index);
+        await sendChunk(socket, index, hashes[index], proof, encryptedData);
+      }
 
       if (data.type === MSG.TRANSFER_COMPLETE) {
         console.log('Transfer confirmed complete');
         clearInterval(keepaliveCheck);
+        await fileHandle.close().catch(() => {});
         server.close(() => process.exit(0));
       }
     });
@@ -1032,12 +1042,45 @@ import { stat } from 'fs/promises';
 import { sha256, buildMerkleTree } from './crypto.js';
 
 export const DEFAULT_CHUNK_SIZE = 65536;
+export const MAX_CHUNK_SIZE = 32 * 1024 * 1024;
+export const TARGET_CHUNK_COUNT = 50000;
 
 export const EMPTY_FILE_MERKLE_ROOT = sha256(Buffer.alloc(0));
 
-export async function indexFile(filePath, chunkSize = DEFAULT_CHUNK_SIZE) {
+export function computeChunkSize(fileSize) {
+  if (fileSize <= DEFAULT_CHUNK_SIZE * TARGET_CHUNK_COUNT) {
+    return DEFAULT_CHUNK_SIZE;
+  }
+  const raw = Math.ceil(fileSize / TARGET_CHUNK_COUNT);
+  let size = DEFAULT_CHUNK_SIZE;
+  while (size < raw && size < MAX_CHUNK_SIZE) {
+    size *= 2;
+  }
+  return size;
+}
+
+export function computeCacheSize(chunkSize) {
+  const TARGET_CACHE_BYTES = 64 * DEFAULT_CHUNK_SIZE;
+  const raw = Math.floor(TARGET_CACHE_BYTES / chunkSize);
+  return Math.max(8, Math.min(256, raw));
+}
+
+export function computeSwarmPipelineDepth(chunkSize) {
+  const TARGET_INFLIGHT_BYTES = 16 * DEFAULT_CHUNK_SIZE;
+  const raw = Math.floor(TARGET_INFLIGHT_BYTES / chunkSize);
+  return Math.max(4, Math.min(16, raw));
+}
+
+export function computeSimplePipelineDepth(chunkSize) {
+  const TARGET_INFLIGHT_BYTES = 32 * DEFAULT_CHUNK_SIZE;
+  const raw = Math.floor(TARGET_INFLIGHT_BYTES / chunkSize);
+  return Math.max(4, Math.min(32, raw));
+}
+
+export async function indexFile(filePath, chunkSize = null) {
   const fileStat = await stat(filePath);
   const fileSize = fileStat.size;
+  const effectiveChunkSize = chunkSize || computeChunkSize(fileSize);
 
   if (fileSize === 0) {
     return {
@@ -1046,29 +1089,24 @@ export async function indexFile(filePath, chunkSize = DEFAULT_CHUNK_SIZE) {
       merkleRoot: EMPTY_FILE_MERKLE_ROOT,
       totalChunks: 0,
       fileSize,
-      chunkSize,
+      chunkSize: effectiveChunkSize,
     };
   }
 
   const hashes = [];
-  const stream = createReadStream(filePath, { highWaterMark: chunkSize });
+  const stream = createReadStream(filePath, { highWaterMark: effectiveChunkSize });
   for await (const chunk of stream) {
     hashes.push(sha256(Buffer.from(chunk)));
   }
   const tree = buildMerkleTree(hashes);
-  return { hashes, tree, merkleRoot: tree.root, totalChunks: hashes.length, fileSize, chunkSize };
+  return { hashes, tree, merkleRoot: tree.root, totalChunks: hashes.length, fileSize, chunkSize: effectiveChunkSize };
 }
 
-export async function readChunk(filePath, index, chunkSize = DEFAULT_CHUNK_SIZE) {
-  return new Promise((resolve, reject) => {
-    const start  = index * chunkSize;
-    const end    = start + chunkSize - 1;
-    const stream = createReadStream(filePath, { start, end, highWaterMark: chunkSize });
-    const buffers = [];
-    stream.on('data',  d => buffers.push(Buffer.from(d)));
-    stream.on('end',   () => resolve(Buffer.concat(buffers)));
-    stream.on('error', reject);
-  });
+export async function readChunk(fileHandle, index, chunkSize = DEFAULT_CHUNK_SIZE) {
+  const start = index * chunkSize;
+  const buffer = Buffer.allocUnsafe(chunkSize);
+  const { bytesRead } = await fileHandle.read(buffer, 0, chunkSize, start);
+  return buffer.subarray(0, bytesRead);
 }
 
 export async function chunkFile(filePath, chunkSize = DEFAULT_CHUNK_SIZE) {
@@ -1837,6 +1875,7 @@ export function parseMessage(body) {
 import { EventEmitter } from 'events';
 import { createHash } from 'crypto';
 import { verifyChunk } from './crypto.js';
+import { computeSwarmPipelineDepth, DEFAULT_CHUNK_SIZE } from './chunker.js';
 
 export const PIPELINE_SIZE = 16;
 export const MAX_CONSECUTIVE_FAILURES = 5;
@@ -1848,10 +1887,12 @@ const CHUNK_STATE = {
 };
 
 export class SwarmManager extends EventEmitter {
-  constructor(totalChunks, merkleRoot) {
+  constructor(totalChunks, merkleRoot, chunkSize = DEFAULT_CHUNK_SIZE) {
     super();
     this.totalChunks   = totalChunks;
     this.merkleRoot    = merkleRoot;
+    this.chunkSize     = chunkSize;
+    this.pipelineSize  = computeSwarmPipelineDepth(chunkSize);
     this.chunkState    = new Array(totalChunks).fill(CHUNK_STATE.PENDING);
     this.chunkPeer     = new Array(totalChunks).fill(null);
     this.pendingQueue  = Array.from({ length: totalChunks }, (_, i) => i);
@@ -1909,7 +1950,7 @@ export class SwarmManager extends EventEmitter {
     const peer = this.peers.get(peerId);
     if (!peer || peer.failed || this.done) return;
 
-    while (peer.pending.size < PIPELINE_SIZE && this.queueHead < this.pendingQueue.length) {
+    while (peer.pending.size < this.pipelineSize && this.queueHead < this.pendingQueue.length) {
       const i = this.pendingQueue[this.queueHead++];
       if (this.chunkState[i] !== CHUNK_STATE.PENDING) continue;
 
@@ -2051,7 +2092,7 @@ export async function downloadFile({ fileHash, fileSize, totalChunks, chunkSize,
 
   const peersToTry = peers.slice(0, MAX_CONCURRENT_CONNECTIONS);
 
-  const swarm = new SwarmManager(totalChunks, merkleRoot);
+  const swarm = new SwarmManager(totalChunks, merkleRoot, chunkSize);
   const connections = new Map();
   const connectionErrors = [];
   const fileHandle = await open(outputPath, 'w');
@@ -2147,7 +2188,7 @@ import { writeFile, unlink } from 'fs/promises';
 import { randomBytes, createHash } from 'crypto';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { chunkFile, assembleChunks } from '../src/chunker.js';
+import { chunkFile, assembleChunks, computeChunkSize, computeCacheSize, computeSwarmPipelineDepth, computeSimplePipelineDepth } from '../src/chunker.js';
 import { sha256, buildMerkleTree, getMerkleProof, verifyChunk } from '../src/crypto.js';
 
 async function makeTempFile(size) {
@@ -2176,7 +2217,72 @@ describe('chunker', () => {
     assert.equal(totalChunks, Math.ceil(200 * 1024 / 65536));
     await unlink(filePath);
   });
+it('computeChunkSize keeps small files at the default chunk size', () => {
+    assert.equal(computeChunkSize(1024), 65536);
+    assert.equal(computeChunkSize(500 * 1024 * 1024), 65536);
+    assert.equal(computeChunkSize(3 * 1024 * 1024 * 1024), 65536);
+  });
 
+  it('computeChunkSize scales up for large files and stays under the protocol message ceiling', () => {
+    const size100GB = 100 * 1024 * 1024 * 1024;
+    const size1TB = 1024 * 1024 * 1024 * 1024;
+
+    const chunk100GB = computeChunkSize(size100GB);
+    const chunk1TB = computeChunkSize(size1TB);
+
+    assert.ok(chunk100GB > 65536);
+    assert.ok(chunk1TB >= chunk100GB);
+    assert.ok(chunk1TB <= 32 * 1024 * 1024);
+
+    const totalChunks100GB = Math.ceil(size100GB / chunk100GB);
+    const totalChunks1TB = Math.ceil(size1TB / chunk1TB);
+
+    assert.ok(totalChunks100GB < 100000);
+    assert.ok(totalChunks1TB < 100000);
+  });
+
+  it('computeChunkSize never exceeds MAX_CHUNK_SIZE even for extreme file sizes', () => {
+    const size10TB = 10 * 1024 * 1024 * 1024 * 1024;
+    assert.equal(computeChunkSize(size10TB), 32 * 1024 * 1024);
+  });
+
+  it('computeCacheSize and pipeline depth shrink as chunk size grows', () => {
+    const smallChunkCache = computeCacheSize(65536);
+    const largeChunkCache = computeCacheSize(32 * 1024 * 1024);
+    assert.ok(largeChunkCache < smallChunkCache);
+    assert.ok(largeChunkCache >= 8);
+
+    const smallChunkSwarmDepth = computeSwarmPipelineDepth(65536);
+    const largeChunkSwarmDepth = computeSwarmPipelineDepth(32 * 1024 * 1024);
+    assert.equal(smallChunkSwarmDepth, 16);
+    assert.ok(largeChunkSwarmDepth < smallChunkSwarmDepth);
+    assert.ok(largeChunkSwarmDepth >= 4);
+
+    const smallChunkSimpleDepth = computeSimplePipelineDepth(65536);
+    assert.equal(smallChunkSimpleDepth, 32);
+  });
+
+  it('indexFile picks the adaptive chunk size automatically when none is given', async () => {
+    const filePath = await makeTempFile(200 * 1024);
+    const { indexFile } = await import('../src/chunker.js');
+    const result = await indexFile(filePath);
+    assert.equal(result.chunkSize, 65536);
+    await unlink(filePath);
+  });
+
+  it('readChunk reads the correct byte range using a persistent file handle', async () => {
+    const filePath = await makeTempFile(200 * 1024);
+    const { readChunk } = await import('../src/chunker.js');
+    const { open } = await import('fs/promises');
+    const handle = await open(filePath, 'r');
+    const chunk0 = await readChunk(handle, 0, 65536);
+    const chunk1 = await readChunk(handle, 1, 65536);
+    assert.equal(chunk0.length, 65536);
+    assert.equal(chunk1.length, 65536);
+    assert.notDeepEqual(chunk0, chunk1);
+    await handle.close();
+    await unlink(filePath);
+  });
 it('merkle root changes when any chunk is modified', () => {
     const hashes = ['aa'.repeat(32), 'bb'.repeat(32), 'cc'.repeat(32), 'dd'.repeat(32)];
     const root1 = buildMerkleTree([...hashes]).root;
@@ -3378,7 +3484,7 @@ describe('swarm manager', () => {
     assert.equal(swarm.isComplete(), true);
   });
 
-  it('does not exceed pipeline size per peer', async () => {
+it('does not exceed pipeline size per peer', async () => {
     const { merkleRoot } = buildTestFile(100);
     const swarm = new SwarmManager(100, merkleRoot);
 
@@ -3391,7 +3497,15 @@ describe('swarm manager', () => {
 
     await new Promise(resolve => setTimeout(resolve, 20));
 
-    assert.ok(maxPending <= 16);
+    assert.ok(maxPending <= swarm.pipelineSize);
+  });
+
+  it('scales pipeline depth down for large chunk sizes', async () => {
+    const { merkleRoot } = buildTestFile(100);
+    const largeChunkSwarm = new SwarmManager(100, merkleRoot, 32 * 1024 * 1024);
+
+    assert.ok(largeChunkSwarm.pipelineSize < 16);
+    assert.ok(largeChunkSwarm.pipelineSize >= 4);
   });
 
   it('getProgress reports correct percentage', async () => {
@@ -6032,7 +6146,7 @@ Binary or non-UTF-8 file omitted from markdown snapshot (7062 bytes).
 
 ### test-out.txt
 
-Binary or non-UTF-8 file omitted from markdown snapshot (32030 bytes).
+Binary or non-UTF-8 file omitted from markdown snapshot (35322 bytes).
 
 ### web-test-out.txt
 

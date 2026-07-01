@@ -1,6 +1,7 @@
 import { EventEmitter } from 'events';
 import { createHash } from 'crypto';
 import { verifyChunk } from './crypto.js';
+import { computeSwarmPipelineDepth, DEFAULT_CHUNK_SIZE } from './chunker.js';
 
 export const PIPELINE_SIZE = 16;
 export const MAX_CONSECUTIVE_FAILURES = 5;
@@ -12,10 +13,12 @@ const CHUNK_STATE = {
 };
 
 export class SwarmManager extends EventEmitter {
-  constructor(totalChunks, merkleRoot) {
+  constructor(totalChunks, merkleRoot, chunkSize = DEFAULT_CHUNK_SIZE) {
     super();
     this.totalChunks   = totalChunks;
     this.merkleRoot    = merkleRoot;
+    this.chunkSize     = chunkSize;
+    this.pipelineSize  = computeSwarmPipelineDepth(chunkSize);
     this.chunkState    = new Array(totalChunks).fill(CHUNK_STATE.PENDING);
     this.chunkPeer     = new Array(totalChunks).fill(null);
     this.pendingQueue  = Array.from({ length: totalChunks }, (_, i) => i);
@@ -73,7 +76,7 @@ export class SwarmManager extends EventEmitter {
     const peer = this.peers.get(peerId);
     if (!peer || peer.failed || this.done) return;
 
-    while (peer.pending.size < PIPELINE_SIZE && this.queueHead < this.pendingQueue.length) {
+    while (peer.pending.size < this.pipelineSize && this.queueHead < this.pendingQueue.length) {
       const i = this.pendingQueue[this.queueHead++];
       if (this.chunkState[i] !== CHUNK_STATE.PENDING) continue;
 

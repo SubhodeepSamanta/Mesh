@@ -140,7 +140,7 @@ describe('swarm manager', () => {
     assert.equal(swarm.isComplete(), true);
   });
 
-  it('does not exceed pipeline size per peer', async () => {
+it('does not exceed pipeline size per peer', async () => {
     const { merkleRoot } = buildTestFile(100);
     const swarm = new SwarmManager(100, merkleRoot);
 
@@ -153,7 +153,15 @@ describe('swarm manager', () => {
 
     await new Promise(resolve => setTimeout(resolve, 20));
 
-    assert.ok(maxPending <= 16);
+    assert.ok(maxPending <= swarm.pipelineSize);
+  });
+
+  it('scales pipeline depth down for large chunk sizes', async () => {
+    const { merkleRoot } = buildTestFile(100);
+    const largeChunkSwarm = new SwarmManager(100, merkleRoot, 32 * 1024 * 1024);
+
+    assert.ok(largeChunkSwarm.pipelineSize < 16);
+    assert.ok(largeChunkSwarm.pipelineSize >= 4);
   });
 
   it('getProgress reports correct percentage', async () => {

@@ -4,7 +4,7 @@ import { writeFile, unlink } from 'fs/promises';
 import { randomBytes, createHash } from 'crypto';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { chunkFile, assembleChunks } from '../src/chunker.js';
+import { chunkFile, assembleChunks, computeChunkSize, computeCacheSize, computeSwarmPipelineDepth, computeSimplePipelineDepth } from '../src/chunker.js';
 import { sha256, buildMerkleTree, getMerkleProof, verifyChunk } from '../src/crypto.js';
 
 async function makeTempFile(size) {
@@ -33,7 +33,72 @@ describe('chunker', () => {
     assert.equal(totalChunks, Math.ceil(200 * 1024 / 65536));
     await unlink(filePath);
   });
+it('computeChunkSize keeps small files at the default chunk size', () => {
+    assert.equal(computeChunkSize(1024), 65536);
+    assert.equal(computeChunkSize(500 * 1024 * 1024), 65536);
+    assert.equal(computeChunkSize(3 * 1024 * 1024 * 1024), 65536);
+  });
 
+  it('computeChunkSize scales up for large files and stays under the protocol message ceiling', () => {
+    const size100GB = 100 * 1024 * 1024 * 1024;
+    const size1TB = 1024 * 1024 * 1024 * 1024;
+
+    const chunk100GB = computeChunkSize(size100GB);
+    const chunk1TB = computeChunkSize(size1TB);
+
+    assert.ok(chunk100GB > 65536);
+    assert.ok(chunk1TB >= chunk100GB);
+    assert.ok(chunk1TB <= 32 * 1024 * 1024);
+
+    const totalChunks100GB = Math.ceil(size100GB / chunk100GB);
+    const totalChunks1TB = Math.ceil(size1TB / chunk1TB);
+
+    assert.ok(totalChunks100GB < 100000);
+    assert.ok(totalChunks1TB < 100000);
+  });
+
+  it('computeChunkSize never exceeds MAX_CHUNK_SIZE even for extreme file sizes', () => {
+    const size10TB = 10 * 1024 * 1024 * 1024 * 1024;
+    assert.equal(computeChunkSize(size10TB), 32 * 1024 * 1024);
+  });
+
+  it('computeCacheSize and pipeline depth shrink as chunk size grows', () => {
+    const smallChunkCache = computeCacheSize(65536);
+    const largeChunkCache = computeCacheSize(32 * 1024 * 1024);
+    assert.ok(largeChunkCache < smallChunkCache);
+    assert.ok(largeChunkCache >= 8);
+
+    const smallChunkSwarmDepth = computeSwarmPipelineDepth(65536);
+    const largeChunkSwarmDepth = computeSwarmPipelineDepth(32 * 1024 * 1024);
+    assert.equal(smallChunkSwarmDepth, 16);
+    assert.ok(largeChunkSwarmDepth < smallChunkSwarmDepth);
+    assert.ok(largeChunkSwarmDepth >= 4);
+
+    const smallChunkSimpleDepth = computeSimplePipelineDepth(65536);
+    assert.equal(smallChunkSimpleDepth, 32);
+  });
+
+  it('indexFile picks the adaptive chunk size automatically when none is given', async () => {
+    const filePath = await makeTempFile(200 * 1024);
+    const { indexFile } = await import('../src/chunker.js');
+    const result = await indexFile(filePath);
+    assert.equal(result.chunkSize, 65536);
+    await unlink(filePath);
+  });
+
+  it('readChunk reads the correct byte range using a persistent file handle', async () => {
+    const filePath = await makeTempFile(200 * 1024);
+    const { readChunk } = await import('../src/chunker.js');
+    const { open } = await import('fs/promises');
+    const handle = await open(filePath, 'r');
+    const chunk0 = await readChunk(handle, 0, 65536);
+    const chunk1 = await readChunk(handle, 1, 65536);
+    assert.equal(chunk0.length, 65536);
+    assert.equal(chunk1.length, 65536);
+    assert.notDeepEqual(chunk0, chunk1);
+    await handle.close();
+    await unlink(filePath);
+  });
 it('merkle root changes when any chunk is modified', () => {
     const hashes = ['aa'.repeat(32), 'bb'.repeat(32), 'cc'.repeat(32), 'dd'.repeat(32)];
     const root1 = buildMerkleTree([...hashes]).root;

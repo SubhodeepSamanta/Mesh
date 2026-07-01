@@ -21,7 +21,7 @@ export async function downloadFile({ fileHash, fileSize, totalChunks, chunkSize,
 
   const peersToTry = peers.slice(0, MAX_CONCURRENT_CONNECTIONS);
 
-  const swarm = new SwarmManager(totalChunks, merkleRoot);
+  const swarm = new SwarmManager(totalChunks, merkleRoot, chunkSize);
   const connections = new Map();
   const connectionErrors = [];
   const fileHandle = await open(outputPath, 'w');
