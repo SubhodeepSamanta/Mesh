@@ -1,4 +1,4 @@
-﻿export const MSG_TYPE = {
+export const MSG_TYPE = {
   CREATE_ROOM:  'CREATE_ROOM',
   ROOM_CREATED: 'ROOM_CREATED',
   JOIN_ROOM:    'JOIN_ROOM',
@@ -30,11 +30,6 @@ export class SignalingClient extends EventTarget {
 
   addEventListener(type, handler) {
     super.addEventListener(type, handler);
-    if (type === 'relay' && this._relayBuffer.length > 0) {
-      for (const detail of this._relayBuffer) {
-        handler(new CustomEvent('relay', { detail }));
-      }
-    }
   }
 
   connect() {

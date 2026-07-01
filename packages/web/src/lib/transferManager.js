@@ -27,7 +27,7 @@ export const transferManager = {
       const { fromPeerId, payload } = event.detail
       if (payload.kind !== 'offer') return
       if (this.transports.has(fromPeerId)) return
-      onOffer(fromPeerId)
+      onOffer(fromPeerId, payload)
     }
     client.addEventListener('relay', this._relayHandler)
   },

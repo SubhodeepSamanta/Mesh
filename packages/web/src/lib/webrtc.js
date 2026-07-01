@@ -105,7 +105,7 @@ export class WebRTCTransport {
     }
   }
 
-  connect() {
+  connect(offerPayload) {
     return new Promise((resolve, reject) => {
       this._resolve = resolve;
       this._reject = reject;
@@ -123,6 +123,8 @@ export class WebRTCTransport {
           this.pc.setLocalDescription(offer);
           this.signalingClient.relay(this.remotePeerId, { kind: 'offer', sdp: offer.sdp });
         });
+      } else if (offerPayload) {
+        this._handleSignal({ fromPeerId: this.remotePeerId, payload: offerPayload }).catch(() => {});
       }
     });
   }

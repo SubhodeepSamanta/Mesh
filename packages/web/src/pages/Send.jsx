@@ -44,13 +44,13 @@ export default function Send() {
     useTransferStore.getState().setRoomCode(room.roomCode)
     addLine(`Room active: ${room.roomCode}`)
     startRef.current = Date.now()
-    M.startSeederListener(useSignalingStore.getState().client, (fromPeerId) => {
+    M.startSeederListener(useSignalingStore.getState().client, (fromPeerId, offerPayload) => {
       addLine(`Peer connected: ${fromPeerId.slice(0, 12)}...`)
       addLine('Establishing WebRTC data channel...')
       const c = useSignalingStore.getState().client
       if (!c) return
       const t = new WebRTCTransport(c, fromPeerId, { initiator: false })
-      t.connect().then(() => {
+      t.connect(offerPayload).then(() => {
         addLine('Channel open — encrypted')
         addLine('Sending file offer...')
         addSenderPeer(t, fileIdxRef.current)

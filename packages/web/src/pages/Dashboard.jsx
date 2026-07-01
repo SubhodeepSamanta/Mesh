@@ -76,10 +76,10 @@ export default function Dashboard() {
       fileName: fileMeta.fileName,
       fileSize: fileMeta.fileSize,
     }
-    M.startSeederListener(c, (fromPeerId) => {
+    M.startSeederListener(c, (fromPeerId, offerPayload) => {
       if (M.transports.has(fromPeerId)) return
       const t = new WebRTCTransport(c, fromPeerId, { initiator: false })
-      t.connect().then(() => addSenderPeer(t, idx)).catch(() => {})
+      t.connect(offerPayload).then(() => addSenderPeer(t, idx)).catch(() => {})
     })
     return () => M.stopSeederListener()
   }, [fileMeta, seeding, addSenderPeer])
