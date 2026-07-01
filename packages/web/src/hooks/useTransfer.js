@@ -50,7 +50,7 @@ function checkPeersRemaining(swarm) {
       const freshStats = swarm.getPeerStats()
       const freshAlive = freshStats.filter(p => !p.failed)
       if (freshAlive.length === 0) {
-        useTransferStore.getState().setError('All peers disconnected')
+        console.warn('All peers disconnected — waiting for reconnection...')
       }
     }, PEER_CHECK_GRACE_MS)
   }
