@@ -41,9 +41,11 @@ export class SignalingServer {
     this.wss          = null;
     this._httpServer  = null;
     this.rateLimits   = new Map();
-    this.roomTtlMs    = opts.roomTtlMs    ?? ROOM_TTL_MS;
-    this.maxCreates   = opts.maxCreates   ?? MAX_CREATES_PER_MIN;
-    this.maxJoins     = opts.maxJoins     ?? MAX_JOINS_PER_MIN;
+    this.roomTtlMs    = opts.roomTtlMs    ?? parseInt(process.env.ROOM_TTL_MS || '1800000', 10);
+    this.maxCreates   = opts.maxCreates   ?? parseInt(process.env.MAX_CREATES_PER_MIN || '10', 10);
+    this.maxJoins     = opts.maxJoins     ?? parseInt(process.env.MAX_JOINS_PER_MIN || '20', 10);
+    this.maxRelays    = opts.maxRelays    ?? parseInt(process.env.MAX_RELAY_PER_MIN || '300', 10);
+    this.maxRelayPayloadBytes = opts.maxRelayPayloadBytes ?? parseInt(process.env.MAX_RELAY_PAYLOAD_BYTES || '16384', 10);
     this.maxPeersPerRoom = opts.maxPeersPerRoom ?? parseInt(process.env.MAX_PEERS_PER_ROOM || '16', 10);
     this.maxRooms     = opts.maxRooms     ?? parseInt(process.env.MAX_ROOMS || '5000', 10);
     this.trustProxy   = opts.trustProxy   ?? (process.env.TRUST_PROXY === '1');
@@ -144,7 +146,7 @@ export class SignalingServer {
   _checkRateLimit(ip, action) {
     const key  = `${ip}:${action}`;
     const now  = Date.now();
-    const max  = action === 'create' ? this.maxCreates : (action === 'join' ? this.maxJoins : MAX_RELAY_PER_MIN);
+    const max  = action === 'create' ? this.maxCreates : (action === 'join' ? this.maxJoins : this.maxRelays);
     const list = this.rateLimits.get(key) || [];
 
     const recent = list.filter(t => now - t < RATE_WINDOW_MS);
@@ -303,7 +305,7 @@ export class SignalingServer {
     }
 
     const payloadStr = JSON.stringify(msg.payload);
-    if (payloadStr.length > MAX_RELAY_PAYLOAD_BYTES) {
+    if (payloadStr.length > this.maxRelayPayloadBytes) {
       this._send(ws, { type: MSG_TYPE.ERROR, message: 'Relay payload too large' });
       return;
     }
@@ -346,7 +348,7 @@ export class SignalingServer {
   }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const PORT = process.env.PORT || 8080;
   const server = new SignalingServer();
   server.listen(PORT).then((addr) => {
