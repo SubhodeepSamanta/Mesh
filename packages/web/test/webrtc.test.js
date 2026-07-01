@@ -1,4 +1,4 @@
-﻿import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { WebRTCTransport, CONNECT_TIMEOUT_MS } from '../src/lib/webrtc.js';
 import { buildJSONBody, parseMessage } from '../src/webrtc/protocol.js';
 
@@ -41,6 +41,7 @@ class FakeRTCPeerConnection extends EventTarget {
   constructor() {
     super();
     this.connectionState = 'new';
+    this.signalingState = 'stable';
     this.channel = null;
     this.localDescription = null;
     this.remoteDescription = null;
@@ -66,11 +67,21 @@ class FakeRTCPeerConnection extends EventTarget {
 
   setLocalDescription(desc) {
     this.localDescription = desc;
+    if (desc && desc.type === 'offer') {
+      this.signalingState = 'have-local-offer';
+    } else if (desc && desc.type === 'answer') {
+      this.signalingState = 'stable';
+    }
     return Promise.resolve();
   }
 
   setRemoteDescription(desc) {
     this.remoteDescription = desc;
+    if (desc && desc.type === 'offer') {
+      this.signalingState = 'have-remote-offer';
+    } else if (desc && desc.type === 'answer') {
+      this.signalingState = 'stable';
+    }
     return Promise.resolve();
   }
 

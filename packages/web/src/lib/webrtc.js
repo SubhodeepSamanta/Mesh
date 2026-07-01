@@ -78,15 +78,17 @@ export class WebRTCTransport {
     if (detail.fromPeerId !== this.remotePeerId || this._closed) return;
     const p = detail.payload;
     if (p.kind === 'offer') {
-      await this.pc.setRemoteDescription({ type: 'offer', sdp: p.sdp });
+      if (this._remoteDescSet || this.pc.signalingState !== 'stable') return;
       this._remoteDescSet = true;
+      await this.pc.setRemoteDescription({ type: 'offer', sdp: p.sdp });
       await this._flushIce();
       const answer = await this.pc.createAnswer();
       await this.pc.setLocalDescription(answer);
       this.signalingClient.relay(this.remotePeerId, { kind: 'answer', sdp: answer.sdp });
     } else if (p.kind === 'answer') {
-      await this.pc.setRemoteDescription({ type: 'answer', sdp: p.sdp });
+      if (this._remoteDescSet || this.pc.signalingState !== 'have-local-offer') return;
       this._remoteDescSet = true;
+      await this.pc.setRemoteDescription({ type: 'answer', sdp: p.sdp });
       await this._flushIce();
     } else if (p.kind === 'ice-candidate') {
       if (this._remoteDescSet) {
