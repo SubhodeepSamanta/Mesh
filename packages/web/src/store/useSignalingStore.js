@@ -12,29 +12,25 @@ export const useSignalingStore = create((set, get) => ({
   error: null,
 
   connect: async () => {
-    if (get().client) return get().client
+    const { client } = get()
+    if (client) return client
     set({ status: 'connecting', error: null })
-    const client = new SignalingClient(SIGNALING_URL)
-
-    client.addEventListener('peerJoined', (e) => {
-      set((state) => ({ peers: [...state.peers, e.detail.peerId] }))
-    })
-    client.addEventListener('peerLeft', (e) => {
-      set((state) => ({ peers: state.peers.filter((id) => id !== e.detail.peerId) }))
-    })
-    client.addEventListener('signalingError', (e) => {
-      set({ error: e.detail.message })
-    })
-    client.addEventListener('close', () => {
-      set({ status: 'idle' })
-    })
-
     try {
-      await client.connect()
-      set({ client, status: 'connected' })
-      return client
+      const c = new SignalingClient(SIGNALING_URL)
+      c.addEventListener('peerJoined', (e) => {
+        set((s) => ({ peers: [...s.peers, e.detail.peerId] }))
+      })
+      c.addEventListener('peerLeft', (e) => {
+        set((s) => ({ peers: s.peers.filter((p) => p !== e.detail.peerId) }))
+      })
+      c.addEventListener('close', () => {
+        set({ client: null, status: 'idle', roomCode: null, peerId: null, peers: [] })
+      })
+      await c.connect()
+      set({ client: c, status: 'connected' })
+      return c
     } catch (err) {
-      set({ status: 'error', error: err.message })
+      set({ status: 'error', error: err.message || 'Connection failed' })
       throw err
     }
   },
@@ -49,13 +45,17 @@ export const useSignalingStore = create((set, get) => ({
   joinRoom: async (roomCode, password) => {
     const client = await get().connect()
     const result = await client.joinRoom(roomCode, password)
-    set({ roomCode: result.roomCode, peerId: result.peerId, peers: result.existingPeers })
+    set({ roomCode, peerId: result.peerId, peers: result.existingPeers || [] })
     return result
   },
 
   disconnect: () => {
-    const client = get().client
+    const { client } = get()
     if (client) client.close()
     set({ client: null, status: 'idle', roomCode: null, peerId: null, peers: [], error: null })
+  },
+
+  reset: () => {
+    set({ status: 'idle', roomCode: null, peerId: null, peers: [], error: null })
   },
 }))

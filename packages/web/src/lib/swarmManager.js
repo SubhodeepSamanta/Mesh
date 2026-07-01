@@ -1,0 +1,196 @@
+import { sha256Hex, verifyChunk } from './browserCrypto.js';
+
+export const MAX_CONSECUTIVE_FAILURES = 5;
+
+const P = 'pending';
+const R = 'requested';
+const V = 'verified';
+const COMPACT_THRESHOLD = 1000;
+
+export class SwarmManager extends EventTarget {
+  constructor(totalChunks, merkleRoot, chunkSize, alreadyVerified = []) {
+    super();
+    this.totalChunks = totalChunks;
+    this.merkleRoot = merkleRoot;
+    this.chunkSize = chunkSize;
+    this.pipelineSize = 4;
+    this.chunkState = new Array(totalChunks).fill(P);
+    this.chunkPeer = new Array(totalChunks).fill(null);
+    this.verifiedCount = 0;
+    this.peers = new Map();
+    this.done = false;
+    this.aborted = false;
+
+    const vs = new Set(alreadyVerified);
+    for (const idx of vs) {
+      if (idx >= 0 && idx < totalChunks && this.chunkState[idx] !== V) {
+        this.chunkState[idx] = V;
+        this.verifiedCount++;
+      }
+    }
+
+    this.pendingQueue = [];
+    for (let i = 0; i < totalChunks; i++) {
+      if (this.chunkState[i] !== V) this.pendingQueue.push(i);
+    }
+    this.queueHead = 0;
+
+    if (totalChunks > 0 && this.verifiedCount === totalChunks) {
+      this.done = true;
+    }
+  }
+
+  addPeer(peerId, requestChunkFn) {
+    this.peers.set(peerId, {
+      id: peerId,
+      requestChunk: requestChunkFn,
+      pending: new Set(),
+      failed: false,
+      consecutiveFailures: 0,
+      chunksServed: 0,
+    });
+    this._fillPipeline(peerId);
+  }
+
+  removePeer(peerId) {
+    const peer = this.peers.get(peerId);
+    if (!peer) return;
+    for (const ci of peer.pending) {
+      if (this.chunkState[ci] === R) this._requeueChunk(ci);
+    }
+    this.peers.delete(peerId);
+    this.dispatchEvent(new CustomEvent('peerRemoved', { detail: peerId }));
+    for (const id of this.peers.keys()) this._fillPipeline(id);
+  }
+
+  abort() {
+    this.aborted = true;
+  }
+
+  _markPeerFailed(peerId) {
+    const peer = this.peers.get(peerId);
+    if (!peer || peer.failed) return;
+    peer.failed = true;
+    this.removePeer(peerId);
+    this.dispatchEvent(new CustomEvent('peerFailed', { detail: { peerId, reason: 'too_many_consecutive_failures' } }));
+  }
+
+  _requeueChunk(idx) {
+    this.chunkState[idx] = P;
+    this.chunkPeer[idx] = null;
+    this.pendingQueue.push(idx);
+  }
+
+  _compactQueue() {
+    if (this.queueHead > COMPACT_THRESHOLD && this.queueHead > this.pendingQueue.length / 2) {
+      this.pendingQueue = this.pendingQueue.slice(this.queueHead);
+      this.queueHead = 0;
+    }
+  }
+
+  _fillPipeline(peerId) {
+    const peer = this.peers.get(peerId);
+    if (!peer || peer.failed || this.done || this.aborted) return;
+    while (peer.pending.size < this.pipelineSize && this.queueHead < this.pendingQueue.length) {
+      const i = this.pendingQueue[this.queueHead++];
+      if (this.chunkState[i] !== P) continue;
+      this.chunkState[i] = R;
+      this.chunkPeer[i] = peerId;
+      peer.pending.add(i);
+      const p = peer.requestChunk(i)
+      if (p && typeof p.catch === 'function') p.catch(() => this._handleChunkFailure(peerId, i))
+    }
+    this._compactQueue();
+  }
+
+  _handleChunkFailure(peerId, ci) {
+    const peer = this.peers.get(peerId);
+    if (peer) {
+      peer.pending.delete(ci);
+      peer.consecutiveFailures++;
+    }
+    if (this.chunkState[ci] === R) this._requeueChunk(ci);
+    if (peer && peer.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+      this._markPeerFailed(peerId);
+      return;
+    }
+    if (peer) this._fillPipeline(peerId);
+  }
+
+  async onChunkReceived(peerId, ci, data, expectedHash, proof) {
+    const peer = this.peers.get(peerId);
+    if (!peer) return false;
+    peer.pending.delete(ci);
+    if (this.chunkState[ci] === V) {
+      this._fillPipeline(peerId);
+      return true;
+    }
+    const actualHash = await sha256Hex(data);
+    if (actualHash !== expectedHash) {
+      peer.consecutiveFailures++;
+      this.dispatchEvent(new CustomEvent('chunkFailed', { detail: { peerId, chunkIndex: ci, reason: 'hash_mismatch' } }));
+      this._requeueChunk(ci);
+      if (peer.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        this._markPeerFailed(peerId);
+      } else {
+        this._fillPipeline(peerId);
+      }
+      return false;
+    }
+    if (proof && !(await verifyChunk(data, proof, this.merkleRoot))) {
+      peer.consecutiveFailures++;
+      this.dispatchEvent(new CustomEvent('chunkFailed', { detail: { peerId, chunkIndex: ci, reason: 'proof_invalid' } }));
+      this._requeueChunk(ci);
+      if (peer.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        this._markPeerFailed(peerId);
+      } else {
+        this._fillPipeline(peerId);
+      }
+      return false;
+    }
+    peer.consecutiveFailures = 0;
+    this.chunkState[ci] = V;
+    this.verifiedCount++;
+    peer.chunksServed++;
+    this.dispatchEvent(new CustomEvent('chunkVerified', {
+      detail: { peerId, chunkIndex: ci, chunkData: data, total: this.totalChunks, verified: this.verifiedCount }
+    }));
+    if (this.verifiedCount === this.totalChunks) {
+      this.done = true;
+      this.dispatchEvent(new CustomEvent('complete'));
+    } else {
+      this._fillPipeline(peerId);
+    }
+    return true;
+  }
+
+  progress() {
+    return {
+      verified: this.verifiedCount,
+      total: this.totalChunks,
+      percent: this.totalChunks > 0 ? (this.verifiedCount / this.totalChunks) * 100 : 100,
+    };
+  }
+
+  getVerifiedChunkIndices() {
+    const out = [];
+    for (let i = 0; i < this.totalChunks; i++) {
+      if (this.chunkState[i] === V) out.push(i);
+    }
+    return out;
+  }
+
+  getPeerStats() {
+    return [...this.peers.values()].map(p => ({
+      id: p.id,
+      pending: p.pending.size,
+      chunksServed: p.chunksServed,
+      failed: p.failed,
+      consecutiveFailures: p.consecutiveFailures,
+    }));
+  }
+
+  isComplete() {
+    return this.done;
+  }
+}

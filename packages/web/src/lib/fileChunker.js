@@ -12,35 +12,68 @@ export function computeChunkSize(fileSize) {
   return size
 }
 
-export async function indexFile(file) {
-  const chunkSize = computeChunkSize(file.size)
-  const totalChunks = file.size === 0 ? 0 : Math.ceil(file.size / chunkSize)
-  const hashes = []
+export async function indexFiles(files) {
+  const totalSize = files.reduce((s, f) => s + f.size, 0)
+  const chunkSize = computeChunkSize(totalSize)
+  const allHashes = []
+  const fileEntries = []
+  let globalIdx = 0
 
-  for (let i = 0; i < totalChunks; i++) {
-    const start = i * chunkSize
-    const end = Math.min(start + chunkSize, file.size)
-    const buf = await file.slice(start, end).arrayBuffer()
-    hashes.push(await sha256Hex(buf))
+  for (const file of files) {
+    const fileChunks = file.size === 0 ? 0 : Math.ceil(file.size / chunkSize)
+    const hashes = []
+    for (let i = 0; i < fileChunks; i++) {
+      const start = i * chunkSize
+      const end = Math.min(start + chunkSize, file.size)
+      const buf = await file.slice(start, end).arrayBuffer()
+      hashes.push(await sha256Hex(buf))
+    }
+    fileEntries.push({
+      path: file.relativePath || file.webkitRelativePath || file.name,
+      name: file.name,
+      size: file.size,
+      startChunk: globalIdx,
+      chunkCount: fileChunks,
+    })
+    allHashes.push(...hashes)
+    globalIdx += fileChunks
   }
 
-  const tree = totalChunks > 0
-    ? await buildMerkleTree(hashes)
+  const tree = allHashes.length > 0
+    ? await buildMerkleTree(allHashes)
     : { root: await sha256Hex(new ArrayBuffer(0)), levels: [] }
 
+  const rootName = files.length === 1
+    ? files[0].name
+    : (files[0].webkitRelativePath?.split('/')[0] || files[0].relativePath?.split('/')[0] || 'folder')
+
   return {
-    fileName: file.name,
-    fileSize: file.size,
+    fileName: rootName,
+    fileSize: totalSize,
     chunkSize,
-    totalChunks,
-    hashes,
+    totalChunks: allHashes.length,
+    hashes: allHashes,
     tree,
     merkleRoot: tree.root,
+    files: fileEntries,
   }
+}
+
+export async function indexFile(file) {
+  return indexFiles([file])
 }
 
 export async function readChunk(file, index, chunkSize) {
   const start = index * chunkSize
   const end = Math.min(start + chunkSize, file.size)
   return file.slice(start, end).arrayBuffer()
+}
+
+export function getFileForChunk(fileEntries, globalIndex) {
+  for (const entry of fileEntries) {
+    if (globalIndex >= entry.startChunk && globalIndex < entry.startChunk + entry.chunkCount) {
+      return { fileEntry: entry, localIndex: globalIndex - entry.startChunk }
+    }
+  }
+  return null
 }
