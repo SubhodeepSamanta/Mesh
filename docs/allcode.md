@@ -29,6 +29,7 @@ Excluded: node_modules, .git, package-lock.json, .env
 - packages/engine/src/index.js
 - packages/engine/src/peer.js
 - packages/engine/src/protocol.js
+- packages/engine/src/resume.js
 - packages/engine/src/swarm.js
 - packages/engine/src/transfer.js
 - packages/engine/test/chunker.test.js
@@ -39,6 +40,7 @@ Excluded: node_modules, .git, package-lock.json, .env
 - packages/engine/test/integration.test.js
 - packages/engine/test/peer.test.js
 - packages/engine/test/protocol.test.js
+- packages/engine/test/resume.test.js
 - packages/engine/test/swarm.test.js
 - packages/engine/test/transfer.test.js
 - packages/signaling/Dockerfile
@@ -674,7 +676,7 @@ export function TransferTUI() { return null; }
   "main": "src/index.js",
   "type": "module",
   "scripts": {
-    "test": "node --test test/protocol.test.js test/chunker.test.js test/crypto.test.js test/transfer.test.js test/dht.test.js test/dhtnode.test.js test/dhtfiles.test.js test/swarm.test.js test/peer.test.js test/integration.test.js"
+"test": "node --test test/protocol.test.js test/chunker.test.js test/crypto.test.js test/transfer.test.js test/dht.test.js test/dhtnode.test.js test/dhtfiles.test.js test/swarm.test.js test/peer.test.js test/integration.test.js test/resume.test.js"
   },
   "license": "ISC"
 }
@@ -911,12 +913,15 @@ import { getMerkleProof } from './src/crypto.js';
 import { sendJSON, sendChunk, createFramer, parseMessage, MSG, TYPE } from './src/protocol.js';
 import { indexFile, readChunk, computeCacheSize } from './src/chunker.js';
 import { generateKeyPair, exportPublicKey, deriveSharedKey, encrypt } from './src/crypto.js';
+import { DHTNode } from './src/dht.js';
 
-const FILE_PATH = resolve(process.argv[2]);
-const PORT      = parseInt(process.argv[3] || '9000');
+const FILE_PATH       = resolve(process.argv[2]);
+const PORT             = parseInt(process.argv[3] || '9000');
+const BOOTSTRAP_HOST   = process.argv[4] || null;
+const BOOTSTRAP_PORT   = process.argv[5] ? parseInt(process.argv[5]) : null;
 
 if (!process.argv[2]) {
-  console.error('Usage: node sender.js <filepath> [port]');
+  console.error('Usage: node sender.js <filepath> [port] [bootstrapHost] [bootstrapPort]');
   process.exit(1);
 }
 
@@ -939,6 +944,17 @@ async function main() {
     }
     chunkCache.set(index, data);
     return data;
+  }
+
+  const dhtNode = new DHTNode();
+  await dhtNode.listen();
+  if (BOOTSTRAP_HOST && BOOTSTRAP_PORT) {
+    try {
+      await dhtNode.bootstrap(BOOTSTRAP_HOST, BOOTSTRAP_PORT);
+      console.log(`Bootstrapped into DHT via ${BOOTSTRAP_HOST}:${BOOTSTRAP_PORT}`);
+    } catch (e) {
+      console.warn(`DHT bootstrap failed: ${e.message}`);
+    }
   }
 
   const server = net.createServer((socket) => {
@@ -1017,14 +1033,25 @@ async function main() {
     });
   });
 
-  server.listen(PORT, '127.0.0.1', () => {
+  server.listen(PORT, '127.0.0.1', async () => {
     console.log(`Sender listening on 127.0.0.1:${PORT}`);
     console.log(`Run receiver: node packages/engine/receiver.js 127.0.0.1 ${PORT} ./received`);
+    try {
+      await dhtNode.announceFile(merkleRoot, PORT);
+      console.log(`Announced to DHT. File id: ${merkleRoot}`);
+    } catch (e) {
+      console.warn(`DHT announce failed: ${e.message}`);
+    }
   });
 
   server.on('error', (e) => {
     console.error('Server error:', e.message);
     process.exit(1);
+  });
+
+  process.on('SIGINT', async () => {
+    await dhtNode.close();
+    process.exit(0);
   });
 }
 
@@ -1649,6 +1676,7 @@ export * from './dht.js';
 export * from './swarm.js';
 export * from './peer.js';
 export * from './transfer.js';
+export * from './resume.js';
 ```
 
 ### packages/engine/src/peer.js
@@ -1660,6 +1688,7 @@ import { generateKeyPair, exportPublicKey, deriveSharedKey, encrypt, decrypt } f
 
 export const PEER_TIMEOUT_MS = 30000;
 export const HANDSHAKE_TIMEOUT_MS = 5000;
+export const METADATA_TIMEOUT_MS = 10000;
 
 export class PeerConnection {
   constructor(addr, port) {
@@ -1672,6 +1701,7 @@ export class PeerConnection {
     this.sharedKey = null;
     this._handshakeResolve = null;
     this._handshakeReject = null;
+    this._metadataWaiters = [];
   }
 
   connect() {
@@ -1699,6 +1729,10 @@ export class PeerConnection {
           rej(new Error('Connection closed'));
         }
         this.pendingRequests.clear();
+        for (const { reject: rej } of this._metadataWaiters) {
+          rej(new Error('Connection closed'));
+        }
+        this._metadataWaiters = [];
       });
     });
   }
@@ -1714,6 +1748,21 @@ export class PeerConnection {
 
       const myPublicKey = exportPublicKey(this.keyPair).toString('base64');
       sendJSON(this.socket, { type: MSG.KEY_EXCHANGE, publicKey: myPublicKey }).catch(reject);
+    });
+  }
+
+  waitForMetadata(timeoutMs = METADATA_TIMEOUT_MS) {
+    if (this.metadata) return Promise.resolve(this.metadata);
+    return new Promise((resolve, reject) => {
+      const entry = { resolve: null, reject: null };
+      const timeout = setTimeout(() => {
+        const idx = this._metadataWaiters.indexOf(entry);
+        if (idx !== -1) this._metadataWaiters.splice(idx, 1);
+        reject(new Error('Timed out waiting for file metadata'));
+      }, timeoutMs);
+      entry.resolve = (data) => { clearTimeout(timeout); resolve(data); };
+      entry.reject = (e) => { clearTimeout(timeout); reject(e); };
+      this._metadataWaiters.push(entry);
     });
   }
 
@@ -1733,6 +1782,9 @@ export class PeerConnection {
 
     if (msg.type === TYPE.JSON && msg.data.type === MSG.FILE_OFFER) {
       this.metadata = msg.data;
+      const waiters = this._metadataWaiters;
+      this._metadataWaiters = [];
+      for (const { resolve } of waiters) resolve(msg.data);
       return;
     }
 
@@ -1869,6 +1921,54 @@ export function parseMessage(body) {
 }
 ```
 
+### packages/engine/src/resume.js
+
+```text
+import { readFile, writeFile, rename, unlink } from 'fs/promises';
+
+export const RESUME_STATE_VERSION = 1;
+
+export function stateFilePath(outputPath) {
+  return `${outputPath}.meshstate`;
+}
+
+export async function loadResumeState(outputPath) {
+  const statePath = stateFilePath(outputPath);
+  try {
+    const raw = await readFile(statePath, 'utf8');
+    const state = JSON.parse(raw);
+    if (state.version !== RESUME_STATE_VERSION) return null;
+    return state;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveResumeState(outputPath, state) {
+  const statePath = stateFilePath(outputPath);
+  const tmpPath = `${statePath}.tmp`;
+  const payload = JSON.stringify({ version: RESUME_STATE_VERSION, ...state });
+  await writeFile(tmpPath, payload, 'utf8');
+  await rename(tmpPath, statePath);
+}
+
+export async function deleteResumeState(outputPath) {
+  const statePath = stateFilePath(outputPath);
+  await unlink(statePath).catch(() => {});
+}
+
+export function resumeStateMatches(state, { fileHash, totalChunks, chunkSize, merkleRoot, fileSize }) {
+  if (!state) return false;
+  return (
+    state.fileHash === fileHash &&
+    state.totalChunks === totalChunks &&
+    state.chunkSize === chunkSize &&
+    state.merkleRoot === merkleRoot &&
+    state.fileSize === fileSize
+  );
+}
+```
+
 ### packages/engine/src/swarm.js
 
 ```text
@@ -1877,7 +1977,6 @@ import { createHash } from 'crypto';
 import { verifyChunk } from './crypto.js';
 import { computeSwarmPipelineDepth, DEFAULT_CHUNK_SIZE } from './chunker.js';
 
-export const PIPELINE_SIZE = 16;
 export const MAX_CONSECUTIVE_FAILURES = 5;
 
 const CHUNK_STATE = {
@@ -1886,8 +1985,10 @@ const CHUNK_STATE = {
   VERIFIED:  'verified',
 };
 
+const QUEUE_COMPACT_THRESHOLD = 1000;
+
 export class SwarmManager extends EventEmitter {
-  constructor(totalChunks, merkleRoot, chunkSize = DEFAULT_CHUNK_SIZE) {
+  constructor(totalChunks, merkleRoot, chunkSize = DEFAULT_CHUNK_SIZE, alreadyVerified = []) {
     super();
     this.totalChunks   = totalChunks;
     this.merkleRoot    = merkleRoot;
@@ -1895,11 +1996,28 @@ export class SwarmManager extends EventEmitter {
     this.pipelineSize  = computeSwarmPipelineDepth(chunkSize);
     this.chunkState    = new Array(totalChunks).fill(CHUNK_STATE.PENDING);
     this.chunkPeer     = new Array(totalChunks).fill(null);
-    this.pendingQueue  = Array.from({ length: totalChunks }, (_, i) => i);
-    this.queueHead     = 0;
     this.verifiedCount = 0;
     this.peers         = new Map();
     this.done          = false;
+    this.aborted       = false;
+
+    const verifiedSet = new Set(alreadyVerified);
+    for (const idx of verifiedSet) {
+      if (idx >= 0 && idx < totalChunks && this.chunkState[idx] !== CHUNK_STATE.VERIFIED) {
+        this.chunkState[idx] = CHUNK_STATE.VERIFIED;
+        this.verifiedCount++;
+      }
+    }
+
+    this.pendingQueue = [];
+    for (let i = 0; i < totalChunks; i++) {
+      if (this.chunkState[i] !== CHUNK_STATE.VERIFIED) this.pendingQueue.push(i);
+    }
+    this.queueHead = 0;
+
+    if (totalChunks > 0 && this.verifiedCount === totalChunks) {
+      this.done = true;
+    }
   }
 
   addPeer(peerId, requestChunkFn) {
@@ -1932,6 +2050,10 @@ export class SwarmManager extends EventEmitter {
     }
   }
 
+  abort() {
+    this.aborted = true;
+  }
+
   _markPeerFailed(peerId) {
     const peer = this.peers.get(peerId);
     if (!peer || peer.failed) return;
@@ -1946,9 +2068,16 @@ export class SwarmManager extends EventEmitter {
     this.pendingQueue.push(chunkIndex);
   }
 
+  _compactQueue() {
+    if (this.queueHead > QUEUE_COMPACT_THRESHOLD && this.queueHead > this.pendingQueue.length / 2) {
+      this.pendingQueue = this.pendingQueue.slice(this.queueHead);
+      this.queueHead = 0;
+    }
+  }
+
   _fillPipeline(peerId) {
     const peer = this.peers.get(peerId);
-    if (!peer || peer.failed || this.done) return;
+    if (!peer || peer.failed || this.done || this.aborted) return;
 
     while (peer.pending.size < this.pipelineSize && this.queueHead < this.pendingQueue.length) {
       const i = this.pendingQueue[this.queueHead++];
@@ -1962,6 +2091,8 @@ export class SwarmManager extends EventEmitter {
         this._handleChunkFailure(peerId, i);
       });
     }
+
+    this._compactQueue();
   }
 
   _handleChunkFailure(peerId, chunkIndex) {
@@ -2042,6 +2173,14 @@ export class SwarmManager extends EventEmitter {
     return true;
   }
 
+  getVerifiedChunkIndices() {
+    const out = [];
+    for (let i = 0; i < this.totalChunks; i++) {
+      if (this.chunkState[i] === CHUNK_STATE.VERIFIED) out.push(i);
+    }
+    return out;
+  }
+
   getProgress() {
     return {
       verified: this.verifiedCount,
@@ -2069,19 +2208,32 @@ export class SwarmManager extends EventEmitter {
 ### packages/engine/src/transfer.js
 
 ```text
-import { open, unlink } from 'fs/promises';
+import { open } from 'fs/promises';
 import { DHTNode } from './dht.js';
 import { SwarmManager } from './swarm.js';
 import { PeerConnection } from './peer.js';
+import { loadResumeState, saveResumeState, deleteResumeState, resumeStateMatches } from './resume.js';
 
 export const TRANSFER_VERSION = '1.0.0';
 export const MAX_CONCURRENT_CONNECTIONS = 30;
+export const CHECKPOINT_INTERVAL_MS = 2000;
 
-export async function downloadFile({ fileHash, fileSize, totalChunks, chunkSize, merkleRoot, outputPath, dhtNode }) {
+export async function downloadFile({ fileHash, fileSize, totalChunks, chunkSize, merkleRoot, outputPath, dhtNode, signal }) {
   if (totalChunks === 0) {
     const emptyHandle = await open(outputPath, 'w');
     await emptyHandle.close();
-    return { outputPath, fileSize: 0, totalChunks: 0 };
+    return { outputPath, fileSize: 0, totalChunks: 0, status: 'complete' };
+  }
+
+  const existingState = await loadResumeState(outputPath);
+  const canResume = resumeStateMatches(existingState, { fileHash, totalChunks, chunkSize, merkleRoot, fileSize });
+  const alreadyVerified = canResume ? existingState.completedChunks : [];
+
+  const swarm = new SwarmManager(totalChunks, merkleRoot, chunkSize, alreadyVerified);
+
+  if (swarm.isComplete()) {
+    await deleteResumeState(outputPath);
+    return { outputPath, fileSize, totalChunks, status: 'complete' };
   }
 
   const peers = await dhtNode.getPeersForFile(fileHash);
@@ -2091,15 +2243,29 @@ export async function downloadFile({ fileHash, fileSize, totalChunks, chunkSize,
   }
 
   const peersToTry = peers.slice(0, MAX_CONCURRENT_CONNECTIONS);
-
-  const swarm = new SwarmManager(totalChunks, merkleRoot, chunkSize);
   const connections = new Map();
   const connectionErrors = [];
-  const fileHandle = await open(outputPath, 'w');
-  let succeeded = false;
+  const fileHandle = await open(outputPath, canResume ? 'r+' : 'w');
+
+  let checkpointTimer = null;
+  const checkpoint = async () => {
+    await saveResumeState(outputPath, {
+      fileHash, fileSize, totalChunks, chunkSize, merkleRoot,
+      completedChunks: swarm.getVerifiedChunkIndices(),
+    }).catch(() => {});
+  };
+  const scheduleCheckpoint = () => {
+    if (checkpointTimer) return;
+    checkpointTimer = setTimeout(async () => {
+      checkpointTimer = null;
+      await checkpoint();
+    }, CHECKPOINT_INTERVAL_MS);
+  };
 
   try {
-    await fileHandle.truncate(fileSize);
+    if (!canResume) {
+      await fileHandle.truncate(fileSize);
+    }
 
     const connectionAttempts = await Promise.allSettled(
       peersToTry.map(async (peerInfo) => {
@@ -2127,6 +2293,7 @@ export async function downloadFile({ fileHash, fileSize, totalChunks, chunkSize,
             await fileHandle.write(
               chunkMsg.chunkData, 0, chunkMsg.chunkData.length, chunkIndex * chunkSize
             );
+            scheduleCheckpoint();
           }
         });
       } else {
@@ -2143,6 +2310,8 @@ export async function downloadFile({ fileHash, fileSize, totalChunks, chunkSize,
       swarm.emit('connectionWarnings', connectionErrors);
     }
 
+    let onAbort = null;
+
     await new Promise((resolve, reject) => {
       swarm.on('complete', resolve);
       swarm.on('peerFailed', () => {
@@ -2150,20 +2319,74 @@ export async function downloadFile({ fileHash, fileSize, totalChunks, chunkSize,
           reject(new Error('All peers failed'));
         }
       });
+      if (signal) {
+        onAbort = () => { swarm.abort(); resolve(); };
+        if (signal.aborted) onAbort();
+        else signal.addEventListener('abort', onAbort, { once: true });
+      }
     });
 
-    succeeded = true;
-    return { outputPath, fileSize, totalChunks };
+    if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+
+    if (signal && signal.aborted) {
+      await checkpoint();
+      return { outputPath, fileSize, totalChunks, status: 'paused', verifiedChunks: swarm.verifiedCount };
+    }
+
+    await deleteResumeState(outputPath);
+    return { outputPath, fileSize, totalChunks, status: 'complete' };
+  } catch (err) {
+    await checkpoint();
+    throw err;
   } finally {
+    if (checkpointTimer) clearTimeout(checkpointTimer);
     for (const conn of connections.values()) conn.close();
     await fileHandle.close().catch(() => {});
-    if (!succeeded) {
-      await unlink(outputPath).catch(() => {});
-    }
   }
 }
 
-export async function startDownloadSession({ fileHash, fileSize, totalChunks, chunkSize, merkleRoot, outputPath, bootstrapAddr, bootstrapPort }) {
+export async function downloadFileByHash({ fileHash, outputPath, dhtNode, signal }) {
+  const peers = await dhtNode.getPeersForFile(fileHash);
+  if (peers.length === 0) {
+    throw new Error('No peers found for this file');
+  }
+
+  let manifest = null;
+  const manifestErrors = [];
+
+  for (const peerInfo of peers) {
+    let conn = null;
+    try {
+      conn = new PeerConnection(peerInfo.addr, peerInfo.port);
+      await conn.connect();
+      manifest = await conn.waitForMetadata();
+      conn.close();
+      break;
+    } catch (e) {
+      manifestErrors.push(`${peerInfo.addr}:${peerInfo.port}: ${e.message}`);
+      if (conn) conn.close();
+    }
+  }
+
+  if (!manifest) {
+    throw new Error(`Could not retrieve file metadata from any peer. ${manifestErrors.join('; ')}`);
+  }
+
+  const resolvedOutputPath = outputPath || manifest.fileName;
+
+  return downloadFile({
+    fileHash,
+    fileSize: manifest.fileSize,
+    totalChunks: manifest.totalChunks,
+    chunkSize: manifest.chunkSize,
+    merkleRoot: manifest.merkleRoot,
+    outputPath: resolvedOutputPath,
+    dhtNode,
+    signal,
+  });
+}
+
+export async function startDownloadSession({ fileHash, fileSize, totalChunks, chunkSize, merkleRoot, outputPath, bootstrapAddr, bootstrapPort, signal }) {
   const dhtNode = new DHTNode();
   await dhtNode.listen();
 
@@ -2172,7 +2395,7 @@ export async function startDownloadSession({ fileHash, fileSize, totalChunks, ch
   }
 
   try {
-    return await downloadFile({ fileHash, fileSize, totalChunks, chunkSize, merkleRoot, outputPath, dhtNode });
+    return await downloadFile({ fileHash, fileSize, totalChunks, chunkSize, merkleRoot, outputPath, dhtNode, signal });
   } finally {
     await dhtNode.close();
   }
@@ -2897,7 +3120,7 @@ import { join } from 'path';
 import { DHTNode } from '../src/dht.js';
 import { buildMerkleTree, getMerkleProof, sha256, generateKeyPair, exportPublicKey, deriveSharedKey, encrypt } from '../src/crypto.js';
 import { sendJSON, sendChunk, createFramer, parseMessage, MSG, TYPE } from '../src/protocol.js';
-import { downloadFile, MAX_CONCURRENT_CONNECTIONS } from '../src/transfer.js';
+import { downloadFile, downloadFileByHash, MAX_CONCURRENT_CONNECTIONS } from '../src/transfer.js';
 
 function startTestSeeder(chunks, hashes, tree, merkleRoot, fileSize, port) {
   return new Promise((resolveListen) => {
@@ -2929,6 +3152,15 @@ function startTestSeeder(chunks, hashes, tree, merkleRoot, fileSize, port) {
       });
 
       socket.on('data', framer);
+
+      sendJSON(socket, {
+        type: MSG.FILE_OFFER,
+        fileName: 'testfile.bin',
+        fileSize,
+        totalChunks: chunks.length,
+        chunkSize: chunks.length > 0 ? chunks[0].length : 0,
+        merkleRoot,
+      });
     });
 
     server.listen(port, '127.0.0.1', () => resolveListen(server));
@@ -2972,7 +3204,52 @@ function startSlowTestSeeder(chunks, hashes, tree, delayMs, port) {
     server.listen(port, '127.0.0.1', () => resolveListen(server));
   });
 }
+function startThrottledTestSeeder(chunks, hashes, tree, delayPerChunkMs, port) {
+  return new Promise((resolveListen) => {
+    const server = net.createServer((socket) => {
+      socket.setNoDelay(true);
+      socket.setMaxListeners(0);
 
+      const keyPair = generateKeyPair();
+      let sharedKey = null;
+
+      const framer = createFramer((body) => {
+        const msg = parseMessage(body);
+        if (msg.type !== TYPE.JSON) return;
+
+        if (msg.data.type === MSG.KEY_EXCHANGE) {
+          const theirPub = Buffer.from(msg.data.publicKey, 'base64');
+          sharedKey = deriveSharedKey(keyPair.privateKey, theirPub);
+          const myPub = exportPublicKey(keyPair).toString('base64');
+          sendJSON(socket, { type: MSG.KEY_EXCHANGE, publicKey: myPub });
+          return;
+        }
+
+        if (msg.data.type === MSG.CHUNK_REQUEST && sharedKey) {
+          const { index } = msg.data;
+          setTimeout(() => {
+            const proof = getMerkleProof(tree, index);
+            const encrypted = encrypt(chunks[index], sharedKey);
+            sendChunk(socket, index, hashes[index], proof, encrypted);
+          }, delayPerChunkMs);
+        }
+      });
+
+      socket.on('data', framer);
+
+      sendJSON(socket, {
+        type: MSG.FILE_OFFER,
+        fileName: 'testfile.bin',
+        fileSize: chunks.length * chunks[0].length,
+        totalChunks: chunks.length,
+        chunkSize: chunks[0].length,
+        merkleRoot: tree.root,
+      });
+    });
+
+    server.listen(port, '127.0.0.1', () => resolveListen(server));
+  });
+}
 describe('engine integration', () => {
   it('downloads a file end to end via DHT discovery and encrypted swarm transfer', async () => {
     const numChunks = 10;
@@ -3126,6 +3403,103 @@ await assert.rejects(
 
     await downloaderNode.close();
     await fakeSeederNode.close();
+  });
+  it('downloadFileByHash discovers file metadata automatically via a peer and completes the transfer', async () => {
+    const numChunks = 8;
+    const chunkSize = 1024;
+    const chunks = [];
+    const hashes = [];
+    for (let i = 0; i < numChunks; i++) {
+      const chunk = randomBytes(chunkSize);
+      chunks.push(chunk);
+      hashes.push(sha256(chunk));
+    }
+    const tree = buildMerkleTree(hashes);
+    const fileHash = tree.root;
+
+    const seederNode = new DHTNode();
+    const downloaderNode = new DHTNode();
+    await seederNode.listen();
+    await downloaderNode.listen();
+
+    downloaderNode.routingTable.addPeer({
+      id: seederNode.nodeId, addr: '127.0.0.1', port: seederNode.port,
+    });
+
+    const tcpPort = 18900 + Math.floor(Math.random() * 500);
+    const fileSize = numChunks * chunkSize;
+    const server = await startTestSeeder(chunks, hashes, tree, tree.root, fileSize, tcpPort);
+
+    await seederNode.announceFile(fileHash, tcpPort);
+
+    const outputPath = join(tmpdir(), `mesh-byhash-${Date.now()}.bin`);
+
+    const result = await downloadFileByHash({ fileHash, outputPath, dhtNode: downloaderNode });
+
+    assert.equal(result.status, 'complete');
+    const resultBuf = await readFile(outputPath);
+    assert.deepEqual(resultBuf, Buffer.concat(chunks));
+
+    await unlink(outputPath);
+    server.close();
+    await seederNode.close();
+    await downloaderNode.close();
+  });
+
+  it('pauses a transfer via signal, then resumes it and completes without re-downloading finished chunks', async () => {
+    const numChunks = 40;
+    const chunkSize = 1024;
+    const chunks = [];
+    const hashes = [];
+    for (let i = 0; i < numChunks; i++) {
+      const chunk = randomBytes(chunkSize);
+      chunks.push(chunk);
+      hashes.push(sha256(chunk));
+    }
+    const tree = buildMerkleTree(hashes);
+    const fileHash = sha256(Buffer.concat(chunks));
+
+    const seederNode = new DHTNode();
+    const downloaderNode = new DHTNode();
+    await seederNode.listen();
+    await downloaderNode.listen();
+
+    downloaderNode.routingTable.addPeer({
+      id: seederNode.nodeId, addr: '127.0.0.1', port: seederNode.port,
+    });
+
+    const tcpPort = 19100 + Math.floor(Math.random() * 500);
+    const fileSize = numChunks * chunkSize;
+    const server = await startThrottledTestSeeder(chunks, hashes, tree, 20, tcpPort);
+    await seederNode.announceFile(fileHash, tcpPort);
+
+    const outputPath = join(tmpdir(), `mesh-pause-${Date.now()}.bin`);
+
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 30);
+
+    const firstResult = await downloadFile({
+      fileHash, fileSize, totalChunks: numChunks, chunkSize,
+      merkleRoot: tree.root, outputPath, dhtNode: downloaderNode,
+      signal: controller.signal,
+    });
+
+    assert.equal(firstResult.status, 'paused');
+    assert.ok(firstResult.verifiedChunks < numChunks);
+
+    const secondResult = await downloadFile({
+      fileHash, fileSize, totalChunks: numChunks, chunkSize,
+      merkleRoot: tree.root, outputPath, dhtNode: downloaderNode,
+    });
+
+    assert.equal(secondResult.status, 'complete');
+    const resultBuf = await readFile(outputPath);
+    assert.deepEqual(resultBuf, Buffer.concat(chunks));
+
+    await unlink(outputPath);
+    server.close();
+    await seederNode.close();
+    await downloaderNode.close();
   });
 });
 ```
@@ -3339,6 +3713,69 @@ describe('protocol framer', () => {
 });
 ```
 
+### packages/engine/test/resume.test.js
+
+```text
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { saveResumeState, loadResumeState, deleteResumeState, resumeStateMatches } from '../src/resume.js';
+
+describe('resume state', () => {
+  it('returns null when no state file exists', async () => {
+    const outputPath = join(tmpdir(), `mesh-resume-none-${Date.now()}.bin`);
+    const state = await loadResumeState(outputPath);
+    assert.equal(state, null);
+  });
+
+  it('saves and loads a state file round trip', async () => {
+    const outputPath = join(tmpdir(), `mesh-resume-${Date.now()}.bin`);
+    const original = {
+      fileHash: 'a'.repeat(64),
+      fileSize: 1024,
+      totalChunks: 10,
+      chunkSize: 64,
+      merkleRoot: 'a'.repeat(64),
+      completedChunks: [0, 1, 2, 5],
+    };
+    await saveResumeState(outputPath, original);
+    const loaded = await loadResumeState(outputPath);
+    assert.equal(loaded.fileHash, original.fileHash);
+    assert.deepEqual(loaded.completedChunks, original.completedChunks);
+    await deleteResumeState(outputPath);
+  });
+
+  it('deleteResumeState removes the file and is safe to call when absent', async () => {
+    const outputPath = join(tmpdir(), `mesh-resume-del-${Date.now()}.bin`);
+    await saveResumeState(outputPath, {
+      fileHash: 'b'.repeat(64), fileSize: 1, totalChunks: 1, chunkSize: 1,
+      merkleRoot: 'b'.repeat(64), completedChunks: [],
+    });
+    await deleteResumeState(outputPath);
+    const loaded = await loadResumeState(outputPath);
+    assert.equal(loaded, null);
+    await deleteResumeState(outputPath);
+  });
+
+  it('resumeStateMatches validates matching and mismatched state correctly', () => {
+    const state = {
+      fileHash: 'c'.repeat(64), fileSize: 1024, totalChunks: 10,
+      chunkSize: 64, merkleRoot: 'c'.repeat(64), completedChunks: [0],
+    };
+    assert.equal(resumeStateMatches(state, {
+      fileHash: 'c'.repeat(64), fileSize: 1024, totalChunks: 10, chunkSize: 64, merkleRoot: 'c'.repeat(64),
+    }), true);
+    assert.equal(resumeStateMatches(state, {
+      fileHash: 'c'.repeat(64), fileSize: 999, totalChunks: 10, chunkSize: 64, merkleRoot: 'c'.repeat(64),
+    }), false);
+    assert.equal(resumeStateMatches(null, {
+      fileHash: 'c'.repeat(64), fileSize: 1024, totalChunks: 10, chunkSize: 64, merkleRoot: 'c'.repeat(64),
+    }), false);
+  });
+});
+```
+
 ### packages/engine/test/swarm.test.js
 
 ```text
@@ -3507,7 +3944,93 @@ it('does not exceed pipeline size per peer', async () => {
     assert.ok(largeChunkSwarm.pipelineSize < 16);
     assert.ok(largeChunkSwarm.pipelineSize >= 4);
   });
+it('resumes with pre-verified chunks skipped and not re-requested', async () => {
+    const { chunks, hashes, tree, merkleRoot } = buildTestFile(10);
+    const requested = [];
+    const swarm = new SwarmManager(10, merkleRoot, 1024, [0, 1, 2]);
 
+    assert.equal(swarm.getProgress().verified, 3);
+
+    swarm.addPeer('peerA', (idx) => {
+      requested.push(idx);
+      setImmediate(() => {
+        const proof = getMerkleProof(tree, idx);
+        swarm.onChunkReceived('peerA', idx, chunks[idx], hashes[idx], proof);
+      });
+      return Promise.resolve();
+    });
+
+    await new Promise(resolve => swarm.on('complete', resolve));
+
+    assert.equal(swarm.isComplete(), true);
+    assert.ok(!requested.includes(0));
+    assert.ok(!requested.includes(1));
+    assert.ok(!requested.includes(2));
+    assert.equal(requested.length, 7);
+  });
+
+  it('reports already complete immediately when all chunks are pre-verified', () => {
+    const { merkleRoot } = buildTestFile(5);
+    const swarm = new SwarmManager(5, merkleRoot, 1024, [0, 1, 2, 3, 4]);
+    assert.equal(swarm.isComplete(), true);
+    assert.equal(swarm.getProgress().verified, 5);
+  });
+
+  it('getVerifiedChunkIndices returns exactly the verified set', async () => {
+    const { chunks, hashes, tree, merkleRoot } = buildTestFile(4);
+    const swarm = new SwarmManager(4, merkleRoot);
+
+    swarm.addPeer('peerA', (idx) => {
+      setImmediate(() => {
+        const proof = getMerkleProof(tree, idx);
+        swarm.onChunkReceived('peerA', idx, chunks[idx], hashes[idx], proof);
+      });
+      return Promise.resolve();
+    });
+
+    await new Promise(resolve => swarm.on('complete', resolve));
+
+    const verified = swarm.getVerifiedChunkIndices();
+    assert.deepEqual(verified.sort((a, b) => a - b), [0, 1, 2, 3]);
+  });
+
+  it('abort() stops issuing new chunk requests but keeps prior state', async () => {
+    const { merkleRoot } = buildTestFile(50);
+    const swarm = new SwarmManager(50, merkleRoot);
+
+    let requestCount = 0;
+    swarm.addPeer('peerA', () => {
+      requestCount++;
+      return new Promise(() => {});
+    });
+
+    const countAfterStart = requestCount;
+    swarm.abort();
+    swarm.addPeer('peerB', () => {
+      requestCount++;
+      return new Promise(() => {});
+    });
+
+    assert.equal(requestCount, countAfterStart);
+  });
+
+  it('compacts pendingQueue after heavy retries instead of growing unboundedly', async () => {
+    const { merkleRoot } = buildTestFile(2000, 16);
+    const swarm = new SwarmManager(2000, merkleRoot, 16);
+
+    let calls = 0;
+    swarm.addPeer('flakyPeer', () => {
+      calls++;
+      if (calls < 5000) {
+        return Promise.reject(new Error('simulated failure'));
+      }
+      return new Promise(() => {});
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 200));
+
+    assert.ok(swarm.pendingQueue.length < 20000, `pendingQueue grew to ${swarm.pendingQueue.length}, compaction likely not working`);
+  });
   it('getProgress reports correct percentage', async () => {
     const { chunks, hashes, tree, merkleRoot } = buildTestFile(4);
     const swarm = new SwarmManager(4, merkleRoot);
@@ -6146,7 +6669,7 @@ Binary or non-UTF-8 file omitted from markdown snapshot (7062 bytes).
 
 ### test-out.txt
 
-Binary or non-UTF-8 file omitted from markdown snapshot (35322 bytes).
+Binary or non-UTF-8 file omitted from markdown snapshot (40688 bytes).
 
 ### web-test-out.txt
 

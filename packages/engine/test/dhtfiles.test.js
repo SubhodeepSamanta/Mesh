@@ -16,7 +16,28 @@ describe('dht announce and get peers', () => {
 
     await nodeA.close();
   });
+it('an announcing node remains discoverable directly even after the peer it replicated to goes offline', async () => {
+    const seeder = new DHTNode();
+    const relay = new DHTNode();
+    const finder = new DHTNode();
+    await seeder.listen();
+    await relay.listen();
+    await finder.listen();
 
+    seeder.routingTable.addPeer({ id: relay.nodeId, addr: '127.0.0.1', port: relay.port });
+    finder.routingTable.addPeer({ id: seeder.nodeId, addr: '127.0.0.1', port: seeder.port });
+
+    const fileHash = sha256(Buffer.from('offline relay test'));
+    await seeder.announceFile(fileHash, 6100);
+
+    await relay.close();
+
+    const peers = await finder.getPeersForFile(fileHash);
+    assert.ok(peers.some(p => p.port === 6100));
+
+    await seeder.close();
+    await finder.close();
+  }, { timeout: 10000 });
   it('peer announces, different peer finds it across the network', async () => {
     const seeder   = new DHTNode();
     const finder   = new DHTNode();

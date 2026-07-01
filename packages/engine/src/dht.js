@@ -359,16 +359,17 @@ _handleMessage(msgBuf, rinfo) {
   }
 
 async announceFile(fileHash, myPort) {
+  const localPeers = this.fileStore.get(fileHash) || [];
+  const existsLocally = localPeers.some(p => p.addr === this.address && p.port === myPort);
+  if (!existsLocally) {
+    localPeers.push({ addr: this.address, port: myPort, announcedAt: Date.now() });
+  }
+  this.fileStore.set(fileHash, localPeers);
+
   const dhtKey = fileHashToDhtKey(fileHash);
   const closest = await this.iterativeFindNode(dhtKey);
 
   if (closest.length === 0) {
-    const peers = this.fileStore.get(fileHash) || [];
-    const exists = peers.some(p => p.addr === this.address && p.port === myPort);
-    if (!exists) {
-      peers.push({ addr: this.address, port: myPort, announcedAt: Date.now() });
-    }
-    this.fileStore.set(fileHash, peers);
     return [];
   }
 

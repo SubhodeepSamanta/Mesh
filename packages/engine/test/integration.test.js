@@ -8,7 +8,8 @@ import { join } from 'path';
 import { DHTNode } from '../src/dht.js';
 import { buildMerkleTree, getMerkleProof, sha256, generateKeyPair, exportPublicKey, deriveSharedKey, encrypt } from '../src/crypto.js';
 import { sendJSON, sendChunk, createFramer, parseMessage, MSG, TYPE } from '../src/protocol.js';
-import { downloadFile, downloadFileByHash, MAX_CONCURRENT_CONNECTIONS } from '../src/transfer.js';
+import { downloadFile, downloadFileByHash, downloadAndSeed, MAX_CONCURRENT_CONNECTIONS } from '../src/transfer.js';
+import { SeedManager } from '../src/seed.js';
 
 function startTestSeeder(chunks, hashes, tree, merkleRoot, fileSize, port) {
   return new Promise((resolveListen) => {
@@ -388,5 +389,69 @@ await assert.rejects(
     server.close();
     await seederNode.close();
     await downloaderNode.close();
+  });
+it('a downloader becomes a seeder and a second downloader can chain-download from it', { timeout: 20000 }, async () => {
+    const numChunks = 12;
+    const chunkSize = 1024;
+    const chunks = [];
+    const hashes = [];
+    for (let i = 0; i < numChunks; i++) {
+      const chunk = randomBytes(chunkSize);
+      chunks.push(chunk);
+      hashes.push(sha256(chunk));
+    }
+    const tree = buildMerkleTree(hashes);
+    const fileHash = tree.root;
+    const fileSize = numChunks * chunkSize;
+
+    const originalSeederNode = new DHTNode();
+    const relaySeederDownloaderNode = new DHTNode();
+    const finalDownloaderNode = new DHTNode();
+    await originalSeederNode.listen();
+    await relaySeederDownloaderNode.listen();
+    await finalDownloaderNode.listen();
+
+    relaySeederDownloaderNode.routingTable.addPeer({
+      id: originalSeederNode.nodeId, addr: '127.0.0.1', port: originalSeederNode.port,
+    });
+    finalDownloaderNode.routingTable.addPeer({
+      id: relaySeederDownloaderNode.nodeId, addr: '127.0.0.1', port: relaySeederDownloaderNode.port,
+    });
+
+    const originalTcpPort = 19300 + Math.floor(Math.random() * 500);
+    const server = await startTestSeeder(chunks, hashes, tree, tree.root, fileSize, originalTcpPort);
+    await originalSeederNode.announceFile(fileHash, originalTcpPort);
+
+    const relayOutputPath = join(tmpdir(), `mesh-relay-${Date.now()}.bin`);
+    const relaySeedManager = new SeedManager(relaySeederDownloaderNode);
+
+    const relayResult = await downloadAndSeed({
+      fileHash, fileSize, totalChunks: numChunks, chunkSize,
+      merkleRoot: tree.root, outputPath: relayOutputPath,
+      dhtNode: relaySeederDownloaderNode, seedManager: relaySeedManager,
+    });
+
+    assert.equal(relayResult.status, 'complete');
+    assert.equal(relayResult.seeding, true);
+
+    server.close();
+    await originalSeederNode.close();
+
+    const finalOutputPath = join(tmpdir(), `mesh-final-${Date.now()}.bin`);
+    const finalResult = await downloadFile({
+      fileHash, fileSize, totalChunks: numChunks, chunkSize,
+      merkleRoot: tree.root, outputPath: finalOutputPath,
+      dhtNode: finalDownloaderNode,
+    });
+
+    assert.equal(finalResult.status, 'complete');
+    const finalBuf = await readFile(finalOutputPath);
+    assert.deepEqual(finalBuf, Buffer.concat(chunks));
+
+    await unlink(relayOutputPath);
+    await unlink(finalOutputPath);
+    await relaySeedManager.stopAll();
+    await relaySeederDownloaderNode.close();
+    await finalDownloaderNode.close();
   });
 });

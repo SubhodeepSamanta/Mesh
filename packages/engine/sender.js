@@ -1,11 +1,8 @@
-import net from 'net';
 import { basename, resolve } from 'path';
 import { open } from 'fs/promises';
-import { getMerkleProof } from './src/crypto.js';
-import { sendJSON, sendChunk, createFramer, parseMessage, MSG, TYPE } from './src/protocol.js';
-import { indexFile, readChunk, computeCacheSize } from './src/chunker.js';
-import { generateKeyPair, exportPublicKey, deriveSharedKey, encrypt } from './src/crypto.js';
+import { indexFile } from './src/chunker.js';
 import { DHTNode } from './src/dht.js';
+import { createChunkServer } from './src/chunkServer.js';
 
 const FILE_PATH       = resolve(process.argv[2]);
 const PORT             = parseInt(process.argv[3] || '9000');
@@ -25,18 +22,6 @@ async function main() {
   console.log(`Chunk size: ${(chunkSize / 1024).toFixed(0)} KB`);
 
   const fileHandle = await open(FILE_PATH, 'r');
-  const chunkCache = new Map();
-  const CACHE_MAX = computeCacheSize(chunkSize);
-
-  async function readChunkCached(index) {
-    if (chunkCache.has(index)) return chunkCache.get(index);
-    const data = await readChunk(fileHandle, index, chunkSize);
-    if (chunkCache.size >= CACHE_MAX) {
-      chunkCache.delete(chunkCache.keys().next().value);
-    }
-    chunkCache.set(index, data);
-    return data;
-  }
 
   const dhtNode = new DHTNode();
   await dhtNode.listen();
@@ -49,85 +34,16 @@ async function main() {
     }
   }
 
-  const server = net.createServer((socket) => {
-    socket.setMaxListeners(0);
-    socket.setNoDelay(true);
-    console.log(`Receiver connected from ${socket.remoteAddress}`);
-    const keyPair = generateKeyPair();
-    let sharedKey = null;
-    let peerAlive = true;
-    const keepaliveCheck = setInterval(() => {
-      if (!peerAlive) {
-        console.log('Peer unresponsive — closing connection');
-        clearInterval(keepaliveCheck);
-        socket.destroy();
-        return;
-      }
-      peerAlive = false;
-    }, 35000);
-
-    const framer = createFramer(async (body) => {
-      peerAlive = true;
-      const msg = parseMessage(body);
-      if (msg.type !== TYPE.JSON) return;
-      const { data } = msg;
-
-      if (data.type === MSG.FILE_ACCEPT) {
-        console.log('Receiver accepted transfer');
-      }
-
-      if (data.type === MSG.KEEPALIVE) {
-        return;
-      }
-
-      if (data.type === MSG.KEY_EXCHANGE) {
-        const theirPublicKeyDER = Buffer.from(data.publicKey, 'base64');
-        sharedKey = deriveSharedKey(keyPair.privateKey, theirPublicKeyDER);
-        const myPublicKey = exportPublicKey(keyPair).toString('base64');
-        sendJSON(socket, { type: MSG.KEY_EXCHANGE, publicKey: myPublicKey });
-      }
-
-      if (data.type === MSG.CHUNK_REQUEST) {
-        const { index } = data;
-        if (index < 0 || index >= totalChunks) return;
-        if (!sharedKey) return;
-        const chunkData = await readChunkCached(index);
-        const encryptedData = encrypt(chunkData, sharedKey);
-        const proof = getMerkleProof(tree, index);
-        await sendChunk(socket, index, hashes[index], proof, encryptedData);
-      }
-
-      if (data.type === MSG.TRANSFER_COMPLETE) {
-        console.log('Transfer confirmed complete');
-        clearInterval(keepaliveCheck);
-        await fileHandle.close().catch(() => {});
-        server.close(() => process.exit(0));
-      }
-    });
-
-    socket.on('data',  framer);
-    socket.on('error', (e) => {
-      clearInterval(keepaliveCheck);
-      if (e.code !== 'ECONNRESET') console.error('Socket error:', e.message);
-    });
-    socket.on('close', () => {
-      clearInterval(keepaliveCheck);
-      console.log('Connection closed');
-    });
-
-    sendJSON(socket, {
-      type: MSG.FILE_OFFER,
-      fileName: basename(FILE_PATH),
-      fileSize,
-      totalChunks,
-      chunkSize,
-      merkleRoot,
-    });
+  const server = createChunkServer({
+    fileHandle, hashes, tree, merkleRoot,
+    fileName: basename(FILE_PATH), fileSize, totalChunks, chunkSize,
   });
+
+  server.on('peerError', (e) => console.error('Peer connection error:', e.message));
 
   server.listen(PORT, '127.0.0.1', async () => {
     console.log(`Sender listening on 127.0.0.1:${PORT}`);
-    console.log(`Run receiver: node packages/engine/receiver.js 127.0.0.1 ${PORT} ./received`);
+    console.log(`Serves any number of peers concurrently. Run receiver: node packages/engine/receiver.js 127.0.0.1 ${PORT} ./received`);
     try {
       await dhtNode.announceFile(merkleRoot, PORT);
       console.log(`Announced to DHT. File id: ${merkleRoot}`);
@@ -142,6 +58,9 @@ async function main() {
   });
 
   process.on('SIGINT', async () => {
+    console.log('\nShutting down...');
+    await new Promise((resolve) => server.close(resolve));
+    await fileHandle.close().catch(() => {});
     await dhtNode.close();
     process.exit(0);
   });

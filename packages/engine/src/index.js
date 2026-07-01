@@ -6,3 +6,5 @@ export * from './swarm.js';
 export * from './peer.js';
 export * from './transfer.js';
 export * from './resume.js';
+export * from './chunkServer.js';
+export * from './seed.js';

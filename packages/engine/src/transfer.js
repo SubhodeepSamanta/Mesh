@@ -175,7 +175,21 @@ export async function downloadFileByHash({ fileHash, outputPath, dhtNode, signal
     signal,
   });
 }
+export async function downloadAndSeed({ fileHash, fileSize, totalChunks, chunkSize, merkleRoot, outputPath, dhtNode, signal, seedManager }) {
+  const result = await downloadFile({ fileHash, fileSize, totalChunks, chunkSize, merkleRoot, outputPath, dhtNode, signal });
 
+  if (result.status === 'complete' && seedManager) {
+    const seedEntry = await seedManager.seedFile(outputPath, { chunkSize });
+    if (seedEntry.merkleRoot !== merkleRoot) {
+      throw new Error(
+        `Re-seed verification failed: recomputed root (${seedEntry.merkleRoot}) does not match expected root (${merkleRoot}). The downloaded file may not match what was requested.`
+      );
+    }
+    return { ...result, seeding: true, seedPort: seedEntry.port };
+  }
+
+  return { ...result, seeding: false };
+}
 export async function startDownloadSession({ fileHash, fileSize, totalChunks, chunkSize, merkleRoot, outputPath, bootstrapAddr, bootstrapPort, signal }) {
   const dhtNode = new DHTNode();
   await dhtNode.listen();
