@@ -43,6 +43,7 @@ export default function Receive() {
   const setSaveMode = useTransferStore((s) => s.setSaveMode)
   const setComplete = useTransferStore((s) => s.setComplete)
   const error = useTransferStore((s) => s.error)
+  const role = useTransferStore((s) => s.role)
 
   const { startReceiving, addReceiverPeer, triggerDownload, resetDownload, disconnectAll, dialPeer } = useTransfer()
 
@@ -112,20 +113,13 @@ export default function Receive() {
     if (status === 'transferring') navigate('/dashboard')
   }, [status, navigate])
 
-  useEffect(() => {
-    if (status === 'complete' && fileMeta && !M.autoDownloaded) {
-      M.autoDownloaded = true
-      triggerDownload()
-    }
-  }, [status, fileMeta, triggerDownload])
-
   const handleManualDownload = () => {
     resetDownload()
     triggerDownload()
   }
 
   useEffect(() => {
-    if (!roomCode) return
+    if (!displayRoomCode) return
     const unsub = useSignalingStore.subscribe((s, prev) => {
       if (prev.peers.length > 0 && s.peers.length === 0 && status !== 'complete') {
         setRoomClosed(true)
@@ -141,12 +135,14 @@ export default function Receive() {
       }
     })
     return unsub
-  }, [roomCode, status, dialPeer])
+  }, [displayRoomCode, status, dialPeer])
 
 
 
   const prefillCode = searchParams.get('code') || ''
-  const showFileMeta = !!fileMeta
+  const activeReceiver = role === 'receiver'
+  const displayRoomCode = activeReceiver ? roomCode : null
+  const showFileMeta = !!fileMeta && activeReceiver
 
   const accordionsBefore = (
     <div className="mt-8 space-y-2">
@@ -223,7 +219,7 @@ export default function Receive() {
           </p>
         </div>
 
-        {!roomCode && !showFileMeta && (
+        {!displayRoomCode && !showFileMeta && (
           <>
             <ConnectionCode onJoin={handleJoin} joining={joining} defaultValue={prefillCode} />
             <AnimatePresence>
@@ -245,7 +241,7 @@ export default function Receive() {
           </>
         )}
 
-        {roomCode && !showFileMeta && (
+        {displayRoomCode && !showFileMeta && (
           <>
             <AnimatePresence>
               {roomClosed && (
@@ -286,7 +282,7 @@ export default function Receive() {
                 </div>
                 <div>
                   <p className="text-sm font-medium text-[var(--txt-primary)]">Connected to room</p>
-                  <p className="font-mono text-xs text-[var(--txt-dim)]">{roomCode}</p>
+                  <p className="font-mono text-xs text-[var(--txt-dim)]">{displayRoomCode}</p>
                 </div>
               </div>
               <p className="text-sm leading-relaxed text-[var(--txt-secondary)]">
@@ -345,7 +341,7 @@ export default function Receive() {
       </div>
 
       {showFileMeta && (
-        <div className={`flex-1 ${roomCode ? 'lg:w-[65%]' : ''}`}>
+        <div className={`flex-1 ${displayRoomCode ? 'lg:w-[65%]' : ''}`}>
           <motion.div
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
@@ -523,7 +519,7 @@ export default function Receive() {
         </div>
       )}
 
-      {!roomCode && !showFileMeta && accordionsBefore}
+      {!displayRoomCode && !showFileMeta && accordionsBefore}
     </motion.div>
   )
 }
