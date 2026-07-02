@@ -10,6 +10,8 @@ services:
       - TRUST_PROXY=0
       - MAX_PEERS_PER_ROOM=16
       - MAX_ROOMS=5000
+      - TURN_URL=turn:$${EXTERNAL_IP:-127.0.0.1}:3478
+      - TURN_SECRET=$${TURN_SECRET:-meshsecret}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
@@ -17,3 +19,16 @@ services:
       timeout: 3s
       retries: 3
       start_period: 10s
+
+  coturn:
+    image: coturn/coturn:latest
+    ports:
+      - "3478:3478/udp"
+      - "3478:3478/tcp"
+    command:
+      - -n
+      - --log-file=stdout
+      - --external-ip=$${EXTERNAL_IP:-127.0.0.1}
+      - --static-auth-secret=$${TURN_SECRET:-meshsecret}
+      - --realm=$${TURN_REALM:-mesh.local}
+    restart: unless-stopped

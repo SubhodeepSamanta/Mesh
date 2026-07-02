@@ -24,7 +24,8 @@ export class WebRTCTransport {
     this.signalingClient = signalingClient;
     this.remotePeerId = remotePeerId;
     this.initiator = initiator;
-    this.pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    const iceServers = (signalingClient && signalingClient.iceServers) || ICE_SERVERS;
+    this.pc = new RTCPeerConnection({ iceServers });
     this.channel = null;
     this.jsonHandler = null;
     this.chunkHandler = null;

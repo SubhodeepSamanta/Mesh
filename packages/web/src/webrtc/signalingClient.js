@@ -117,6 +117,7 @@ export class SignalingClient extends EventTarget {
     if (msg.type === MSG_TYPE.ROOM_CREATED || msg.type === MSG_TYPE.ROOM_JOINED) {
       this.peerId = msg.peerId;
       this.roomCode = msg.roomCode;
+      this.iceServers = msg.iceServers;
       if (this._pending) {
         this._pending.resolve(msg);
         this._pending = null;

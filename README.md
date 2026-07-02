@@ -30,13 +30,25 @@ This repository is structured as a monorepo containing two main packages:
    npm test
    ```
 
-### Docker Deployment
+### Docker Deployment & TURN Configuration
 
-A pre-configured `docker-compose.yml` is provided at the root to run the signaling server in production mode:
+For NAT traversal across different networks (e.g. mobile networks or symmetric NATs on phones), a TURN server is required. A pre-configured `docker-compose.yml` is provided at the root which runs both the signaling server and a self-hosted `coturn` TURN server:
 
-```bash
-docker-compose up --build
-```
+1. **Configure Environment**:
+   Copy `.env.example` to `.env` in the root:
+   ```bash
+   cp .env.example .env
+   ```
+   For production NAT traversal, you **must** configure the following variables in `.env`:
+   * `EXTERNAL_IP`: Set this to your host server's public IP address (mandatory for coturn NAT traversal).
+   * `TURN_SECRET`: Set this to a random secure string. The signaling server uses this to generate secure, time-limited TURN credentials dynamically.
+
+2. **Start Services**:
+   ```bash
+   docker-compose up -d --build
+   ```
+
+The signaling server automatically generates and relays WebRTC configurations containing dynamic TURN server details to connecting clients, allowing peer connections to succeed across symmetric firewalls.
 
 ## Architecture & Design Decisions
 

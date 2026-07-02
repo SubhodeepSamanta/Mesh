@@ -343,4 +343,70 @@ it('listen rejects cleanly when the port is already in use', async () => {
     ws.close();
     await server.close();
   });
+
+  it('returns default STUN iceServers if no TURN env vars are set', async () => {
+    const server = new SignalingServer();
+    const addr = await server.listen(0);
+
+    const ws = await connect(addr.port);
+    send(ws, { type: MSG_TYPE.CREATE_ROOM });
+    const msg = await nextMessage(ws);
+
+    assert.equal(msg.type, MSG_TYPE.ROOM_CREATED);
+    assert.ok(Array.isArray(msg.iceServers));
+    assert.equal(msg.iceServers[0].urls, 'stun:stun.l.google.com:19302');
+
+    ws.close();
+    await server.close();
+  });
+
+  it('returns static TURN server config when static TURN env vars are configured', async () => {
+    process.env.TURN_URL = 'turn:turn.example.com:3478';
+    process.env.TURN_USERNAME = 'myuser';
+    process.env.TURN_CREDENTIAL = 'mypassword';
+
+    const server = new SignalingServer();
+    const addr = await server.listen(0);
+
+    const ws = await connect(addr.port);
+    send(ws, { type: MSG_TYPE.CREATE_ROOM });
+    const msg = await nextMessage(ws);
+
+    assert.equal(msg.type, MSG_TYPE.ROOM_CREATED);
+    assert.equal(msg.iceServers.length, 2);
+    assert.equal(msg.iceServers[1].urls, 'turn:turn.example.com:3478');
+    assert.equal(msg.iceServers[1].username, 'myuser');
+    assert.equal(msg.iceServers[1].credential, 'mypassword');
+
+    delete process.env.TURN_URL;
+    delete process.env.TURN_USERNAME;
+    delete process.env.TURN_CREDENTIAL;
+
+    ws.close();
+    await server.close();
+  });
+
+  it('returns dynamic TURN credentials when TURN_SECRET is configured', async () => {
+    process.env.TURN_URL = 'turn:turn.example.com:3478';
+    process.env.TURN_SECRET = 'mysecret';
+
+    const server = new SignalingServer();
+    const addr = await server.listen(0);
+
+    const ws = await connect(addr.port);
+    send(ws, { type: MSG_TYPE.CREATE_ROOM });
+    const msg = await nextMessage(ws);
+
+    assert.equal(msg.type, MSG_TYPE.ROOM_CREATED);
+    assert.equal(msg.iceServers.length, 2);
+    assert.equal(msg.iceServers[1].urls, 'turn:turn.example.com:3478');
+    assert.match(msg.iceServers[1].username, /^\d+:[a-f0-9]+$/);
+    assert.ok(msg.iceServers[1].credential);
+
+    delete process.env.TURN_URL;
+    delete process.env.TURN_SECRET;
+
+    ws.close();
+    await server.close();
+  });
 });

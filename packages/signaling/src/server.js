@@ -1,6 +1,6 @@
 import { WebSocketServer } from 'ws';
 import http from 'http';
-import { randomBytes, createHash } from 'crypto';
+import { randomBytes, createHash, createHmac } from 'crypto';
 import { pathToFileURL } from 'url';
 import { metrics, recordRoomCreated, recordRoomExpiredOrClosed, recordPeerJoined, recordPeerLeft } from './metrics.js';
 
@@ -33,6 +33,42 @@ function generateRoomCode(length = 6) {
 
 function hashPassword(password) {
   return createHash('sha256').update(password).digest('hex');
+}
+
+export function getIceServers(peerId) {
+  const stunUrl = process.env.STUN_URL || 'stun:stun.l.google.com:19302';
+  const iceServers = [{ urls: stunUrl }];
+
+  const turnUrl = process.env.TURN_URL;
+  const turnSecret = process.env.TURN_SECRET;
+  const turnUser = process.env.TURN_USERNAME;
+  const turnCred = process.env.TURN_CREDENTIAL;
+
+  if (turnUrl) {
+    if (turnSecret) {
+      const expiry = Math.floor(Date.now() / 1000) + 24 * 3600;
+      const username = `${expiry}:${peerId}`;
+      const password = createHmac('sha1', turnSecret)
+        .update(username)
+        .digest('base64');
+
+      iceServers.push({
+        urls: turnUrl,
+        username,
+        credential: password,
+      });
+    } else if (turnUser && turnCred) {
+      iceServers.push({
+        urls: turnUrl,
+        username: turnUser,
+        credential: turnCred,
+      });
+    } else {
+      iceServers.push({ urls: turnUrl });
+    }
+  }
+
+  return iceServers;
 }
 
 export class SignalingServer {
@@ -245,7 +281,7 @@ export class SignalingServer {
     ws.roomCode = roomCode;
     recordRoomCreated();
     recordPeerJoined();
-    this._send(ws, { type: MSG_TYPE.ROOM_CREATED, roomCode, peerId: ws.peerId });
+    this._send(ws, { type: MSG_TYPE.ROOM_CREATED, roomCode, peerId: ws.peerId, iceServers: getIceServers(ws.peerId) });
   }
 
   _joinRoom(ws, roomCode, password) {
@@ -284,6 +320,7 @@ export class SignalingServer {
       roomCode,
       peerId: ws.peerId,
       existingPeers: existingPeerIds,
+      iceServers: getIceServers(ws.peerId),
     });
 
     for (const [peerId, peerWs] of room.peers) {
