@@ -10,3 +10,5 @@ dht-out.txt
 dhtfiles-out.txt
 *-out.txt
 mesh_key.pem
+github_actions
+github_actions.pub

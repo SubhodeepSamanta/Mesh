@@ -141,7 +141,7 @@ export class SignalingServer {
           if (this.allowedOrigins) {
             const origin = req.headers.origin || '';
             if (!this.allowedOrigins.includes(origin)) {
-              ws.close(4003, 'Origin not allowed');
+              ws.close(4003, 'Origin not allowed'); 
               return;
             }
           }
