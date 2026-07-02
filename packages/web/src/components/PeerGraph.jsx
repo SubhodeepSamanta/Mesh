@@ -18,8 +18,8 @@ export default function PeerGraph({ className = '', chunkStates = [], role = nul
     const el = svgRef.current
     const parent = el.parentElement
     const rect = parent.getBoundingClientRect()
-    const width = Math.max(rect.width, 300)
-    const height = Math.max(rect.height, 200)
+    const width = rect.width || 300
+    const height = rect.height || 200
 
     const svg = d3.select(el)
     svg.selectAll('*').remove()

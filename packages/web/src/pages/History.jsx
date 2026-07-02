@@ -81,8 +81,8 @@ export default function History() {
         {entries.map((e) => {
           const meta = STATUS_META[e.status] || STATUS_META.failed
           return (
-            <Card key={e.id} className="group transition-all hover:border-[var(--border-hover)]">
-              <div className="flex items-start justify-between gap-4">
+            <Card key={e.id} className="relative group transition-all hover:border-[var(--border-hover)]">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-3">
                     <Badge color={meta.color}>{meta.label}</Badge>
@@ -91,7 +91,7 @@ export default function History() {
                     </span>
                   </div>
                   <div className="mt-2">
-                    <p className="truncate font-mono text-sm font-medium text-[var(--txt-primary)]">
+                    <p className="truncate font-mono text-sm font-medium text-[var(--txt-primary)] pr-8 sm:pr-0">
                       {e.fileName}
                     </p>
                     <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[var(--txt-secondary)]">
@@ -119,28 +119,29 @@ export default function History() {
                   </p>
                 </div>
 
-                <div className="flex shrink-0 items-center gap-2">
-                  {e.roomCode && (
+                {e.roomCode && (
+                  <div className="flex shrink-0 items-center w-full sm:w-auto">
                     <Button
                       variant="secondary"
-                      className="text-xs px-3 py-1.5"
+                      className="text-xs px-3 py-1.5 w-full sm:w-auto"
                       onClick={() => handleRejoin(e)}
                     >
                       Rejoin room
                     </Button>
-                  )}
-                  <button
-                    onClick={() => handleRemove(e.id)}
-                    className="cursor-pointer rounded-md p-1.5 text-[var(--txt-muted)] opacity-100 transition-opacity hover:text-[var(--error)] lg:opacity-0 lg:group-hover:opacity-100"
-                    title="Remove from history"
-                    aria-label="Remove from history"
-                  >
-                    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
-                </div>
+                  </div>
+                )}
               </div>
+
+              <button
+                onClick={() => handleRemove(e.id)}
+                className="absolute top-5 right-5 cursor-pointer rounded-md p-1.5 text-[var(--txt-muted)] opacity-100 transition-opacity hover:text-[var(--error)] lg:opacity-0 lg:group-hover:opacity-100"
+                title="Remove from history"
+                aria-label="Remove from history"
+              >
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
             </Card>
           )
         })}

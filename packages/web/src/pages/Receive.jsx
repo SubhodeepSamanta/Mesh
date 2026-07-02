@@ -26,6 +26,11 @@ export default function Receive() {
   const downloadGuardRef = useRef(false)
   const mountedRef = useRef(true)
 
+  const [showPasswordPrompt, setShowPasswordPrompt] = useState(false)
+  const [tempRoomCode, setTempRoomCode] = useState('')
+  const [roomPassword, setRoomPassword] = useState('')
+  const [showPass, setShowPass] = useState(false)
+
   useEffect(() => {
     mountedRef.current = true
     return () => { mountedRef.current = false }
@@ -47,6 +52,11 @@ export default function Receive() {
 
   const { startReceiving, addReceiverPeer, triggerDownload, resetDownload, disconnectAll, dialPeer } = useTransfer()
 
+  const prefillCode = searchParams.get('code') || ''
+  const activeReceiver = role === 'receiver'
+  const displayRoomCode = activeReceiver ? roomCode : null
+  const showFileMeta = !!fileMeta && activeReceiver
+
   async function handleJoin(code) {
     setJoining(true)
     setJoinError(null)
@@ -62,10 +72,46 @@ export default function Receive() {
         )
       }
     } catch (err) {
-      setJoinError(err.message || 'Failed to join room')
+      if (err.message === 'Incorrect room password') {
+        setShowPasswordPrompt(true)
+        setTempRoomCode(code)
+      } else {
+        setJoinError(err.message || 'Failed to join room')
+      }
     } finally {
       setJoining(false)
     }
+  }
+
+  async function handleJoinWithPassword(e) {
+    if (e) e.preventDefault()
+    setJoining(true)
+    setJoinError(null)
+    try {
+      const result = await joinRoom(tempRoomCode, roomPassword)
+      if (!mountedRef.current) return
+      setShowPasswordPrompt(false)
+      setRoomPassword('')
+      useTransferStore.getState().setRoomCode(tempRoomCode.toUpperCase())
+      useTransferStore.getState().startAsReceiver()
+      
+      if (result.existingPeers && result.existingPeers.length > 0) {
+        await Promise.allSettled(
+          result.existingPeers.map(peerId => dialPeer(peerId))
+        )
+      }
+    } catch (err) {
+      setJoinError(err.message || 'Incorrect password')
+    } finally {
+      setJoining(false)
+    }
+  }
+
+  function handleCancelPassword() {
+    setShowPasswordPrompt(false)
+    setTempRoomCode('')
+    setRoomPassword('')
+    setJoinError(null)
   }
 
   async function handleBeginTransfer() {
@@ -138,11 +184,6 @@ export default function Receive() {
   }, [displayRoomCode, status, dialPeer])
 
 
-
-  const prefillCode = searchParams.get('code') || ''
-  const activeReceiver = role === 'receiver'
-  const displayRoomCode = activeReceiver ? roomCode : null
-  const showFileMeta = !!fileMeta && activeReceiver
 
   const accordionsBefore = (
     <div className="mt-8 space-y-2">
@@ -221,7 +262,58 @@ export default function Receive() {
 
         {!displayRoomCode && !showFileMeta && (
           <>
-            <ConnectionCode onJoin={handleJoin} joining={joining} defaultValue={prefillCode} />
+            {showPasswordPrompt ? (
+              <form onSubmit={handleJoinWithPassword} className="flex flex-col gap-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-5">
+                <div className="flex items-center gap-2 text-[var(--accent)] mb-1">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                  </svg>
+                  <span className="text-xs uppercase font-bold tracking-wider">Password Protected Room</span>
+                </div>
+                <p className="text-sm text-[var(--txt-secondary)]">
+                  Enter the password to connect to room <span className="font-mono font-semibold text-[var(--txt-primary)]">{tempRoomCode.toUpperCase()}</span>.
+                </p>
+                <div className="relative mt-1">
+                  <input
+                    type={showPass ? 'text' : 'password'}
+                    value={roomPassword}
+                    onChange={(e) => setRoomPassword(e.target.value)}
+                    placeholder="Room password"
+                    className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] px-4 py-3 pr-10 font-mono text-lg tracking-widest text-[var(--txt-primary)] placeholder:text-[var(--txt-secondary)] outline-none transition-colors focus:border-[var(--accent)]/50"
+                    maxLength={100}
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPass(!showPass)}
+                    className="absolute right-3.5 top-1/2 -translate-y-1/2 cursor-pointer text-[var(--txt-secondary)] hover:text-[var(--txt-primary)]"
+                  >
+                    {showPass ? (
+                      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+                        <line x1="1" y1="1" x2="23" y2="23" />
+                      </svg>
+                    ) : (
+                      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                        <circle cx="12" cy="12" r="3" />
+                      </svg>
+                    )}
+                  </button>
+                </div>
+                <div className="flex gap-2 mt-2">
+                  <Button type="button" onClick={handleCancelPassword} variant="secondary" className="flex-1">
+                    Cancel
+                  </Button>
+                  <Button type="submit" disabled={joining} className="flex-1">
+                    {joining ? 'Connecting...' : 'Connect'}
+                  </Button>
+                </div>
+              </form>
+            ) : (
+              <ConnectionCode onJoin={handleJoin} joining={joining} defaultValue={prefillCode} />
+            )}
             <AnimatePresence>
               {joinError && (
                 <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} className="flex items-center gap-2 rounded-lg border border-[var(--error)]/20 bg-[var(--error)]/5 px-4 py-3">
@@ -303,7 +395,7 @@ export default function Receive() {
             )}
             <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-4 py-3">
               <p className="mb-2 text-xs uppercase tracking-widest text-[var(--txt-secondary)]">Save preference</p>
-              <div className="flex gap-2">
+              <div className="flex flex-col sm:flex-row gap-2">
                 <button
                   onClick={() => setSaveMode('auto')}
                   className={`flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-md border px-3 py-2 text-xs font-medium uppercase tracking-wider transition-all ${
@@ -381,7 +473,7 @@ export default function Receive() {
               <div className="space-y-3">
                 <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-4 py-3">
                   <p className="mb-2 text-xs uppercase tracking-widest text-[var(--txt-secondary)]">Save as</p>
-                  <div className="flex gap-2">
+                  <div className="flex flex-col sm:flex-row gap-2">
                     <button
                       onClick={() => setSaveMode('auto')}
                       className={`flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-md border px-3 py-2 text-xs font-medium uppercase tracking-wider transition-all ${
@@ -478,7 +570,7 @@ export default function Receive() {
                 </p>
                 <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:gap-3">
                   <Button onClick={handleManualDownload} variant="secondary" className="flex-1 py-3 text-sm font-semibold">
-                    💾 REDOWNLOAD FILE
+                    REDOWNLOAD FILE
                   </Button>
                   <Button onClick={handleDismiss} variant="primary" className="flex-1 py-3 text-sm font-semibold">
                     RECEIVE ANOTHER FILE

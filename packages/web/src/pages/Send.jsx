@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { motion, AnimatePresence } from 'framer-motion'
 import { useSignalingStore } from '../store/useSignalingStore.js'
 import { useTransferStore } from '../store/useTransferStore.js'
 import { useTransfer } from '../hooks/useTransfer.js'
@@ -19,6 +20,10 @@ export default function Send() {
   const [lines, setLines] = useState([])
   const startRef = useRef(null)
   const fileIdxRef = useRef(null)
+
+  const [usePassword, setUsePassword] = useState(false)
+  const [password, setPassword] = useState('')
+  const [showPass, setShowPass] = useState(false)
 
   const roomCode = useSignalingStore((s) => s.roomCode)
   const peers = useSignalingStore((s) => s.peers)
@@ -40,7 +45,7 @@ export default function Send() {
     addLine('Indexing & hashing chunks for verification...')
     await startSending(file, index, fileRefs)
     addLine('Creating encrypted relay room...')
-    const room = await createRoom()
+    const room = await createRoom(usePassword ? password.trim() : undefined)
     useTransferStore.getState().setRoomCode(room.roomCode)
     addLine(`Room active: ${room.roomCode}`)
     startRef.current = Date.now()
@@ -152,7 +157,65 @@ export default function Send() {
         <p className="mt-2 mb-8 text-base text-[var(--txt-secondary)]">
           Drop any file or folder below to start sharing. Mesh creates a private room and gives you a code — share it with anyone to begin the transfer.
         </p>
+
         <FileDropZone onFileReady={handleFileReady} />
+
+        <div className="mt-6 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-4 shadow-sm">
+          <label className="flex cursor-pointer items-center gap-3 select-none">
+            <input
+              type="checkbox"
+              checked={usePassword}
+              onChange={(e) => {
+                setUsePassword(e.target.checked)
+                if (!e.target.checked) setPassword('')
+              }}
+              className="h-4 w-4 rounded border-[var(--border-light)] text-[var(--accent)] focus:ring-[var(--accent)] focus:ring-offset-[var(--bg-primary)] bg-[var(--surface)] cursor-pointer"
+            />
+            <div>
+              <p className="text-sm font-semibold text-[var(--txt-primary)]">Password Protect Room</p>
+              <p className="text-xs text-[var(--txt-secondary)]">Require receivers to enter a password to join</p>
+            </div>
+          </label>
+
+          <AnimatePresence>
+            {usePassword && (
+              <motion.div
+                initial={{ height: 0, opacity: 0, marginTop: 0 }}
+                animate={{ height: 'auto', opacity: 1, marginTop: 12 }}
+                exit={{ height: 0, opacity: 0, marginTop: 0 }}
+                className="overflow-hidden"
+              >
+                <div className="relative">
+                  <input
+                    type={showPass ? 'text' : 'password'}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="Enter room password"
+                    className="w-full rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 pr-10 text-sm text-[var(--txt-primary)] outline-none transition-colors focus:border-[var(--accent)]/50 placeholder:text-[var(--txt-muted)]"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPass(!showPass)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 cursor-pointer text-[var(--txt-secondary)] hover:text-[var(--txt-primary)]"
+                  >
+                    {showPass ? (
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+                        <line x1="1" y1="1" x2="23" y2="23" />
+                      </svg>
+                    ) : (
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                        <circle cx="12" cy="12" r="3" />
+                      </svg>
+                    )}
+                  </button>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+
         {infoAccordions}
       </div>
     )

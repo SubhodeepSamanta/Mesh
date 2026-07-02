@@ -24,9 +24,13 @@ export default function Landing() {
             Mesh moves files straight between browsers over an encrypted P2P connection. Files never touch a server — only encrypted connection setup is relayed.
           </motion.p>
 
-          <motion.div {...fadeUp} className="flex flex-wrap gap-3">
-            <Link to="/send"><Button variant="primary" className="w-36 sm:w-40">Start Transfer</Button></Link>
-            <Link to="/receive"><Button variant="secondary" className="w-36 sm:w-40">Receive File</Button></Link>
+          <motion.div {...fadeUp} className="flex flex-col sm:flex-row gap-3 w-full">
+            <Link to="/send" className="w-full sm:w-auto">
+              <Button variant="primary" className="w-full sm:w-40">Start Transfer</Button>
+            </Link>
+            <Link to="/receive" className="w-full sm:w-auto">
+              <Button variant="secondary" className="w-full sm:w-40">Receive File</Button>
+            </Link>
           </motion.div>
 
           <motion.div {...fadeUp} className="flex flex-wrap gap-2">
