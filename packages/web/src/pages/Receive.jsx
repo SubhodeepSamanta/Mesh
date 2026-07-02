@@ -44,7 +44,7 @@ export default function Receive() {
   const setComplete = useTransferStore((s) => s.setComplete)
   const error = useTransferStore((s) => s.error)
 
-  const { startReceiving, addReceiverPeer, triggerDownload, disconnectAll, dialPeer } = useTransfer()
+  const { startReceiving, addReceiverPeer, triggerDownload, resetDownload, disconnectAll, dialPeer } = useTransfer()
 
   async function handleJoin(code) {
     setJoining(true)
@@ -113,11 +113,16 @@ export default function Receive() {
   }, [status, navigate])
 
   useEffect(() => {
-    if (status === 'complete' && fileMeta && !downloadGuardRef.current) {
-      downloadGuardRef.current = true
+    if (status === 'complete' && fileMeta && !M.autoDownloaded) {
+      M.autoDownloaded = true
       triggerDownload()
     }
   }, [status, fileMeta, triggerDownload])
+
+  const handleManualDownload = () => {
+    resetDownload()
+    triggerDownload()
+  }
 
   useEffect(() => {
     if (!roomCode) return
@@ -147,7 +152,7 @@ export default function Receive() {
     <div className="mt-8 space-y-2">
       <Accordion title="How to receive a file">
         <ol className="list-inside list-decimal space-y-1.5">
-          <li>Ask the sender for their room code (a 6-character code like <span className="font-mono text-[var(--txt-primary)]">WOLF482</span>).</li>
+          <li>Ask the sender for their room code (a 4-character case-insensitive code like <span className="font-mono text-[var(--txt-primary)]">WLF4</span>).</li>
           <li>Type it in above, or scan the QR code directly from their screen.</li>
           <li>Once linked, your browser connects directly to theirs — no middlemen.</li>
           <li>When they send a file offer, review what's being shared and hit "Begin Transfer".</li>
@@ -261,12 +266,12 @@ export default function Receive() {
               )}
             </AnimatePresence>
             <Card className="space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex flex-wrap items-center gap-2">
                   <Badge color="green" dot>LINK ESTABLISHED</Badge>
                   <span className="text-xs text-[var(--txt-secondary)]">via relay</span>
                 </div>
-                <button onClick={handleDismiss} className="flex cursor-pointer items-center gap-1.5 rounded-md border border-[var(--border-light)] px-2.5 py-1.5 text-xs font-medium text-[var(--txt-secondary)] transition-colors hover:border-[var(--error)]/40 hover:text-[var(--error)] hover:bg-[var(--error)]/5">
+                <button onClick={handleDismiss} className="flex cursor-pointer items-center justify-center gap-1.5 rounded-md border border-[var(--border-light)] px-2.5 py-1.5 text-xs font-medium text-[var(--txt-secondary)] transition-colors hover:border-[var(--error)]/40 hover:text-[var(--error)] hover:bg-[var(--error)]/5 w-full sm:w-auto">
                   <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
                   </svg>
@@ -430,9 +435,9 @@ export default function Receive() {
                       </>
                     )}
                   </Button>
-                  <div className="mt-3 flex items-center justify-between">
+                  <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                     <p className="text-xs text-[var(--txt-dim)]">Files transferred directly peer-to-peer. Browser must stay open.</p>
-                    <button onClick={handleDismiss} className="flex cursor-pointer items-center gap-1.5 rounded-md border border-[var(--border-light)] px-2.5 py-1 text-xs font-medium text-[var(--txt-secondary)] transition-colors hover:border-[var(--error)]/40 hover:text-[var(--error)] hover:bg-[var(--error)]/5">
+                    <button onClick={handleDismiss} className="flex shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-md border border-[var(--border-light)] px-2.5 py-1.5 text-xs font-medium text-[var(--txt-secondary)] transition-colors hover:border-[var(--error)]/40 hover:text-[var(--error)] hover:bg-[var(--error)]/5 w-full sm:w-auto">
                       <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                         <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
                       </svg>
@@ -473,10 +478,13 @@ export default function Receive() {
                 <p className="text-lg font-medium text-[var(--success)]">Download Complete</p>
                 <p className="mt-1 text-sm text-[var(--success)]/60">{progress.verified} chunks verified and saved</p>
                 <p className="mt-3 text-xs text-[var(--txt-dim)]">
-                  File has been saved to your downloads. You can close this page.
+                  File has been saved to your downloads. You can also manually trigger download if needed.
                 </p>
-                <div className="mt-5">
-                  <Button onClick={handleDismiss} variant="primary" className="w-full py-3 text-sm font-semibold">
+                <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:gap-3">
+                  <Button onClick={handleManualDownload} variant="secondary" className="flex-1 py-3 text-sm font-semibold">
+                    💾 REDOWNLOAD FILE
+                  </Button>
+                  <Button onClick={handleDismiss} variant="primary" className="flex-1 py-3 text-sm font-semibold">
                     RECEIVE ANOTHER FILE
                   </Button>
                 </div>
@@ -490,7 +498,7 @@ export default function Receive() {
                 </svg>
                 <p className="text-lg font-medium text-[var(--error)]">Transfer Failed</p>
                 <p className="mt-1 text-sm text-[var(--error)]/60">Something went wrong — the connection may have dropped or a chunk failed verification.</p>
-                <div className="mt-5 flex gap-3">
+                <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:gap-3">
                   <Button onClick={handleRetry} variant="secondary" className="flex-1 py-3 text-sm font-semibold">
                     TRY AGAIN
                   </Button>

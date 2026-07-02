@@ -43,16 +43,18 @@ export default function ConfirmModal() {
             </p>
 
             {/* Actions */}
-            <div className="mt-6 flex justify-end gap-3">
+            <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end sm:gap-3">
               <Button
                 variant="secondary"
                 onClick={onCancel}
+                className="w-full sm:w-auto"
               >
                 Cancel
               </Button>
               <Button
                 variant="primary"
                 onClick={onConfirm}
+                className="w-full sm:w-auto"
               >
                 Confirm
               </Button>

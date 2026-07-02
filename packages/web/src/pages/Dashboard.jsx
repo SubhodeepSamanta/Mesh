@@ -19,7 +19,7 @@ export default function Dashboard() {
   const navigate = useNavigate()
   const roomCode = useSignalingStore((s) => s.roomCode)
   const { role, peerStats, chunkStates, speedHistory, status, fileMeta, progress, seeding, canReseed } = useTransferStore()
-  const { disconnectAll, triggerDownload, stopSeeding, resumeSeeding, addSenderPeer } = useTransfer()
+  const { disconnectAll, triggerDownload, resetDownload, stopSeeding, resumeSeeding, addSenderPeer } = useTransfer()
   const downloadFired = useRef(false)
   const [elapsed, setElapsed] = useState(0)
   const startRef = useRef(null)
@@ -54,11 +54,16 @@ export default function Dashboard() {
   }, [status])
 
   useEffect(() => {
-    if (status === 'complete' && role === 'receiver' && !downloadFired.current) {
-      downloadFired.current = true
+    if (status === 'complete' && role === 'receiver' && !M.autoDownloaded) {
+      M.autoDownloaded = true
       triggerDownload()
     }
   }, [status, role, triggerDownload])
+
+  const handleManualDownload = () => {
+    resetDownload()
+    triggerDownload()
+  }
 
   useEffect(() => {
     const c = useSignalingStore.getState().client
@@ -154,52 +159,82 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="mx-auto flex min-h-screen max-w-7xl flex-col gap-4 px-6 py-6">
-      <div className="flex items-center justify-between rounded-lg border border-[var(--border)] bg-[var(--surface)] px-6 py-4">
-        <div className="flex items-center gap-4">
-          <span className="text-lg font-bold tracking-wider text-[var(--accent)]">mesh</span>
-          <Badge color="amber">{roomCode || '\u2014\u2014'}</Badge>
-          {fileMeta && (
-            <span className="hidden items-center gap-2 text-sm sm:flex">
-              <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
+    <div className="mx-auto flex min-h-screen max-w-7xl flex-col gap-4 px-4 py-6 sm:px-6">
+      <div className="flex flex-col gap-4 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4 sm:flex-row sm:items-center sm:justify-between sm:px-6 sm:py-4">
+        {/* Left Side: Logo, Room Code, File Details */}
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
+          <div className="flex items-center gap-3">
+            <span className="text-lg font-bold tracking-wider text-[var(--accent)]">mesh</span>
+            <Badge color="amber">{roomCode || '\u2014\u2014'}</Badge>
+            {/* Mobile-only role badge */}
+            {fileMeta && (
+              <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider sm:hidden ${
                 role === 'sender' ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'bg-[var(--success)]/10 text-[var(--success)]'
               }`}>
                 {role === 'sender' ? 'SENDER' : 'RECEIVER'}
               </span>
-              <span className="text-[var(--txt-secondary)]">{fileMeta.fileName} · {fileCount} file{fileCount > 1 ? 's' : ''}</span>
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-4">
-          <span className="font-mono text-2xl font-bold tracking-wider text-[var(--txt-primary)]">{mmss}</span>
-          <div className="hidden items-center gap-1.5 text-xs text-[var(--txt-secondary)] sm:flex">
-            <span>{verifiedChunks}/{totalChunks} chunks</span>
-            <span className="text-[var(--txt-dim)]">·</span>
-            <span className={speed > 0 ? 'text-[var(--accent)]' : ''}>{speed.toFixed(1)} MB/s</span>
-            {status === 'transferring' && speed > 0 && (
-              <>
-                <span className="text-[var(--txt-dim)]">·</span>
-                <span>ETA: {eta}</span>
-              </>
             )}
           </div>
-          {(status === 'transferring' || status === 'complete') && (
-            <div className="flex flex-col items-end gap-1">
-              <Button
-                variant="secondary"
-                disabled={role === 'receiver' && !canReseed}
-                onClick={seeding ? stopSeeding : resumeSeeding}
-              >
-                {seeding ? 'STOP SEED' : 'RESUME SEED'}
-              </Button>
-              {role === 'receiver' && !canReseed && (
-                <span className="text-[10px] text-[var(--txt-secondary)]">Seeding disabled for streamed folders</span>
-              )}
+          {fileMeta && (
+            <div className="flex items-center gap-2 text-xs text-[var(--txt-secondary)] sm:text-sm">
+              <span className={`hidden rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider sm:inline-block ${
+                role === 'sender' ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'bg-[var(--success)]/10 text-[var(--success)]'
+              }`}>
+                {role === 'sender' ? 'SENDER' : 'RECEIVER'}
+              </span>
+              <span className="truncate max-w-[180px] sm:max-w-none" title={fileMeta.fileName}>
+                {fileMeta.fileName} · {fileCount} file{fileCount > 1 ? 's' : ''}
+              </span>
             </div>
           )}
-          <Button variant={done ? 'primary' : 'danger'} onClick={handleDismiss}>
-            {done ? 'DISMISS' : 'ABORT'}
-          </Button>
+        </div>
+
+        {/* Right Side: Timer, Speed/Chunk stats, Action Buttons */}
+        <div className="flex flex-col gap-3 w-full sm:flex-row sm:items-center sm:justify-end sm:gap-4 sm:w-auto">
+          {/* Stats & Timer Row */}
+          <div className="flex items-center justify-between gap-4 w-full sm:w-auto">
+            <span className="font-mono text-2xl font-bold tracking-wider text-[var(--txt-primary)]">{mmss}</span>
+            <div className="flex items-center gap-1.5 text-xs text-[var(--txt-secondary)]">
+              <span>{verifiedChunks}/{totalChunks} chunks</span>
+              <span className="text-[var(--txt-dim)]">·</span>
+              <span className={speed > 0 ? 'text-[var(--accent)]' : ''}>{speed.toFixed(1)} MB/s</span>
+            </div>
+          </div>
+
+          {/* Action Buttons Container */}
+          <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+            {status === 'complete' && role === 'receiver' && (
+              <Button
+                variant="secondary"
+                onClick={handleManualDownload}
+                className="flex-1 px-3 py-2 text-xs sm:flex-initial sm:px-5 sm:py-2.5 sm:text-sm"
+              >
+                💾 DOWNLOAD
+              </Button>
+            )}
+            {(status === 'transferring' || status === 'complete') && (
+              <div className="flex flex-col items-end gap-1 flex-1 sm:flex-initial">
+                <Button
+                  variant="secondary"
+                  disabled={role === 'receiver' && !canReseed}
+                  onClick={seeding ? stopSeeding : resumeSeeding}
+                  className="w-full px-3 py-2 text-xs sm:w-auto sm:px-5 sm:py-2.5 sm:text-sm"
+                >
+                  {seeding ? 'STOP SEED' : 'RESUME SEED'}
+                </Button>
+                {role === 'receiver' && !canReseed && (
+                  <span className="hidden text-[10px] text-[var(--txt-secondary)] sm:inline">Seeding disabled for streamed folders</span>
+                )}
+              </div>
+            )}
+            <Button
+              variant={done ? 'primary' : 'danger'}
+              onClick={handleDismiss}
+              className="flex-1 px-3 py-2 text-xs sm:flex-initial sm:px-5 sm:py-2.5 sm:text-sm"
+            >
+              {done ? 'DISMISS' : 'ABORT'}
+            </Button>
+          </div>
         </div>
       </div>
 

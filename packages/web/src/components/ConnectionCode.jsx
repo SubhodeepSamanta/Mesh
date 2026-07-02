@@ -66,9 +66,9 @@ export default function ConnectionCode({ onJoin, joining = false, defaultValue =
     const result = jsQR(imageData.data, imageData.width, imageData.height)
 
     if (result) {
-      const match = result.data.match(/[?&]code=([ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{6})/)
+      const match = result.data.match(/[?&]code=([ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{4})/i)
       if (match) {
-        setCode(match[1])
+        setCode(match[1].toUpperCase())
         stopCamera()
         return
       }
@@ -80,7 +80,7 @@ export default function ConnectionCode({ onJoin, joining = false, defaultValue =
   function handleSubmit(e) {
     e.preventDefault()
     const cleaned = code.trim().toUpperCase()
-    if (cleaned.length === 6) onJoin(cleaned)
+    if (cleaned.length === 4) onJoin(cleaned)
   }
 
   return (
@@ -88,10 +88,18 @@ export default function ConnectionCode({ onJoin, joining = false, defaultValue =
       <div className="relative">
         <input
           value={code}
-          onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^ABCDEFGHJKLMNPQRSTUVWXYZ23456789]/g, '').slice(0, 6))}
-          placeholder="e.g. WLF482"
+          onChange={(e) => {
+            const val = e.target.value
+            const match = val.match(/[?&]code=([ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{4})/i)
+            if (match) {
+              setCode(match[1].toUpperCase())
+            } else {
+              setCode(val.toUpperCase().replace(/[^ABCDEFGHJKLMNPQRSTUVWXYZ23456789]/g, '').slice(0, 4))
+            }
+          }}
+          placeholder="e.g. WLF4"
           className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] px-4 py-3 font-mono text-lg tracking-widest text-[var(--txt-primary)] placeholder:text-[var(--txt-secondary)] outline-none transition-colors focus:border-[var(--accent)]/50"
-          maxLength={6}
+          maxLength={100}
         />
         <button
           type="button"
@@ -114,6 +122,7 @@ export default function ConnectionCode({ onJoin, joining = false, defaultValue =
           </svg>
         </button>
       </div>
+      <p className="text-[11px] text-[var(--txt-secondary)] -mt-1 font-medium">Note: Codes are case-insensitive</p>
 
       {scanning && (
         <div className="relative overflow-hidden rounded-lg border border-[var(--accent)]/30 bg-black">
@@ -126,7 +135,7 @@ export default function ConnectionCode({ onJoin, joining = false, defaultValue =
         </div>
       )}
 
-      <Button type="submit" disabled={code.trim().length !== 6 || joining} className="w-full">
+      <Button type="submit" disabled={code.trim().length !== 4 || joining} className="w-full">
         {joining ? 'CONNECTING...' : 'ESTABLISH LINK'}
       </Button>
     </form>

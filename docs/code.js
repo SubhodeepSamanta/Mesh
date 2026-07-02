@@ -106,7 +106,7 @@ async function readFileAsMarkdown(filePath) {
 }
 
 async function buildMarkdown() {
-  const files = await readDirectoryTree(path.join(rootDir, "packages", "web"));
+  const files = await readDirectoryTree(rootDir);
 
   files.sort((left, right) =>
     toDisplayPath(left).localeCompare(toDisplayPath(right), undefined, {

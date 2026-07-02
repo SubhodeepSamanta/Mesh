@@ -267,7 +267,7 @@ export default function Send() {
         </Card>
       )}
 
-      <div className="mt-8 flex items-center justify-center gap-5 border-t border-[var(--border)] pt-4">
+      <div className="mt-8 flex flex-col gap-3 items-center border-t border-[var(--border)] pt-4 sm:flex-row sm:justify-center sm:gap-5">
         <span className="text-xs uppercase tracking-[0.15em] text-[var(--txt-secondary)]">
           STATUS <span className={`ml-1 ${done ? 'text-[var(--success)]' : xfer ? 'text-[var(--accent)]' : 'text-[var(--txt-dim)]'}`}>
             {done ? 'COMPLETE' : xfer ? 'SENDING' : hp ? 'CONNECTED' : 'WAITING'}
@@ -281,7 +281,7 @@ export default function Send() {
         {!done && (
           <button
             onClick={handleCancel}
-            className="cursor-pointer rounded-md border border-[var(--border-light)] px-3 py-1 text-xs uppercase tracking-wider text-[var(--txt-secondary)] transition-colors hover:border-[var(--error)]/30 hover:text-[var(--error)]"
+            className="w-full cursor-pointer rounded-md border border-[var(--border-light)] px-3 py-2 text-xs uppercase tracking-wider text-[var(--txt-secondary)] transition-colors hover:border-[var(--error)]/30 hover:text-[var(--error)] sm:w-auto"
           >
             Cancel
           </button>
@@ -289,7 +289,7 @@ export default function Send() {
         {done && (
           <button
             onClick={handleCancel}
-            className="cursor-pointer rounded-md border border-[var(--border-light)] px-3 py-1 text-xs uppercase tracking-wider text-[var(--txt-secondary)] transition-colors hover:border-[var(--accent)]/30 hover:text-[var(--accent)]"
+            className="w-full cursor-pointer rounded-md border border-[var(--border-light)] px-3 py-2 text-xs uppercase tracking-wider text-[var(--txt-secondary)] transition-colors hover:border-[var(--accent)]/30 hover:text-[var(--accent)] sm:w-auto"
           >
             Send Another
           </button>

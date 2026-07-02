@@ -31,7 +31,7 @@ describe('signaling server', () => {
     const msg = await nextMessage(ws);
 
     assert.equal(msg.type, MSG_TYPE.ROOM_CREATED);
-    assert.match(msg.roomCode, /^[A-Z2-9]{6}$/);
+    assert.match(msg.roomCode, /^[A-Z2-9]{4}$/);
     assert.ok(msg.peerId);
 
     ws.close();

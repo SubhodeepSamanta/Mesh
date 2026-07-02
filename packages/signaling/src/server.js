@@ -23,7 +23,7 @@ const MAX_JOINS_PER_MIN   = 20;
 const MAX_RELAY_PAYLOAD_BYTES = 16 * 1024;
 const MAX_RELAY_PER_MIN = 300;
 
-function generateRoomCode(length = 6) {
+function generateRoomCode(length = 4) {
   let code = '';
   for (let i = 0; i < length; i++) {
     code += ROOM_CODE_CHARS[randomBytes(1)[0] % ROOM_CODE_CHARS.length];
@@ -290,7 +290,12 @@ export class SignalingServer {
       return;
     }
 
-    const room = this.rooms.get(roomCode);
+    if (!roomCode) {
+      this._send(ws, { type: MSG_TYPE.ERROR, message: 'Room code required' });
+      return;
+    }
+    const normalizedCode = roomCode.toUpperCase();
+    const room = this.rooms.get(normalizedCode);
 
     if (!room) {
       this._send(ws, { type: MSG_TYPE.ERROR, message: 'Room not found' });
@@ -312,12 +317,12 @@ export class SignalingServer {
     const existingPeerIds = [...room.peers.keys()];
     room.peers.set(ws.peerId, ws);
     room.lastActivity = Date.now();
-    ws.roomCode = roomCode;
+    ws.roomCode = normalizedCode;
     recordPeerJoined();
 
     this._send(ws, {
       type: MSG_TYPE.ROOM_JOINED,
-      roomCode,
+      roomCode: normalizedCode,
       peerId: ws.peerId,
       existingPeers: existingPeerIds,
       iceServers: getIceServers(ws.peerId),

@@ -10,6 +10,7 @@ export const transferManager = {
   fileRefs: null,
   servedRef: new Set(),
   downloadGuard: false,
+  autoDownloaded: false,
   receivedMeta: null,
   streamHandle: null,
   streamWriters: new Map(),
@@ -50,6 +51,7 @@ export const transferManager = {
     this.fileRefs = null
     this.servedRef = new Set()
     this.downloadGuard = false
+    this.autoDownloaded = false
     this.receivedMeta = null
     this.streamHandle = null
     this.streamWriters.clear()
