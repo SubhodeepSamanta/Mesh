@@ -9588,7 +9588,7 @@ export default function History() {
                   )}
                   <button
                     onClick={() => handleRemove(e.id)}
-                    className="cursor-pointer rounded-md p-1.5 text-[var(--txt-muted)] opacity-0 transition-opacity hover:text-[var(--error)] group-hover:opacity-100"
+                    className="cursor-pointer rounded-md p-1.5 text-[var(--txt-muted)] opacity-100 transition-opacity hover:text-[var(--error)] lg:opacity-0 lg:group-hover:opacity-100"
                     title="Remove from history"
                     aria-label="Remove from history"
                   >
