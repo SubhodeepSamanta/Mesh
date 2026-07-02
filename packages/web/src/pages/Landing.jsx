@@ -30,8 +30,7 @@ export default function Landing() {
           </motion.div>
 
           <motion.div {...fadeUp} className="flex flex-wrap gap-2">
-            <Badge color="gray" dot={false}>AES-256-GCM E2EE</Badge>
-            <Badge color="gray" dot={false}>WebRTC DTLS</Badge>
+            <Badge color="gray" dot={false}>WebRTC DTLS Encrypted</Badge>
             <Badge color="gray" dot={false}>Merkle verified</Badge>
           </motion.div>
         </div>

@@ -149,7 +149,7 @@ export default function FileDropZone({ onFileReady }) {
           </>
         )}
         <span className="mt-4 inline-flex items-center gap-1.5 rounded-full border border-[var(--border-light)] bg-[var(--bg-secondary)] px-3 py-1 text-[11px] uppercase tracking-widest text-[var(--txt-secondary)]">
-          AES-256-GCM · E2E encrypted
+          WebRTC DTLS · Peer-to-peer encrypted
         </span>
       </div>
     </div>

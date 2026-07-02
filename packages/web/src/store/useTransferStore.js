@@ -13,6 +13,7 @@ const initial = {
   speedHistory: [],
   error: null,
   seeding: false,
+  canReseed: true,
   saveMode: 'files',
   startTime: null,
   roomCode: '',
@@ -33,6 +34,7 @@ function loadSaved() {
     }
     saved.peerStats = []
     saved.speedHistory = []
+    saved.canReseed = saved.canReseed !== undefined ? saved.canReseed : true
     const liveStatuses = ['transferring', 'waiting-for-peer', 'waiting-for-file', 'file-offered']
     if (liveStatuses.includes(saved.status)) {
       saved.status = 'error'
@@ -52,6 +54,7 @@ export const useTransferStore = create((set) => {
       role: 'sender',
       status: 'waiting-for-peer',
       seeding: true,
+      canReseed: true,
       fileMeta,
       chunkStates: new Array(fileMeta.totalChunks).fill('pending'),
       progress: { verified: 0, total: fileMeta.totalChunks, percent: 0 },
@@ -61,6 +64,7 @@ export const useTransferStore = create((set) => {
     startAsReceiver: () => set({
       role: 'receiver',
       status: 'waiting-for-file',
+      canReseed: false,
       fileMeta: null,
       progress: { verified: 0, total: 0, percent: 0 },
       chunkStates: [],
@@ -72,6 +76,7 @@ export const useTransferStore = create((set) => {
     setIncomingFile: (fileMeta) => set({
       fileMeta,
       status: 'file-offered',
+      canReseed: false,
       chunkStates: new Array(fileMeta.totalChunks).fill('pending'),
       progress: { verified: 0, total: fileMeta.totalChunks, percent: 0 },
     }),
@@ -118,7 +123,7 @@ export const useTransferStore = create((set) => {
         avgSpeed: avgMbps,
         peers: s.peerStats.length,
       })
-      return { status: 'complete', seeding: canSeed }
+      return { status: 'complete', seeding: canSeed, canReseed: canSeed }
     }),
     setPaused: () => set({ status: 'paused' }),
     setError: (message) => set((s) => {
@@ -164,6 +169,7 @@ useTransferStore.subscribe((state) => {
     progress: { verified: state.progress.verified, total: state.progress.total },
     saveMode: state.saveMode,
     seeding: state.seeding,
+    canReseed: state.canReseed,
     roomCode: state.roomCode,
   }
   if (persistNow) {

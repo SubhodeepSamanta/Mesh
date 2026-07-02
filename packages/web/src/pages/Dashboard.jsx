@@ -18,7 +18,7 @@ import { useConfirmStore } from '../store/useConfirmStore.js'
 export default function Dashboard() {
   const navigate = useNavigate()
   const roomCode = useSignalingStore((s) => s.roomCode)
-  const { role, peerStats, chunkStates, speedHistory, status, fileMeta, progress, seeding } = useTransferStore()
+  const { role, peerStats, chunkStates, speedHistory, status, fileMeta, progress, seeding, canReseed } = useTransferStore()
   const { disconnectAll, triggerDownload, stopSeeding, resumeSeeding, addSenderPeer } = useTransfer()
   const downloadFired = useRef(false)
   const [elapsed, setElapsed] = useState(0)
@@ -187,12 +187,12 @@ export default function Dashboard() {
             <div className="flex flex-col items-end gap-1">
               <Button
                 variant="secondary"
-                disabled={role === 'receiver' && M.receivedMeta?.tree == null}
+                disabled={role === 'receiver' && !canReseed}
                 onClick={seeding ? stopSeeding : resumeSeeding}
               >
                 {seeding ? 'STOP SEED' : 'RESUME SEED'}
               </Button>
-              {role === 'receiver' && M.receivedMeta?.tree == null && (
+              {role === 'receiver' && !canReseed && (
                 <span className="text-[10px] text-[var(--txt-secondary)]">Seeding disabled for streamed folders</span>
               )}
             </div>

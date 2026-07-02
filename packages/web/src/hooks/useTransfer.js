@@ -51,7 +51,8 @@ function checkPeersRemaining(swarm) {
       const freshStats = swarm.getPeerStats()
       const freshAlive = freshStats.filter(p => !p.failed)
       if (freshAlive.length === 0) {
-        console.warn('All peers disconnected — waiting for reconnection...')
+        useTransferStore.getState().setError('All peers disconnected. The transfer has stalled — try asking the sender to reconnect, or start a new transfer.')
+        useToastStore.getState().addToast('All peers disconnected. The transfer has stalled.', 'error')
       }
     }, PEER_CHECK_GRACE_MS)
   }
@@ -375,7 +376,7 @@ export function useTransfer() {
       if (c === true) return null
       ordered.push(c)
     }
-    return ordered.length > 0 ? new Blob(ordered, { type: 'application/octet-stream' }) : null
+    return new Blob(ordered, { type: 'application/octet-stream' })
   }, [])
 
   const triggerDownload = useCallback(async () => {
@@ -383,7 +384,7 @@ export function useTransfer() {
     M.downloadGuard = true
     const meta = useTransferStore.getState().fileMeta
     const saveMode = useTransferStore.getState().saveMode
-    if (!meta || M.chunks.length === 0) return
+    if (!meta) return
 
     const allStreamed = M.streamWriters.size > 0
     const files = meta.files || [{ path: meta.fileName, name: meta.fileName, size: meta.fileSize, startChunk: 0, chunkCount: meta.totalChunks }]
@@ -397,7 +398,7 @@ export function useTransfer() {
     if (isMulti && saveMode === 'auto') {
       let wroteAny = false
       try {
-        const dirHandle = await window.showDirectoryPicker?.({ mode: 'readwrite' })
+        const dirHandle = M.streamHandle?.dirHandle || await window.showDirectoryPicker?.({ mode: 'readwrite' })
         if (dirHandle) {
           for (const entry of files) {
             const parts = entry.path.replace(/\\/g, '/').split('/')

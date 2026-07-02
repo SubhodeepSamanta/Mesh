@@ -66,7 +66,7 @@ export default function ConnectionCode({ onJoin, joining = false, defaultValue =
     const result = jsQR(imageData.data, imageData.width, imageData.height)
 
     if (result) {
-      const match = result.data.match(/[?&]code=([A-Z2-9]{6})/)
+      const match = result.data.match(/[?&]code=([ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{6})/)
       if (match) {
         setCode(match[1])
         stopCamera()
@@ -88,7 +88,7 @@ export default function ConnectionCode({ onJoin, joining = false, defaultValue =
       <div className="relative">
         <input
           value={code}
-          onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z2-9]/g, '').slice(0, 6))}
+          onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^ABCDEFGHJKLMNPQRSTUVWXYZ23456789]/g, '').slice(0, 6))}
           placeholder="e.g. WLF482"
           className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] px-4 py-3 font-mono text-lg tracking-widest text-[var(--txt-primary)] placeholder:text-[var(--txt-secondary)] outline-none transition-colors focus:border-[var(--accent)]/50"
           maxLength={6}

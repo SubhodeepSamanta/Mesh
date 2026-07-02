@@ -14,6 +14,7 @@ import Accordion from '../components/shared/Accordion.jsx'
 import ProgressBar from '../components/shared/ProgressBar.jsx'
 import ConnectionCode from '../components/ConnectionCode.jsx'
 import FileManifest from '../components/FileManifest.jsx'
+import { useToastStore } from '../store/useToastStore.js'
 
 export default function Receive() {
   const navigate = useNavigate()
@@ -79,7 +80,13 @@ export default function Receive() {
         if (dirHandle) {
           M.streamHandle = { dirHandle }
         }
-      } catch {}
+      } catch (err) {
+        if (err.name !== 'AbortError') {
+          useToastStore.getState().addToast('Folder selection failed — files will be downloaded individually instead.', 'error')
+        } else {
+          useToastStore.getState().addToast('No folder selected — files will be kept in memory and downloaded at the end.', 'info')
+        }
+      }
     }
     for (const [id, transport] of M.transports) {
       if (M.swarm && transport.offeredRoot === M.swarm.merkleRoot) {
@@ -468,11 +475,8 @@ export default function Receive() {
                 <p className="mt-3 text-xs text-[var(--txt-dim)]">
                   File has been saved to your downloads. You can close this page.
                 </p>
-                <div className="mt-5 flex gap-3">
-                  <Button onClick={handleRetry} variant="secondary" className="flex-1 py-3 text-sm font-semibold">
-                    RECEIVE AGAIN
-                  </Button>
-                  <Button onClick={handleDismiss} variant="primary" className="flex-1 py-3 text-sm font-semibold">
+                <div className="mt-5">
+                  <Button onClick={handleDismiss} variant="primary" className="w-full py-3 text-sm font-semibold">
                     RECEIVE ANOTHER FILE
                   </Button>
                 </div>

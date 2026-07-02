@@ -21,6 +21,8 @@ export default function History() {
   useEffect(() => {
     setEntries(getHistory())
     const handler = () => setEntries(getHistory())
+    // NOTE: The window 'storage' event listener only fires when localStorage
+    // is modified from another tab/window. It does not fire in the current tab.
     window.addEventListener('storage', handler)
     return () => window.removeEventListener('storage', handler)
   }, [])

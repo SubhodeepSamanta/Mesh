@@ -3,56 +3,25 @@ import { formatBytes } from '../lib/format.js'
 import Badge from './shared/Badge.jsx'
 import Card from './shared/Card.jsx'
 
-function FileEntry({ file, depth = 0, checked, onToggle }) {
+function FileEntry({ file, depth = 0 }) {
   const indent = depth * 20
   return (
-    <label
-      className="flex cursor-pointer items-center gap-3 rounded-md px-3 py-2 transition-colors hover:bg-[var(--surface-hover)]"
+    <div
+      className="flex items-center gap-3 rounded-md px-3 py-2 transition-colors hover:bg-[var(--surface-hover)]"
       style={{ paddingLeft: `${12 + indent}px` }}
     >
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={() => onToggle(file.path)}
-        className="h-4 w-4 rounded border-[var(--border-light)] bg-[var(--bg-secondary)] text-[var(--accent)] focus:ring-[var(--accent)]/30"
-      />
       <span className="flex-1 truncate text-sm text-[var(--txt-primary)]">{file.name}</span>
       <span className="text-xs text-[var(--txt-secondary)]">{formatBytes(file.size)}</span>
-    </label>
+    </div>
   )
 }
 
 export default function FileManifest({ fileMeta }) {
   const [expandedHash, setExpandedHash] = useState(false)
-  const [selectedFiles, setSelectedFiles] = useState(() => {
-    const sel = {}
-    if (fileMeta?.files) {
-      fileMeta.files.forEach((f) => { sel[f.path] = true })
-    } else if (fileMeta?.fileName) {
-      sel[fileMeta.fileName] = true
-    }
-    return sel
-  })
 
   if (!fileMeta) return null
 
   const files = fileMeta.files || [{ path: fileMeta.fileName, name: fileMeta.fileName, size: fileMeta.fileSize }]
-  const allSelected = files.every((f) => selectedFiles[f.path])
-  const anySelected = files.some((f) => selectedFiles[f.path])
-
-  function toggleFile(path) {
-    setSelectedFiles((prev) => ({ ...prev, [path]: !prev[path] }))
-  }
-
-  function toggleAll() {
-    if (allSelected) {
-      const sel = {}; files.forEach((f) => { sel[f.path] = false }); setSelectedFiles(sel)
-    } else {
-      const sel = {}; files.forEach((f) => { sel[f.path] = true }); setSelectedFiles(sel)
-    }
-  }
-
-  const totalSelected = files.filter((f) => selectedFiles[f.path]).reduce((s, f) => s + f.size, 0)
   const totalSize = files.reduce((s, f) => s + f.size, 0)
   const isFolder = fileMeta.files && fileMeta.files.length > 1
   const rootHash = fileMeta.merkleRoot || fileMeta.fileMerkleRoot || ''
@@ -118,24 +87,13 @@ export default function FileManifest({ fileMeta }) {
 
       <Card className="space-y-2">
         <div className="flex items-center justify-between">
-          <label className="flex cursor-pointer items-center gap-2">
-            <input
-              type="checkbox"
-              checked={allSelected}
-              onChange={toggleAll}
-              className="h-4 w-4 rounded border-[var(--border-light)] bg-[var(--bg-secondary)] text-[var(--accent)] focus:ring-[var(--accent)]/30"
-            />
-            <span className="text-xs font-medium uppercase tracking-widest text-[var(--txt-secondary)]">Content Manifest</span>
-          </label>
+          <span className="text-xs font-medium uppercase tracking-widest text-[var(--txt-secondary)]">Content Manifest</span>
         </div>
 
-        {anySelected && (
-          <p className="text-xs text-[var(--txt-secondary)]">
-            <span className="font-mono text-[var(--accent)]">{files.filter((f) => selectedFiles[f.path]).length}</span> of{' '}
-            <span className="font-mono">{files.length}</span> files selected —{' '}
-            <span className="font-mono text-[var(--accent)]">{formatBytes(totalSelected)}</span> / {formatBytes(totalSize)}
-          </p>
-        )}
+        <p className="text-xs text-[var(--txt-secondary)]">
+          <span className="font-mono">{files.length}</span> {files.length === 1 ? 'file' : 'files'} —{' '}
+          <span className="font-mono">{formatBytes(totalSize)}</span>
+        </p>
 
         <div className="max-h-64 space-y-0.5 overflow-y-auto">
           {files.map((file) => (
@@ -143,8 +101,6 @@ export default function FileManifest({ fileMeta }) {
               key={file.path}
               file={file}
               depth={isFolder && file.path.includes('/') ? file.path.split('/').length - 1 : 0}
-              checked={!!selectedFiles[file.path]}
-              onToggle={toggleFile}
             />
           ))}
         </div>
