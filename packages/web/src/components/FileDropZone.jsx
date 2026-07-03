@@ -1,6 +1,5 @@
 import { useCallback, useState, useRef } from 'react'
 import { useDropzone } from 'react-dropzone'
-import { indexFiles } from '../lib/fileChunker.js'
 
 const MODES = [
   { key: 'single', label: 'File', icon: 'M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z M14 2v6h6 M12 18v-6 M9 15l3-3 3 3' },
@@ -8,7 +7,7 @@ const MODES = [
   { key: 'folder', label: 'Folder', icon: 'M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z' },
 ]
 
-export default function FileDropZone({ onFileReady }) {
+export default function FileDropZone({ onFilesSelected }) {
   const [mode, setMode] = useState('multiple')
   const [indexing, setIndexing] = useState(false)
   const [statusText, setStatusText] = useState('')
@@ -36,21 +35,13 @@ export default function FileDropZone({ onFileReady }) {
     return files
   }, [])
 
-  const handleFiles = useCallback(async (files) => {
+  const handleFiles = useCallback((files) => {
     if (files.length === 0) return
-    setStatusText(`Indexing ${files.length} file${files.length > 1 ? 's' : ''}...`)
-    setIndexing(true)
-    try {
-      const fileMap = {}
-      files.forEach(f => { fileMap[f.relativePath || f.name] = f })
-      fileRefs.current = fileMap
-      const fileIndex = await indexFiles(files)
-      onFileReady(files[0], fileIndex, fileMap)
-    } finally {
-      setIndexing(false)
-      setStatusText('')
-    }
-  }, [onFileReady])
+    const fileMap = {}
+    files.forEach(f => { fileMap[f.relativePath || f.name] = f })
+    fileRefs.current = fileMap
+    onFilesSelected(files, fileMap)
+  }, [onFilesSelected])
 
   const onDrop = useCallback(async (accepted, rejections, event) => {
     const item = event?.dataTransfer?.items?.[0]

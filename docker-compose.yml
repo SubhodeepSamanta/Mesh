@@ -2,6 +2,7 @@ version: '3.8'
 services:
   signaling:
     build: ./packages/signaling
+    mem_limit: 150m
     ports:
       - "8080:8080"
     environment:
@@ -22,6 +23,7 @@ services:
 
   coturn:
     image: coturn/coturn:latest
+    mem_limit: 250m
     ports:
       - "3478:3478/udp"
       - "3478:3478/tcp"

@@ -5,14 +5,16 @@ import { pathToFileURL } from 'url';
 import { metrics, recordRoomCreated, recordRoomExpiredOrClosed, recordPeerJoined, recordPeerLeft } from './metrics.js';
 
 export const MSG_TYPE = {
-  CREATE_ROOM:  'CREATE_ROOM',
-  ROOM_CREATED: 'ROOM_CREATED',
-  JOIN_ROOM:    'JOIN_ROOM',
-  ROOM_JOINED:  'ROOM_JOINED',
-  PEER_JOINED:  'PEER_JOINED',
-  PEER_LEFT:    'PEER_LEFT',
-  RELAY:        'RELAY',
-  ERROR:        'ERROR',
+  CREATE_ROOM:   'CREATE_ROOM',
+  ROOM_CREATED:  'ROOM_CREATED',
+  JOIN_ROOM:     'JOIN_ROOM',
+  ROOM_JOINED:   'ROOM_JOINED',
+  REJOIN_ROOM:   'REJOIN_ROOM',
+  ROOM_REJOINED: 'ROOM_REJOINED',
+  PEER_JOINED:   'PEER_JOINED',
+  PEER_LEFT:     'PEER_LEFT',
+  RELAY:         'RELAY',
+  ERROR:         'ERROR',
 };
 
 const ROOM_CODE_CHARS  = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -86,6 +88,7 @@ export class SignalingServer {
     this.maxRooms     = opts.maxRooms     ?? parseInt(process.env.MAX_ROOMS || '5000', 10);
     this.trustProxy   = opts.trustProxy   ?? (process.env.TRUST_PROXY === '1');
     this.allowedOrigins = opts.allowedOrigins ?? (process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',').map(s => s.trim()).filter(Boolean) : null);
+    this.rejoinGraceMs = opts.rejoinGraceMs ?? parseInt(process.env.REJOIN_GRACE_MS || '30000', 10);
     this._expiryTimer = null;
   }
 
@@ -208,9 +211,12 @@ export class SignalingServer {
     const now = Date.now();
     for (const [code, room] of this.rooms) {
       if (now - room.lastActivity > this.roomTtlMs) {
-        for (const ws of room.peers.values()) {
-          this._send(ws, { type: MSG_TYPE.ERROR, message: 'Room expired' });
-          ws.close();
+        for (const entry of room.peers.values()) {
+          clearTimeout(entry.disconnectTimer);
+          if (entry.ws) {
+            this._send(entry.ws, { type: MSG_TYPE.ERROR, message: 'Room expired' });
+            entry.ws.close();
+          }
         }
         this.rooms.delete(code);
         recordRoomExpiredOrClosed();
@@ -244,6 +250,9 @@ export class SignalingServer {
       case MSG_TYPE.JOIN_ROOM:
         this._joinRoom(ws, msg.roomCode, msg.password);
         break;
+      case MSG_TYPE.REJOIN_ROOM:
+        this._rejoinRoom(ws, msg.roomCode, msg.peerId, msg.rejoinToken);
+        break;
       case MSG_TYPE.RELAY:
         this._relay(ws, msg);
         break;
@@ -271,8 +280,9 @@ export class SignalingServer {
       roomCode = generateRoomCode();
     } while (this.rooms.has(roomCode));
 
+    const rejoinToken = randomBytes(16).toString('hex');
     this.rooms.set(roomCode, {
-      peers:        new Map([[ws.peerId, ws]]),
+      peers:        new Map([[ws.peerId, { ws, rejoinToken, disconnectTimer: null }]]),
       passwordHash: password ? hashPassword(password) : null,
       createdAt:    Date.now(),
       lastActivity: Date.now(),
@@ -281,7 +291,7 @@ export class SignalingServer {
     ws.roomCode = roomCode;
     recordRoomCreated();
     recordPeerJoined();
-    this._send(ws, { type: MSG_TYPE.ROOM_CREATED, roomCode, peerId: ws.peerId, iceServers: getIceServers(ws.peerId) });
+    this._send(ws, { type: MSG_TYPE.ROOM_CREATED, roomCode, peerId: ws.peerId, rejoinToken, iceServers: getIceServers(ws.peerId) });
   }
 
   _joinRoom(ws, roomCode, password) {
@@ -315,7 +325,8 @@ export class SignalingServer {
     }
 
     const existingPeerIds = [...room.peers.keys()];
-    room.peers.set(ws.peerId, ws);
+    const rejoinToken = randomBytes(16).toString('hex');
+    room.peers.set(ws.peerId, { ws, rejoinToken, disconnectTimer: null });
     room.lastActivity = Date.now();
     ws.roomCode = normalizedCode;
     recordPeerJoined();
@@ -325,14 +336,55 @@ export class SignalingServer {
       roomCode: normalizedCode,
       peerId: ws.peerId,
       existingPeers: existingPeerIds,
+      rejoinToken,
       iceServers: getIceServers(ws.peerId),
     });
 
-    for (const [peerId, peerWs] of room.peers) {
-      if (peerId !== ws.peerId) {
-        this._send(peerWs, { type: MSG_TYPE.PEER_JOINED, peerId: ws.peerId });
+    for (const [peerId, entry] of room.peers) {
+      if (peerId !== ws.peerId && entry.ws) {
+        this._send(entry.ws, { type: MSG_TYPE.PEER_JOINED, peerId: ws.peerId });
       }
     }
+  }
+
+  _rejoinRoom(ws, roomCode, peerId, rejoinToken) {
+    if (!this._checkRateLimit(ws._ip, 'join')) {
+      this._send(ws, { type: MSG_TYPE.ERROR, message: 'Rate limit exceeded: too many join attempts' });
+      return;
+    }
+
+    const normalizedCode = (roomCode || '').toUpperCase();
+    const room = this.rooms.get(normalizedCode);
+    if (!room) {
+      this._send(ws, { type: MSG_TYPE.ERROR, message: 'Room not found' });
+      return;
+    }
+
+    const entry = room.peers.get(peerId);
+    // entry.ws !== null is a security guard: only allow a rejoin while the
+    // slot is actually disconnected/pending — prevents a leaked/replayed
+    // token from hijacking an already-live connection.
+    if (!entry || entry.ws !== null || !rejoinToken || entry.rejoinToken !== rejoinToken) {
+      this._send(ws, { type: MSG_TYPE.ERROR, message: 'Cannot rejoin room' });
+      return;
+    }
+
+    clearTimeout(entry.disconnectTimer);
+    entry.disconnectTimer = null;
+    entry.ws = ws;
+    ws.roomCode = normalizedCode;
+    ws.peerId = peerId;
+    room.lastActivity = Date.now();
+
+    const existingPeerIds = [...room.peers.keys()].filter(id => id !== peerId);
+    this._send(ws, {
+      type: MSG_TYPE.ROOM_REJOINED,
+      roomCode: normalizedCode,
+      peerId,
+      existingPeers: existingPeerIds,
+      rejoinToken: entry.rejoinToken,
+      iceServers: getIceServers(peerId),
+    });
   }
 
   _relay(ws, msg) {
@@ -357,13 +409,13 @@ export class SignalingServer {
 
     room.lastActivity = Date.now();
 
-    const targetWs = room.peers.get(msg.targetPeerId);
-    if (!targetWs) {
+    const targetEntry = room.peers.get(msg.targetPeerId);
+    if (!targetEntry || !targetEntry.ws) {
       this._send(ws, { type: MSG_TYPE.ERROR, message: 'Target peer not found' });
       return;
     }
 
-    this._send(targetWs, {
+    this._send(targetEntry.ws, {
       type: MSG_TYPE.RELAY,
       fromPeerId: ws.peerId,
       payload: msg.payload,
@@ -376,17 +428,25 @@ export class SignalingServer {
     const room = this.rooms.get(ws.roomCode);
     if (!room) return;
 
-    room.peers.delete(ws.peerId);
-    recordPeerLeft();
+    const entry = room.peers.get(ws.peerId);
+    // Stale-close guard: if this slot was already taken over by a rejoined
+    // (new) ws by the time this fires, don't tear down the new connection.
+    if (!entry || entry.ws !== ws) return;
 
-    for (const peerWs of room.peers.values()) {
-      this._send(peerWs, { type: MSG_TYPE.PEER_LEFT, peerId: ws.peerId });
-    }
+    entry.ws = null;
+    entry.disconnectTimer = setTimeout(() => {
+      room.peers.delete(ws.peerId);
+      recordPeerLeft();
 
-    if (room.peers.size === 0) {
-      this.rooms.delete(ws.roomCode);
-      recordRoomExpiredOrClosed();
-    }
+      for (const peerEntry of room.peers.values()) {
+        if (peerEntry.ws) this._send(peerEntry.ws, { type: MSG_TYPE.PEER_LEFT, peerId: ws.peerId });
+      }
+
+      if (room.peers.size === 0) {
+        this.rooms.delete(ws.roomCode);
+        recordRoomExpiredOrClosed();
+      }
+    }, this.rejoinGraceMs);
   }
 }
 

@@ -85,6 +85,7 @@ export default function Receive() {
 
   async function handleJoinWithPassword(e) {
     if (e) e.preventDefault()
+    if (!roomPassword.trim()) return
     setJoining(true)
     setJoinError(null)
     try {
@@ -306,7 +307,7 @@ export default function Receive() {
                   <Button type="button" onClick={handleCancelPassword} variant="secondary" className="flex-1">
                     Cancel
                   </Button>
-                  <Button type="submit" disabled={joining} className="flex-1">
+                  <Button type="submit" disabled={joining || !roomPassword.trim()} className="flex-1">
                     {joining ? 'Connecting...' : 'Connect'}
                   </Button>
                 </div>

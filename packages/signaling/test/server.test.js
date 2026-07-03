@@ -127,7 +127,7 @@ describe('signaling server', () => {
   });
 
   it('notifies remaining peer when one peer disconnects', async () => {
-    const server = new SignalingServer();
+    const server = new SignalingServer({ rejoinGraceMs: 10 });
     const addr = await server.listen(0);
 
     const ws1 = await connect(addr.port);
@@ -175,7 +175,7 @@ it('listen rejects cleanly when the port is already in use', async () => {
     await serverA.close();
   });
   it('removes the room entirely once all peers disconnect', async () => {
-    const server = new SignalingServer();
+    const server = new SignalingServer({ rejoinGraceMs: 10 });
     const addr = await server.listen(0);
 
     const ws1 = await connect(addr.port);
@@ -185,10 +185,122 @@ it('listen rejects cleanly when the port is already in use', async () => {
     assert.equal(server.rooms.size, 1);
 
     ws1.close();
-    await new Promise(resolve => setTimeout(resolve, 50));
+    await new Promise(resolve => setTimeout(resolve, 60));
 
     assert.equal(server.rooms.size, 0);
 
+    await server.close();
+  });
+
+  it('a peer that reconnects within the grace period rejoins without the other peer seeing PEER_LEFT', async () => {
+    const server = new SignalingServer({ rejoinGraceMs: 200 });
+    const addr = await server.listen(0);
+
+    const ws1 = await connect(addr.port);
+    send(ws1, { type: MSG_TYPE.CREATE_ROOM });
+    const created = await nextMessage(ws1);
+
+    const ws2 = await connect(addr.port);
+    send(ws2, { type: MSG_TYPE.JOIN_ROOM, roomCode: created.roomCode });
+    const joined = await nextMessage(ws2);
+    await nextMessage(ws1); // PEER_JOINED on ws1
+
+    let peerLeftReceived = false;
+    ws1.on('message', (raw) => {
+      const msg = JSON.parse(raw.toString());
+      if (msg.type === MSG_TYPE.PEER_LEFT) peerLeftReceived = true;
+    });
+
+    ws2.close();
+
+    const ws2b = await connect(addr.port);
+    send(ws2b, {
+      type: MSG_TYPE.REJOIN_ROOM,
+      roomCode: joined.roomCode,
+      peerId: joined.peerId,
+      rejoinToken: joined.rejoinToken,
+    });
+    const rejoined = await nextMessage(ws2b);
+
+    assert.equal(rejoined.type, MSG_TYPE.ROOM_REJOINED);
+    assert.equal(rejoined.roomCode, joined.roomCode);
+    assert.equal(rejoined.peerId, joined.peerId);
+    assert.deepEqual(rejoined.existingPeers, [created.peerId]);
+
+    await new Promise(resolve => setTimeout(resolve, 150));
+    assert.equal(peerLeftReceived, false);
+
+    ws1.close();
+    ws2b.close();
+    await server.close();
+  });
+
+  it('rejoining with a wrong rejoin token returns an error', async () => {
+    const server = new SignalingServer({ rejoinGraceMs: 200 });
+    const addr = await server.listen(0);
+
+    const ws1 = await connect(addr.port);
+    send(ws1, { type: MSG_TYPE.CREATE_ROOM });
+    const created = await nextMessage(ws1);
+
+    const ws2 = await connect(addr.port);
+    send(ws2, { type: MSG_TYPE.JOIN_ROOM, roomCode: created.roomCode });
+    const joined = await nextMessage(ws2);
+    await nextMessage(ws1);
+
+    ws2.close();
+
+    const ws2b = await connect(addr.port);
+    send(ws2b, {
+      type: MSG_TYPE.REJOIN_ROOM,
+      roomCode: joined.roomCode,
+      peerId: joined.peerId,
+      rejoinToken: 'not-the-real-token',
+    });
+    const msg = await nextMessage(ws2b);
+
+    assert.equal(msg.type, MSG_TYPE.ERROR);
+
+    ws1.close();
+    ws2b.close();
+    await server.close();
+  });
+
+  it('rejoining after the grace period has expired returns an error and the other peer sees PEER_LEFT', async () => {
+    const server = new SignalingServer({ rejoinGraceMs: 20 });
+    const addr = await server.listen(0);
+
+    const ws1 = await connect(addr.port);
+    send(ws1, { type: MSG_TYPE.CREATE_ROOM });
+    const created = await nextMessage(ws1);
+
+    const ws2 = await connect(addr.port);
+    send(ws2, { type: MSG_TYPE.JOIN_ROOM, roomCode: created.roomCode });
+    const joined = await nextMessage(ws2);
+    await nextMessage(ws1);
+
+    const peerLeftPromise = nextMessage(ws1);
+    ws2.close();
+
+    const leftMsg = await peerLeftPromise;
+    assert.equal(leftMsg.type, MSG_TYPE.PEER_LEFT);
+
+    const ws2b = await connect(addr.port);
+    send(ws2b, {
+      type: MSG_TYPE.REJOIN_ROOM,
+      roomCode: joined.roomCode,
+      peerId: joined.peerId,
+      rejoinToken: joined.rejoinToken,
+    });
+    const msg = await nextMessage(ws2b);
+
+    // ws1 is still in the room so the room itself survives — only the
+    // rejoining peer's own entry is gone once the grace timer fires, hence
+    // "Cannot rejoin room" rather than "Room not found".
+    assert.equal(msg.type, MSG_TYPE.ERROR);
+
+    ws1.close();
+    ws2b.close();
     await server.close();
   });
 

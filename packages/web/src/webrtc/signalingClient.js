@@ -1,14 +1,19 @@
 export const MSG_TYPE = {
-  CREATE_ROOM:  'CREATE_ROOM',
-  ROOM_CREATED: 'ROOM_CREATED',
-  JOIN_ROOM:    'JOIN_ROOM',
-  ROOM_JOINED:  'ROOM_JOINED',
-  PEER_JOINED:  'PEER_JOINED',
-  PEER_LEFT:    'PEER_LEFT',
-  RELAY:        'RELAY',
-  ERROR:        'ERROR',
-  PONG:         'PONG',
+  CREATE_ROOM:   'CREATE_ROOM',
+  ROOM_CREATED:  'ROOM_CREATED',
+  JOIN_ROOM:     'JOIN_ROOM',
+  ROOM_JOINED:   'ROOM_JOINED',
+  REJOIN_ROOM:   'REJOIN_ROOM',
+  ROOM_REJOINED: 'ROOM_REJOINED',
+  PEER_JOINED:   'PEER_JOINED',
+  PEER_LEFT:     'PEER_LEFT',
+  RELAY:         'RELAY',
+  ERROR:         'ERROR',
+  PONG:          'PONG',
 };
+
+export const CONNECT_TIMEOUT_MS = 10000;
+export const REQUEST_TIMEOUT_MS = 10000;
 
 export class SignalingClient extends EventTarget {
   constructor(url) {
@@ -18,6 +23,8 @@ export class SignalingClient extends EventTarget {
     this.peerId = null;
     this.roomCode = null;
     this._pending = null;
+    this._pendingRejoin = null;
+    this._rejoinToken = null;
     this._relayBuffer = [];
     this._intentionalClose = false;
     this._reconnectAttempts = 0;
@@ -38,16 +45,25 @@ export class SignalingClient extends EventTarget {
       this._closed = false;
       this.ws = new WebSocket(this.url);
 
+      const connectTimeout = setTimeout(() => {
+        reject(new Error('Connection to signaling server timed out'));
+        try { this.ws.close(); } catch {}
+      }, CONNECT_TIMEOUT_MS);
+
       const onOpen = () => {
+        clearTimeout(connectTimeout);
         this._reconnectAttempts = 0;
         this._startHeartbeat();
-        if (this.peerId) {
-          this.dispatchEvent(new Event('reconnect'));
+        if (this.peerId && this.roomCode && this._rejoinToken) {
+          this._rejoinRoom().catch(() => {
+            this.dispatchEvent(new CustomEvent('reconnectFailed', { detail: { message: 'Could not rejoin room' } }));
+          });
         }
         resolve(this);
       };
       this.ws.addEventListener('open', onOpen, { once: true });
       this.ws.addEventListener('error', () => {
+        clearTimeout(connectTimeout);
         this._stopHeartbeat();
         reject(new Error('Signaling connection failed'));
       }, { once: true });
@@ -93,6 +109,10 @@ export class SignalingClient extends EventTarget {
       this._pending.reject(new Error('Connection closed'));
       this._pending = null;
     }
+    if (this._pendingRejoin) {
+      this._pendingRejoin.reject(new Error('Connection closed'));
+      this._pendingRejoin = null;
+    }
   }
 
   _send(msg) {
@@ -118,6 +138,7 @@ export class SignalingClient extends EventTarget {
       this.peerId = msg.peerId;
       this.roomCode = msg.roomCode;
       this.iceServers = msg.iceServers;
+      this._rejoinToken = msg.rejoinToken;
       if (this._pending) {
         this._pending.resolve(msg);
         this._pending = null;
@@ -125,10 +146,29 @@ export class SignalingClient extends EventTarget {
       return;
     }
 
+    if (msg.type === MSG_TYPE.ROOM_REJOINED) {
+      this.peerId = msg.peerId;
+      this.roomCode = msg.roomCode;
+      this.iceServers = msg.iceServers;
+      this._rejoinToken = msg.rejoinToken;
+      if (this._pendingRejoin) {
+        this._pendingRejoin.resolve(msg);
+        this._pendingRejoin = null;
+      }
+      this.dispatchEvent(new CustomEvent('reconnect', { detail: { existingPeers: msg.existingPeers } }));
+      return;
+    }
+
     if (msg.type === MSG_TYPE.ERROR) {
       if (this._pending) {
         this._pending.reject(new Error(msg.message));
         this._pending = null;
+        return;
+      }
+      if (this._pendingRejoin) {
+        this._pendingRejoin.reject(new Error(msg.message));
+        this._pendingRejoin = null;
+        this.dispatchEvent(new CustomEvent('reconnectFailed', { detail: msg }));
         return;
       }
       this.dispatchEvent(new CustomEvent('signalingError', { detail: msg }));
@@ -154,20 +194,36 @@ export class SignalingClient extends EventTarget {
     }
   }
 
-  createRoom(password) {
+  // Wraps a request/reply round trip with a timeout, since a dropped reply
+  // (message loss, server bug) would otherwise leave the caller hanging forever.
+  _pendingRequest(pendingKey, sendFn) {
     return new Promise((resolve, reject) => {
-      if (this._pending) this._pending.reject(new Error('Request cancelled'));
-      this._pending = { resolve, reject };
-      this._send({ type: MSG_TYPE.CREATE_ROOM, password });
+      if (this[pendingKey]) this[pendingKey].reject(new Error('Request cancelled'));
+      const timeout = setTimeout(() => {
+        if (this[pendingKey] === entry) {
+          this[pendingKey] = null;
+          reject(new Error('Request timed out'));
+        }
+      }, REQUEST_TIMEOUT_MS);
+      const entry = {
+        resolve: (v) => { clearTimeout(timeout); resolve(v); },
+        reject: (e) => { clearTimeout(timeout); reject(e); },
+      };
+      this[pendingKey] = entry;
+      sendFn();
     });
   }
 
+  createRoom(password) {
+    return this._pendingRequest('_pending', () => this._send({ type: MSG_TYPE.CREATE_ROOM, password }));
+  }
+
   joinRoom(roomCode, password) {
-    return new Promise((resolve, reject) => {
-      if (this._pending) this._pending.reject(new Error('Request cancelled'));
-      this._pending = { resolve, reject };
-      this._send({ type: MSG_TYPE.JOIN_ROOM, roomCode, password });
-    });
+    return this._pendingRequest('_pending', () => this._send({ type: MSG_TYPE.JOIN_ROOM, roomCode, password }));
+  }
+
+  _rejoinRoom() {
+    return this._pendingRequest('_pendingRejoin', () => this._send({ type: MSG_TYPE.REJOIN_ROOM, roomCode: this.roomCode, peerId: this.peerId, rejoinToken: this._rejoinToken }));
   }
 
   relay(targetPeerId, payload) {

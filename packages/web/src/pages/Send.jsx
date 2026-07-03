@@ -6,20 +6,28 @@ import { useTransferStore } from '../store/useTransferStore.js'
 import { useTransfer } from '../hooks/useTransfer.js'
 import { transferManager as M } from '../lib/transferManager.js'
 import { WebRTCTransport } from '../lib/webrtc.js'
+import { indexFilesAsync } from '../lib/indexFilesAsync.js'
 import Card from '../components/shared/Card.jsx'
 import Badge from '../components/shared/Badge.jsx'
+import Button from '../components/shared/Button.jsx'
 import Accordion from '../components/shared/Accordion.jsx'
 import FileDropZone from '../components/FileDropZone.jsx'
 import RoomCode from '../components/RoomCode.jsx'
 import StatusLog from '../components/StatusLog.jsx'
 import { useConfirmStore } from '../store/useConfirmStore.js'
+import { useToastStore } from '../store/useToastStore.js'
 
 export default function Send() {
   const navigate = useNavigate()
+  const [pickedFiles, setPickedFiles] = useState(null)
+  const [sending, setSending] = useState(false)
   const [fileIndex, setFileIndex] = useState(null)
+  const [indexProgress, setIndexProgress] = useState({ hashed: 0, total: 0 })
   const [lines, setLines] = useState([])
   const startRef = useRef(null)
   const fileIdxRef = useRef(null)
+  const indexReadyRef = useRef(false)
+  const offerQueueRef = useRef([])
 
   const [usePassword, setUsePassword] = useState(false)
   const [password, setPassword] = useState('')
@@ -38,33 +46,88 @@ export default function Send() {
 
   function addLine(t) { setLines((p) => [...p, t]) }
 
-  async function handleFileReady(file, index, fileRefs) {
-    fileIdxRef.current = index
-    setFileIndex(index)
-    addLine(`${index.files.length > 1 ? index.files.length + ' files' : index.fileName} (${(index.fileSize / 1e6).toFixed(1)} MB)`)
+  function handleFilesSelected(files, fileRefs) {
+    setPickedFiles({ files, fileRefs })
+  }
+
+  function handleChooseDifferent() {
+    setPickedFiles(null)
+  }
+
+  function handleOffer(fromPeerId, offerPayload) {
+    addLine(`Peer connected: ${fromPeerId.slice(0, 12)}...`)
+    addLine('Establishing WebRTC data channel...')
+    const c = useSignalingStore.getState().client
+    if (!c) return
+    const t = new WebRTCTransport(c, fromPeerId, { initiator: false })
+    t.connect(offerPayload).then(() => {
+      addLine('Channel open — encrypted')
+      addLine('Sending file offer...')
+      addSenderPeer(t, fileIdxRef.current)
+      addLine('Transfer started!')
+    }).catch((e) => {
+      addLine(`Connection error: ${e.message}`)
+    })
+  }
+
+  async function handleStartSending() {
+    if (!pickedFiles) return
+    if (usePassword && !password.trim()) return
+    const { files, fileRefs } = pickedFiles
+    setSending(true)
+    indexReadyRef.current = false
+    offerQueueRef.current = []
+
+    const totalSize = files.reduce((s, f) => s + f.size, 0)
+    addLine(`${files.length > 1 ? files.length + ' files' : files[0].name} (${(totalSize / 1e6).toFixed(1)} MB)`)
     addLine('Indexing & hashing chunks for verification...')
-    await startSending(file, index, fileRefs)
+
+    const indexPromise = indexFilesAsync(files, (hashed, total) => {
+      setIndexProgress({ hashed, total })
+    })
+
     addLine('Creating encrypted relay room...')
-    const room = await createRoom(usePassword ? password.trim() : undefined)
+    let room
+    try {
+      room = await createRoom(usePassword ? password.trim() : undefined)
+    } catch (e) {
+      addLine(`Failed to create room: ${e.message}`)
+      useToastStore.getState().addToast(`Failed to create room: ${e.message}`, 'error')
+      setSending(false)
+      return
+    }
     useTransferStore.getState().setRoomCode(room.roomCode)
     addLine(`Room active: ${room.roomCode}`)
     startRef.current = Date.now()
+
     M.startSeederListener(useSignalingStore.getState().client, (fromPeerId, offerPayload) => {
-      addLine(`Peer connected: ${fromPeerId.slice(0, 12)}...`)
-      addLine('Establishing WebRTC data channel...')
-      const c = useSignalingStore.getState().client
-      if (!c) return
-      const t = new WebRTCTransport(c, fromPeerId, { initiator: false })
-      t.connect(offerPayload).then(() => {
-        addLine('Channel open — encrypted')
-        addLine('Sending file offer...')
-        addSenderPeer(t, fileIdxRef.current)
-        addLine('Transfer started!')
-      }).catch((e) => {
-        addLine(`Connection error: ${e.message}`)
-      })
+      // Relay events aren't replayed to late listeners, but hashing may still
+      // be running, so queue offers instead of dropping the listener attach.
+      if (!indexReadyRef.current) {
+        offerQueueRef.current.push([fromPeerId, offerPayload])
+        addLine(`Peer connected: ${fromPeerId.slice(0, 12)}... (waiting for indexing)`)
+        return
+      }
+      handleOffer(fromPeerId, offerPayload)
     })
     addLine('Waiting for someone to join with your room code...')
+
+    try {
+      const index = await indexPromise
+      setFileIndex(index)
+      fileIdxRef.current = index
+      await startSending(files[0], index, fileRefs)
+      indexReadyRef.current = true
+      addLine('Indexing complete — ready to serve chunks')
+      const queued = offerQueueRef.current
+      offerQueueRef.current = []
+      for (const [fromPeerId, offerPayload] of queued) {
+        handleOffer(fromPeerId, offerPayload)
+      }
+    } catch (e) {
+      addLine(`Indexing error: ${e.message}`)
+      useTransferStore.getState().setError(e.message)
+    }
   }
 
   useEffect(() => {
@@ -97,7 +160,13 @@ export default function Send() {
     useSignalingStore.getState().disconnect()
     disconnectAll(); startRef.current = null; fileIdxRef.current = null
     M.streamHandle = null
-    setFileIndex(null); setLines([])
+    indexReadyRef.current = false
+    offerQueueRef.current = []
+    setSending(false)
+    setPickedFiles(null)
+    setFileIndex(null)
+    setIndexProgress({ hashed: 0, total: 0 })
+    setLines([])
   }
 
   const done = st === 'complete'
@@ -105,8 +174,11 @@ export default function Send() {
   const hp = peers.length > 0
   const secs = startRef.current ? Math.floor((Date.now() - startRef.current) / 1000) : 0
   const uptime = secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${secs % 60}s`
-  const fileCount = fileIndex?.files?.length || 1
-  const totalSize = fileIndex?.fileSize || 0
+  const pickedFileCount = pickedFiles?.files?.length || 0
+  const pickedTotalSize = pickedFiles?.files?.reduce((s, f) => s + f.size, 0) || 0
+  const fileCount = fileIndex?.files?.length || pickedFileCount || 1
+  const totalSize = fileIndex?.fileSize ?? pickedTotalSize
+  const displayName = fileIndex?.fileName || pickedFiles?.files?.[0]?.name
 
   const infoAccordions = (
     <div className="mt-8 space-y-2">
@@ -149,7 +221,7 @@ export default function Send() {
     </div>
   )
 
-  if (!fileIndex) {
+  if (!sending) {
     return (
       <div className="mx-auto max-w-2xl px-6 py-16">
         <p className="mb-1 text-xs uppercase tracking-[0.15em] text-[var(--accent)]">Secure Peer-to-Peer</p>
@@ -158,7 +230,29 @@ export default function Send() {
           Drop any file or folder below to start sharing. Mesh creates a private room and gives you a code — share it with anyone to begin the transfer.
         </p>
 
-        <FileDropZone onFileReady={handleFileReady} />
+        {!pickedFiles ? (
+          <FileDropZone onFilesSelected={handleFilesSelected} />
+        ) : (
+          <div className="rounded-xl border border-[var(--border-light)] bg-[var(--bg-secondary)] p-5">
+            <div className="flex items-center gap-3">
+              <svg className="h-8 w-8 shrink-0 text-[var(--accent)]/80" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z M14 2v6h6" />
+              </svg>
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold text-[var(--txt-primary)]">
+                  {pickedFileCount > 1 ? `${pickedFileCount} files` : pickedFiles.files[0].name}
+                </p>
+                <p className="text-xs text-[var(--txt-secondary)]">{(pickedTotalSize / 1e6).toFixed(1)} MB ready to send</p>
+              </div>
+            </div>
+            <button
+              onClick={handleChooseDifferent}
+              className="mt-4 cursor-pointer text-xs font-medium text-[var(--txt-secondary)] underline-offset-2 hover:text-[var(--txt-primary)] hover:underline"
+            >
+              Choose a different file
+            </button>
+          </div>
+        )}
 
         <div className="mt-6 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-4 shadow-sm">
           <label className="flex cursor-pointer items-center gap-3 select-none">
@@ -216,6 +310,21 @@ export default function Send() {
           </AnimatePresence>
         </div>
 
+        {pickedFiles && (
+          <>
+            <Button
+              onClick={handleStartSending}
+              disabled={usePassword && !password.trim()}
+              className="mt-6 w-full"
+            >
+              Start Sending
+            </Button>
+            {usePassword && !password.trim() && (
+              <p className="mt-2 text-center text-xs text-[var(--error)]">Enter a password or uncheck "Password Protect Room" to continue.</p>
+            )}
+          </>
+        )}
+
         {infoAccordions}
       </div>
     )
@@ -227,9 +336,13 @@ export default function Send() {
         <p className="mb-1 text-xs uppercase tracking-[0.15em] text-[var(--accent)]">Secure Peer-to-Peer</p>
         <h1 className="text-3xl font-bold text-[var(--txt-primary)]">Sending...</h1>
         <div className="mt-3 flex flex-wrap items-center gap-3">
-          <Badge color="amber" dot>{fileCount > 1 ? `${fileCount} files` : fileIndex.fileName}</Badge>
+          <Badge color="amber" dot>{fileCount > 1 ? `${fileCount} files` : displayName}</Badge>
           <span className="text-sm text-[var(--txt-secondary)]">{(totalSize / 1e6).toFixed(1)} MB</span>
-          <Badge color="gray" dot={false}>{fileIndex.totalChunks} chunks</Badge>
+          {fileIndex ? (
+            <Badge color="gray" dot={false}>{fileIndex.totalChunks} chunks</Badge>
+          ) : (
+            <Badge color="gray" dot={false}>Indexing...</Badge>
+          )}
         </div>
       </div>
 
@@ -297,6 +410,26 @@ export default function Send() {
           </p>
         </Card>
       </div>
+
+      {!fileIndex && (
+        <Card className="mt-6">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-sm font-medium text-[var(--txt-primary)]">Indexing & hashing chunks</span>
+            <span className="font-mono text-sm text-[var(--txt-secondary)]">
+              {indexProgress.total ? `${indexProgress.hashed.toLocaleString()} / ${indexProgress.total.toLocaleString()}` : 'Starting...'}
+            </span>
+          </div>
+          <div className="h-2 w-full overflow-hidden rounded-full bg-[var(--border)]">
+            <div
+              className="h-full rounded-full bg-[var(--accent)] transition-all duration-300"
+              style={{ width: `${indexProgress.total ? Math.min(100, (indexProgress.hashed / indexProgress.total) * 100) : 0}%` }}
+            />
+          </div>
+          <p className="mt-2 text-xs text-[var(--txt-dim)]">
+            The room is already open — your peer can join now while chunks finish hashing in the background.
+          </p>
+        </Card>
+      )}
 
       {xfer && (
         <Card className="mt-6">

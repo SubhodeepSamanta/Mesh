@@ -106,4 +106,94 @@ describe('SignalingClient', () => {
       payload: { kind: 'offer', sdp: 'fake' },
     });
   });
+
+  it('captures rejoinToken from ROOM_CREATED and ROOM_JOINED responses', async () => {
+    const client = new SignalingClient('ws://localhost:8080');
+    await client.connect();
+
+    const createPromise = client.createRoom();
+    const socket = FakeWebSocket.instances[0];
+    socket.emitServerMessage({ type: MSG_TYPE.ROOM_CREATED, roomCode: 'ABC123', peerId: 'peer1', rejoinToken: 'tok-1' });
+    await createPromise;
+    expect(client._rejoinToken).toBe('tok-1');
+
+    const joinPromise = client.joinRoom('XYZ999');
+    socket.emitServerMessage({ type: MSG_TYPE.ROOM_JOINED, roomCode: 'XYZ999', peerId: 'peer1', existingPeers: [], rejoinToken: 'tok-2' });
+    await joinPromise;
+    expect(client._rejoinToken).toBe('tok-2');
+  });
+
+  it('_rejoinRoom sends REJOIN_ROOM and dispatches reconnect with existingPeers on ROOM_REJOINED', async () => {
+    const client = new SignalingClient('ws://localhost:8080');
+    await client.connect();
+
+    const createPromise = client.createRoom();
+    const socket = FakeWebSocket.instances[0];
+    socket.emitServerMessage({ type: MSG_TYPE.ROOM_CREATED, roomCode: 'ABC123', peerId: 'peer1', rejoinToken: 'tok-1' });
+    await createPromise;
+
+    const reconnectDetail = new Promise((resolve) => {
+      client.addEventListener('reconnect', (e) => resolve(e.detail));
+    });
+
+    const rejoinPromise = client._rejoinRoom();
+    expect(socket.sent.at(-1)).toEqual({
+      type: MSG_TYPE.REJOIN_ROOM,
+      roomCode: 'ABC123',
+      peerId: 'peer1',
+      rejoinToken: 'tok-1',
+    });
+
+    socket.emitServerMessage({
+      type: MSG_TYPE.ROOM_REJOINED,
+      roomCode: 'ABC123',
+      peerId: 'peer1',
+      existingPeers: ['peer2'],
+      rejoinToken: 'tok-2',
+    });
+
+    await rejoinPromise;
+    expect(client._rejoinToken).toBe('tok-2');
+    await expect(reconnectDetail).resolves.toEqual({ existingPeers: ['peer2'] });
+  });
+
+  it('_rejoinRoom rejects and dispatches reconnectFailed on ERROR', async () => {
+    const client = new SignalingClient('ws://localhost:8080');
+    await client.connect();
+
+    const createPromise = client.createRoom();
+    const socket = FakeWebSocket.instances[0];
+    socket.emitServerMessage({ type: MSG_TYPE.ROOM_CREATED, roomCode: 'ABC123', peerId: 'peer1', rejoinToken: 'tok-1' });
+    await createPromise;
+
+    const failedEvent = new Promise((resolve) => {
+      client.addEventListener('reconnectFailed', (e) => resolve(e.detail));
+    });
+
+    const rejoinPromise = client._rejoinRoom();
+    socket.emitServerMessage({ type: MSG_TYPE.ERROR, message: 'Cannot rejoin room' });
+
+    await expect(rejoinPromise).rejects.toThrow('Cannot rejoin room');
+    await expect(failedEvent).resolves.toEqual({ type: MSG_TYPE.ERROR, message: 'Cannot rejoin room' });
+  });
+
+  it('automatically sends REJOIN_ROOM when the socket reopens with a stored session', async () => {
+    const client = new SignalingClient('ws://localhost:8080');
+    await client.connect();
+
+    const createPromise = client.createRoom();
+    const socket1 = FakeWebSocket.instances[0];
+    socket1.emitServerMessage({ type: MSG_TYPE.ROOM_CREATED, roomCode: 'ABC123', peerId: 'peer1', rejoinToken: 'tok-1' });
+    await createPromise;
+
+    await client.connect();
+    const socket2 = FakeWebSocket.instances[1];
+
+    expect(socket2.sent[0]).toEqual({
+      type: MSG_TYPE.REJOIN_ROOM,
+      roomCode: 'ABC123',
+      peerId: 'peer1',
+      rejoinToken: 'tok-1',
+    });
+  });
 });
