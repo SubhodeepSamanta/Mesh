@@ -171,9 +171,6 @@ export default function Receive() {
       if (prev.peers.length > 0 && s.peers.length === 0 && status !== 'complete') {
         setRoomClosed(true)
       }
-      if (prev.status === 'connected' && s.status === 'disconnected' && status !== 'complete') {
-        setRoomClosed(true)
-      }
       if (s.peers.length > prev.peers.length) {
         const newPeerIds = s.peers.filter(p => !prev.peers.includes(p))
         for (const peerId of newPeerIds) {
@@ -181,7 +178,27 @@ export default function Receive() {
         }
       }
     })
-    return unsub
+
+    // A dropped signaling socket doesn't mean the room is gone — the client retries
+    // and rejoins in the background (WebRTC data channels don't need it to stay open).
+    // Only give up once the client itself reports the rejoin failed or is exhausted.
+    const client = useSignalingStore.getState().client
+    const handleReconnectFailed = () => {
+      if (status !== 'complete') setRoomClosed(true)
+    }
+    const handleReconnect = () => setRoomClosed(false)
+    if (client) {
+      client.addEventListener('reconnectFailed', handleReconnectFailed)
+      client.addEventListener('reconnect', handleReconnect)
+    }
+
+    return () => {
+      unsub()
+      if (client) {
+        client.removeEventListener('reconnectFailed', handleReconnectFailed)
+        client.removeEventListener('reconnect', handleReconnect)
+      }
+    }
   }, [displayRoomCode, status, dialPeer])
 
 

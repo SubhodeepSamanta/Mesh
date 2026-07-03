@@ -179,6 +179,24 @@ export function useTransfer() {
     })
 
     swarm.addEventListener('complete', async () => {
+      // 0-byte files have no chunks, so they never go through writeChunkStreaming —
+      // create their (empty) file handles explicitly when streaming a folder to disk.
+      if (M.streamHandle && M.streamHandle.dirHandle && meta.files) {
+        const dirHandle = M.streamHandle.dirHandle
+        for (const entry of meta.files) {
+          if (entry.size === 0) {
+            try {
+              const parts = entry.path.replace(/\\/g, '/').split('/')
+              let handle = dirHandle
+              for (let p = 0; p < parts.length - 1; p++) {
+                handle = await handle.getDirectoryHandle(parts[p], { create: true })
+              }
+              await handle.getFileHandle(parts[parts.length - 1], { create: true })
+            } catch { /* best-effort; missing an empty file isn't fatal */ }
+          }
+        }
+      }
+
       await closeStreamWriters()
       // Rebuild Merkle tree from received chunks for re-seeding integrity
       const allInMemory = M.chunks.every(c => c !== true && c != null)

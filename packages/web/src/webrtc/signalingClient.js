@@ -77,7 +77,10 @@ export class SignalingClient extends EventTarget {
   }
 
   _scheduleReconnect() {
-    if (this._reconnectAttempts >= this._maxReconnectAttempts) return;
+    if (this._reconnectAttempts >= this._maxReconnectAttempts) {
+      this.dispatchEvent(new CustomEvent('reconnectFailed', { detail: { message: 'Reconnect attempts exhausted' } }));
+      return;
+    }
     const delay = Math.min(1000 * Math.pow(2, this._reconnectAttempts), 15000);
     this._reconnectAttempts++;
     this._reconnectTimer = setTimeout(() => {

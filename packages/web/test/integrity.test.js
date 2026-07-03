@@ -82,6 +82,47 @@ describe('SwarmManager proof enforcement', () => {
     expect(accepted).toBe(true)
   })
 
+  it('rejects a single-chunk file with a null proof, even when the reported hash matches the data', async () => {
+    const chunks = await makeChunks(1)
+    const { hashes, tree } = await makeTree(chunks)
+
+    const swarm = new SwarmManager(1, tree.root, 64)
+    const failed = vi.fn()
+    swarm.addEventListener('chunkFailed', (e) => failed(e.detail))
+
+    const reqFn = vi.fn().mockResolvedValue()
+    swarm.addPeer('p1', reqFn)
+
+    // A malicious peer can send correct-looking data/hash but omit the proof —
+    // this must not be accepted just because there's only one chunk.
+    const accepted = await swarm.onChunkReceived('p1', 0, chunks[0], hashes[0], null)
+    expect(accepted).toBe(false)
+    expect(failed).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'missing_proof', chunkIndex: 0 })
+    )
+  })
+
+  it('rejects a single-chunk file where data+hash agree with each other but not the trusted merkleRoot', async () => {
+    const chunks = await makeChunks(1)
+    const { tree } = await makeTree(chunks)
+
+    const swarm = new SwarmManager(1, tree.root, 64)
+    const failed = vi.fn()
+    swarm.addEventListener('chunkFailed', (e) => failed(e.detail))
+
+    const reqFn = vi.fn().mockResolvedValue()
+    swarm.addPeer('p1', reqFn)
+
+    // Malicious peer swaps in different data and self-reports its own matching hash.
+    const forgedData = new Uint8Array(64).fill(99)
+    const forgedHash = await sha256Hex(forgedData)
+    const accepted = await swarm.onChunkReceived('p1', 0, forgedData, forgedHash, [])
+    expect(accepted).toBe(false)
+    expect(failed).toHaveBeenCalledWith(
+      expect.objectContaining({ chunkIndex: 0 })
+    )
+  })
+
   it('rejects a chunk with an invalid proof', async () => {
     const chunks = await makeChunks(4)
     const { hashes, tree } = await makeTree(chunks)

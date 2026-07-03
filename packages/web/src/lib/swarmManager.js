@@ -171,8 +171,10 @@ export class SwarmManager extends EventTarget {
       }
       return false;
     }
-    // Proof is mandatory for multi-chunk files (transitive integrity)
-    if (this.totalChunks > 1 && (!proof || !Array.isArray(proof))) {
+    // Proof against the trusted merkleRoot is mandatory for every chunk, including
+    // single-chunk files — otherwise a malicious peer can supply data alongside a
+    // self-reported hash that trivially matches, bypassing integrity checks entirely.
+    if (!proof || !Array.isArray(proof)) {
       peer.consecutiveFailures++;
       this.dispatchEvent(new CustomEvent('chunkFailed', { detail: { peerId, chunkIndex: ci, reason: 'missing_proof' } }));
       this._requeueChunk(ci);
@@ -183,7 +185,7 @@ export class SwarmManager extends EventTarget {
       }
       return false;
     }
-    if (proof && proof.length > 0 && !(await verifyChunk(data, proof, this.merkleRoot))) {
+    if (!(await verifyChunk(data, proof, this.merkleRoot))) {
       peer.consecutiveFailures++;
       this.dispatchEvent(new CustomEvent('chunkFailed', { detail: { peerId, chunkIndex: ci, reason: 'proof_invalid' } }));
       this._requeueChunk(ci);

@@ -1,58 +1,106 @@
-# Mesh — P2P File Transfer Monorepo
+# Mesh — Secure, Decentralized P2P File Sharing
 
-Mesh is a secure, end-to-end encrypted, zero-server-storage peer-to-peer file and folder transfer application. It uses WebRTC for direct browser-to-browser data transfer and a lightweight signaling server for initial connection coordination.
+Mesh is a secure, end-to-end encrypted, zero-server-storage peer-to-peer file and folder sharing platform. It operates entirely in the browser using WebRTC for direct data transfers, coordinated by a lightweight signaling server.
 
-## Monorepo Workspaces
+---
 
-This repository is structured as a monorepo containing two main packages:
+## 🚀 Key Features
 
-1. **`packages/web`**: The frontend React client built with Vite, utilizing Zustand for state management, TailwindCSS + custom themes, and D3 for peer connection graph visualization.
-2. **`packages/signaling`**: The Node.js WebSocket-based signaling server that routes WebRTC connection offers/answers between peers securely.
+*   **100% P2P Data Channels**: Files are streamed directly browser-to-browser. Your data never touches a server's disk or RAM.
+*   **End-to-End Encrypted (E2EE)**: Direct WebRTC connections are secured using DTLS 1.3.
+*   **Zero-RAM Streaming**: Utilizes the File System Access API to stream chunks directly to the receiver's disk, allowing transfers of multi-gigabyte files and folders without browser crashes.
+*   **Cryptographic Integrity Verification**: Files are indexed and verified chunk-by-chunk in real-time using a Merkle Tree structure and SHA-256 hashes.
+*   **Reseeding Capabilities**: Receivers who keep their transfer session open can act as seeders for late-joining peers.
+*   **Password Protected Rooms**: Secure your room codes with optional SHA-256 password hashing.
+*   **Dynamic TURN Credentials**: Automatic dynamic TURN credential generation from the signaling server protects your TURN secrets from being exposed on the frontend client bundle.
 
-## Quick Start
+---
+
+## 📦 Monorepo Workspaces
+
+Mesh is structured as a monorepo containing:
+
+1.  **`packages/web`**: React client built with Vite, Zustand, TailwindCSS, and D3/Peer-graphs.
+2.  **`packages/signaling`**: Node.js WebSocket signaling server that coordinates WebRTC offers, answers, and ICE candidate relays.
+3.  **`packages/engine`**: Core CLI/Node P2P engine utilizing DHT for CLI client routing.
+4.  **`packages/cli`**: Node CLI tool for command-line file sharing.
+
+---
+
+## 🛠️ Quick Start
 
 ### Local Development
 
-1. **Install Dependencies**:
-   ```bash
-   npm install
-   ```
+1.  **Install dependencies** in the root workspace:
+    ```bash
+    npm install
+    ```
 
-2. **Start Development Servers**:
-   Run the dev command from the root to launch both the signaling server and the web client simultaneously:
-   ```bash
-   npm run dev
-   ```
+2.  **Start development servers**:
+    ```bash
+    npm run dev
+    ```
+    This launches the signaling server on port `8080` and the React web client on port `5173`.
 
-3. **Run Tests**:
-   Run the test suite across all packages:
-   ```bash
-   npm test
-   ```
+3.  **Run tests**:
+    ```bash
+    npm test
+    ```
 
-### Docker Deployment & TURN Configuration
+---
 
-For NAT traversal across different networks (e.g. mobile networks or symmetric NATs on phones), a TURN server is required. A pre-configured `docker-compose.yml` is provided at the root which runs both the signaling server and a self-hosted `coturn` TURN server:
+## 🌐 Azure & Production VM Deployment
 
-1. **Configure Environment**:
-   Copy `.env.example` to `.env` in the root:
-   ```bash
-   cp .env.example .env
-   ```
-   For production NAT traversal, you **must** configure the following variables in `.env`:
-   * `EXTERNAL_IP`: Set this to your host server's public IP address (mandatory for coturn NAT traversal).
-   * `TURN_SECRET`: Set this to a random secure string. The signaling server uses this to generate secure, time-limited TURN credentials dynamically.
+When hosting the signaling and TURN servers on a cloud VM (e.g. Azure Student VM, AWS EC2, GCP), follow these guidelines to ensure successful NAT traversal.
 
-2. **Start Services**:
-   ```bash
-   docker-compose up -d --build
-   ```
+### 1. Docker Compose Configuration
+Copy `.env.example` to `.env` in the root:
+```bash
+cp .env.example .env
+```
+Ensure the environment variables are set correctly:
+*   `EXTERNAL_IP`: Set this to your VM's public IP address (crucial for `coturn`).
+*   `TURN_SECRET`: Set this to a random secure string (used to generate dynamic time-limited credentials).
 
-The signaling server automatically generates and relays WebRTC configurations containing dynamic TURN server details to connecting clients, allowing peer connections to succeed across symmetric firewalls.
+Run the services:
+```bash
+docker-compose up -d --build
+```
 
-## Architecture & Design Decisions
+### 2. Network Security Group (NSG) Configuration
+For WebRTC peer connection establishment to succeed across cellular networks and symmetric NATs, you **must** open the following inbound ports on your Azure VM:
 
-- **E2EE DTLS Connection**: WebRTC data channels are encrypted using DTLS.
-- **Merkle Tree Proofs**: Prevents untrusted seeders (or bad actors joining a room) from serving modified chunks.
-- **Streaming Files**: Utilizes the File System Access API where available to stream files directly to the receiver's disk, keeping RAM consumption flat regardless of file size.
-- **Throughput Backpressure**: Implemented in `webrtc.js` using `bufferedAmountLow` event to prevent data buffer overflows on slower networks.
+| Port / Range | Protocol | Purpose |
+| :--- | :--- | :--- |
+| `80` | TCP | HTTP / ACME SSL Challenge |
+| `443` | TCP | HTTPS / Secure Websocket (WSS) |
+| `3478` | UDP & TCP | TURN / STUN listener |
+| `49152 - 65535` | UDP | TURN dynamic relay ports |
+
+---
+
+## 🔒 Production SSL Setup (Crucial)
+
+Modern browsers enforce **Mixed Content** policies. If your React web client is served over HTTPS (which is default on platforms like Vercel, Netlify, or Github Pages), the browser **will block** WebSocket connections to an unencrypted signaling server (`ws://<IP>:8080`).
+
+You **must** configure a reverse proxy with SSL (e.g., Caddy or Nginx with Let's Encrypt) on your Azure VM to serve the WebSocket server over a secure connection (`wss://`).
+
+### Example Caddyfile Configuration
+If you run Caddy on your VM, configuring SSL is as simple as:
+```caddy
+signaling.yourdomain.com {
+    reverse_proxy /ws* localhost:8080
+}
+```
+Then configure your web client's environment file (`.env`):
+```env
+VITE_SIGNALING_URL=wss://signaling.yourdomain.com/ws
+```
+
+---
+
+## 🐛 Troubleshooting & Known Bugs
+
+For details on currently identified integration bugs (e.g. single-chunk verification vulnerability, empty-file streaming issues, and UI connection recovery state freezing) and their exact fixes, please refer to the instruction file:
+
+📄 **[instructions_for_claude.md](file:///c:/Users/USER/Desktop/mesh/instructions_for_claude.md)**
