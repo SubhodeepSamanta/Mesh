@@ -49,6 +49,17 @@ export default function VideoPlayerModal({ fileEntry, onClose }) {
 
   const chunkSize = fileMeta?.chunkSize || 65536
   const container = getVideoContainer(fileEntry.name)
+  const chunkStates = useTransferStore((s) => s.chunkStates)
+
+  const isComplete = useMemo(() => {
+    return fileIsComplete(fileEntry)
+  }, [chunkStates, fileEntry])
+
+  useEffect(() => {
+    if (isComplete && phase !== 'ready-complete') {
+      playFromBlob()
+    }
+  }, [isComplete, phase, playFromBlob])
 
   const cleanupPlayback = useCallback(() => {
     if (blobUrlRef.current) {

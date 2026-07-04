@@ -1,0 +1,398 @@
+<title>Mesh CLI — Build Roadmap</title>
+<style>
+  :root{
+    --espresso:#2b1710;
+    --roast:#5c3a28;
+    --crema:#efe0c9;
+    --card:#fffaf2;
+    --line:#d8c0a0;
+    --cinnamon:#b4551f;
+    --cinnamon-soft:#e2a877;
+    --status-done:#4f7942;
+    --status-done-bg:#e4ecdd;
+    --status-gap:#a3392c;
+    --status-gap-bg:#f3ded9;
+    --status-planned:#8a7863;
+    --status-planned-bg:#eae1d3;
+    --shadow: 0 1px 2px rgba(43,23,16,.06), 0 8px 24px -12px rgba(43,23,16,.18);
+    --serif: Georgia, "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Roboto, Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --espresso:#f1e4d2;
+      --roast:#c9ab8a;
+      --crema:#170f09;
+      --card:#241609;
+      --line:#3f2c20;
+      --cinnamon:#e8935c;
+      --cinnamon-soft:#7a4326;
+      --status-done:#8fbf78;
+      --status-done-bg:#213221;
+      --status-gap:#e2665a;
+      --status-gap-bg:#3a2019;
+      --status-planned:#b8a186;
+      --status-planned-bg:#2c2219;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 12px 30px -14px rgba(0,0,0,.6);
+    }
+  }
+  :root[data-theme="dark"]{
+    --espresso:#f1e4d2; --roast:#c9ab8a; --crema:#170f09; --card:#241609; --line:#3f2c20;
+    --cinnamon:#e8935c; --cinnamon-soft:#7a4326; --status-done:#8fbf78; --status-done-bg:#213221;
+    --status-gap:#e2665a; --status-gap-bg:#3a2019; --status-planned:#b8a186; --status-planned-bg:#2c2219;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 12px 30px -14px rgba(0,0,0,.6);
+  }
+  :root[data-theme="light"]{
+    --espresso:#2b1710; --roast:#5c3a28; --crema:#efe0c9; --card:#fffaf2; --line:#d8c0a0;
+    --cinnamon:#b4551f; --cinnamon-soft:#e2a877; --status-done:#4f7942; --status-done-bg:#e4ecdd;
+    --status-gap:#a3392c; --status-gap-bg:#f3ded9; --status-planned:#8a7863; --status-planned-bg:#eae1d3;
+    --shadow: 0 1px 2px rgba(43,23,16,.06), 0 8px 24px -12px rgba(43,23,16,.18);
+  }
+
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:
+      radial-gradient(ellipse 900px 500px at 12% -10%, color-mix(in srgb, var(--cinnamon) 10%, transparent), transparent 60%),
+      var(--crema);
+    color:var(--espresso);
+    font-family:var(--sans);
+    line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--cinnamon);}
+  a:focus-visible, button:focus-visible, .navlink:focus-visible{outline:2px solid var(--cinnamon); outline-offset:3px; border-radius:3px;}
+
+  .shell{
+    display:grid;
+    grid-template-columns: 250px minmax(0,1fr);
+    gap:0;
+    max-width:1180px;
+    margin:0 auto;
+    min-height:100vh;
+  }
+
+  /* ---- sidebar / menu board ---- */
+  aside{
+    padding:2.25rem 1.25rem 2rem 0;
+    position:sticky; top:0; align-self:start; height:100vh;
+    overflow-y:auto;
+  }
+  .board{
+    background:var(--card);
+    border:1px solid var(--line);
+    border-radius:10px;
+    box-shadow:var(--shadow);
+    padding:1.1rem 1rem;
+  }
+  .brand{
+    font-family:var(--serif); font-weight:700; letter-spacing:.02em;
+    font-size:1.05rem; color:var(--espresso); margin:0 0 .15rem;
+  }
+  .brand small{display:block; font-family:var(--mono); font-size:.68rem; letter-spacing:.12em; text-transform:uppercase; color:var(--roast); margin-top:.35rem;}
+  nav{margin-top:1.1rem; display:flex; flex-direction:column; gap:.15rem;}
+  .navlink{
+    font-size:.86rem; color:var(--roast); text-decoration:none; padding:.4rem .55rem;
+    border-radius:6px; border-left:2px solid transparent;
+  }
+  .navlink:hover{background:color-mix(in srgb, var(--cinnamon) 8%, transparent); color:var(--espresso);}
+  .navlink.section{font-family:var(--mono); text-transform:uppercase; letter-spacing:.08em; font-size:.68rem; color:var(--roast); opacity:.7; margin-top:.6rem; padding-left:.55rem;}
+
+  main{padding:2.25rem 1.5rem 5rem 1.75rem; min-width:0;}
+
+  /* ---- hero ---- */
+  header.hero{
+    background:var(--card); border:1px solid var(--line); border-radius:14px;
+    padding:2rem 2rem 1.6rem; box-shadow:var(--shadow); margin-bottom:2.25rem;
+    position:relative; overflow:hidden;
+  }
+  header.hero::after{
+    content:""; position:absolute; right:-60px; top:-60px; width:220px; height:220px; border-radius:50%;
+    border:24px solid color-mix(in srgb, var(--cinnamon) 14%, transparent); opacity:.6;
+  }
+  .eyebrow{font-family:var(--mono); font-size:.72rem; letter-spacing:.14em; text-transform:uppercase; color:var(--cinnamon); margin:0 0 .6rem;}
+  h1{font-family:var(--serif); font-size:2.1rem; margin:0 0 .5rem; text-wrap:balance; letter-spacing:.005em;}
+  .sub{color:var(--roast); max-width:60ch; margin:0 0 1.5rem; font-size:1rem;}
+
+  .gauges{display:grid; grid-template-columns:repeat(auto-fit, minmax(180px,1fr)); gap:1rem; position:relative;}
+  .gauge-label{display:flex; justify-content:space-between; font-size:.78rem; color:var(--roast); margin-bottom:.35rem;}
+  .gauge-label b{color:var(--espresso); font-variant-numeric:tabular-nums;}
+  .gauge-track{height:10px; border-radius:6px; background:color-mix(in srgb, var(--line) 70%, transparent); overflow:hidden; border:1px solid var(--line);}
+  .gauge-fill{height:100%; border-radius:6px; background:linear-gradient(90deg, var(--cinnamon-soft), var(--cinnamon));}
+
+  h2{
+    font-family:var(--serif); font-size:1.45rem; margin:0 0 .9rem; padding-top:.2rem;
+    border-top:1px solid var(--line); padding-top:1.4rem; text-wrap:balance;
+  }
+  section + section h2{margin-top:0;}
+  section{margin-bottom:2.4rem; scroll-margin-top:1.5rem;}
+  p{max-width:70ch;}
+
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.25rem 1.4rem; box-shadow:var(--shadow); margin-bottom:1rem;
+  }
+
+  table{border-collapse:collapse; width:100%; font-size:.88rem;}
+  .tablewrap{overflow-x:auto; border:1px solid var(--line); border-radius:10px;}
+  th,td{text-align:left; padding:.6rem .8rem; border-bottom:1px solid var(--line); vertical-align:top;}
+  th{font-family:var(--mono); font-size:.68rem; text-transform:uppercase; letter-spacing:.08em; color:var(--roast); background:color-mix(in srgb, var(--line) 30%, transparent);}
+  tr:last-child td{border-bottom:none;}
+  td:first-child{white-space:nowrap; font-family:var(--mono); font-size:.82rem;}
+
+  .chip{
+    display:inline-block; font-family:var(--mono); font-size:.78rem; padding:.1rem .5rem;
+    border:1px solid var(--line); border-radius:5px; background:color-mix(in srgb, var(--line) 25%, transparent);
+  }
+  .status{
+    display:inline-flex; align-items:center; gap:.35rem; font-size:.72rem; font-weight:600;
+    padding:.2rem .55rem; border-radius:20px; letter-spacing:.02em;
+  }
+  .status.done{color:var(--status-done); background:var(--status-done-bg);}
+  .status.gap{color:var(--status-gap); background:var(--status-gap-bg);}
+  .status.planned{color:var(--status-planned); background:var(--status-planned-bg);}
+  .status::before{content:""; width:6px; height:6px; border-radius:50%; background:currentColor;}
+
+  .phase{border-left:4px solid var(--cinnamon-soft); padding-left:1.1rem;}
+  .phase-head{display:flex; align-items:baseline; gap:.7rem; flex-wrap:wrap; margin-bottom:.4rem;}
+  .phase-head h3{font-family:var(--serif); font-size:1.15rem; margin:0;}
+  .phase ul{margin:.5rem 0 .3rem; padding-left:1.2rem;}
+  .phase li{margin-bottom:.35rem;}
+  .exit{
+    margin-top:.7rem; font-size:.86rem; padding:.6rem .8rem; border-radius:8px;
+    background:color-mix(in srgb, var(--cinnamon) 8%, transparent); border:1px dashed var(--cinnamon-soft);
+  }
+  .exit b{font-family:var(--mono); text-transform:uppercase; font-size:.68rem; letter-spacing:.08em; color:var(--cinnamon);}
+
+  pre.diagram{
+    font-family:var(--mono); font-size:.78rem; line-height:1.5; background:var(--card);
+    border:1px solid var(--line); border-radius:10px; padding:1.1rem 1.2rem; overflow-x:auto;
+    box-shadow:var(--shadow); color:var(--roast);
+  }
+
+  .callout{
+    border:1px solid var(--status-gap); background:var(--status-gap-bg); border-radius:10px;
+    padding:1rem 1.2rem; margin:1rem 0;
+  }
+  .callout b{color:var(--status-gap);}
+
+  footer{border-top:1px solid var(--line); margin-top:2rem; padding-top:1.4rem; color:var(--roast); font-size:.85rem;}
+
+  @media (max-width: 820px){
+    .shell{grid-template-columns:1fr;}
+    aside{position:relative; height:auto; padding:1.25rem 1.25rem 0;}
+    main{padding:1.5rem 1.1rem 4rem;}
+  }
+  @media (prefers-reduced-motion: reduce){
+    *{scroll-behavior:auto !important;}
+  }
+  html{scroll-behavior:smooth;}
+</style>
+
+<div class="shell">
+  <aside>
+    <div class="board">
+      <p class="brand">Mesh CLI<small>Build Roadmap · v0</small></p>
+      <nav>
+        <a class="navlink section">Audit</a>
+        <a class="navlink" href="#status">Where we are</a>
+        <a class="navlink" href="#security">Security finding</a>
+        <a class="navlink section">Design</a>
+        <a class="navlink" href="#architecture">Architecture</a>
+        <a class="navlink section">Phases</a>
+        <a class="navlink" href="#phase-a">A · Wire the CLI</a>
+        <a class="navlink" href="#phase-b">B · NAT traversal</a>
+        <a class="navlink" href="#phase-c">C · CLI UX</a>
+        <a class="navlink" href="#phase-d">D · npm publish</a>
+        <a class="navlink" href="#phase-e">E · Hardening</a>
+        <a class="navlink" href="#phase-f">F · Docs & release</a>
+        <a class="navlink section">Wrap-up</a>
+        <a class="navlink" href="#turn">Using TURN</a>
+        <a class="navlink" href="#next">Next step</a>
+      </nav>
+    </div>
+  </aside>
+
+  <main>
+    <header class="hero">
+      <p class="eyebrow">packages/cli · packages/engine</p>
+      <h1>The engine is brewed. The cup isn't poured yet.</h1>
+      <p class="sub">A full read-through of <code>packages/engine</code> and <code>packages/cli</code>, turned into a phased plan to ship a real, publishable <code>mesh send</code> / <code>mesh receive</code> command-line tool backed by a Kademlia DHT — no browser, no signaling server required.</p>
+      <div class="gauges">
+        <div>
+          <div class="gauge-label"><span>Engine core</span><b>~90%</b></div>
+          <div class="gauge-track"><div class="gauge-fill" style="width:90%"></div></div>
+        </div>
+        <div>
+          <div class="gauge-label"><span>CLI wiring</span><b>~5%</b></div>
+          <div class="gauge-track"><div class="gauge-fill" style="width:5%"></div></div>
+        </div>
+        <div>
+          <div class="gauge-label"><span>NAT traversal</span><b>0%</b></div>
+          <div class="gauge-track"><div class="gauge-fill" style="width:2%"></div></div>
+        </div>
+      </div>
+    </header>
+
+    <section id="status">
+      <h2>Where we actually are</h2>
+      <p>This is the state after reading every file in both packages — not the old <code>docs/phases.md</code> status line, which just says Phase 5 is "not started" and undersells what's already built.</p>
+
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>Module</th><th>State</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td>protocol.js</td><td><span class="status done">done</span></td><td>Length-prefixed binary framing, JSON + raw chunk frame types, backpressure-aware.</td></tr>
+            <tr><td>crypto.js</td><td><span class="status done">done</span></td><td>SHA-256, Merkle build/proof/verify, X25519 ECDH + HKDF, AES-256-GCM.</td></tr>
+            <tr><td>chunker.js</td><td><span class="status done">done</span></td><td>Adaptive chunk size (64KB–32MB), streaming file indexer, Merkle root.</td></tr>
+            <tr><td>dht.js</td><td><span class="status done">done</span></td><td>Full Kademlia: XOR routing table, k-buckets, iterative FIND_NODE, ANNOUNCE/GET_PEERS over UDP.</td></tr>
+            <tr><td>peer.js</td><td><span class="status done">done</span></td><td>TCP PeerConnection with ECDH handshake and encrypted chunk requests.</td></tr>
+            <tr><td>swarm.js</td><td><span class="status done">done</span></td><td>Multi-peer pipelined scheduling, peer eviction after 5 failures, progress events.</td></tr>
+            <tr><td>chunkServer.js</td><td><span class="status done">done</span></td><td>TCP listener serving chunks to many peers, LRU cache, keepalive timeout.</td></tr>
+            <tr><td>seed.js</td><td><span class="status done">done</span></td><td>SeedManager — reseeds a completed download back into the swarm (chain-seeding).</td></tr>
+            <tr><td>resume.js</td><td><span class="status done">done</span></td><td><code>.meshstate</code> checkpointing — resumes partial downloads.</td></tr>
+            <tr><td>transfer.js</td><td><span class="status done">done</span></td><td><b>The real glue.</b> downloadFile / downloadFileByHash / downloadAndSeed / startDownloadSession wire DHT → peer → swarm → disk → resume in one call.</td></tr>
+            <tr><td>Tests</td><td><span class="status done">done</span></td><td>65+ unit tests + a 7-scenario integration suite (e2e, multi-peer, pause/resume, chain-seed).</td></tr>
+            <tr><td>packages/cli/src/index.js</td><td><span class="status gap">stub</span></td><td><code>console.log('Mesh CLI')</code>. Nothing else.</td></tr>
+            <tr><td>commands/send.js, receive.js</td><td><span class="status gap">empty</span></td><td>0 bytes. commander + ink are installed as dependencies but never imported.</td></tr>
+            <tr><td>TransferTUI.jsx</td><td><span class="status gap">stub</span></td><td>Returns <code>null</code>.</td></tr>
+            <tr><td>NAT traversal (STUN/TURN/UPnP/hole-punch)</td><td><span class="status gap">missing</span></td><td>Exists only for the browser/WebRTC path. Zero code in <code>packages/engine</code> or <code>packages/cli</code>.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>In short: <b>the P2P engine is genuinely solid, tested infrastructure.</b> The gap isn't unfinished logic — it's that nothing calls it from a terminal yet, and nothing helps two home routers find each other.</p>
+
+      <div class="callout">
+        <b>Also worth retiring:</b> <span class="chip">packages/engine/receiver.js</span> and <span class="chip">sender.js</span> are an older demo pair that predates the DHT+swarm integration. <code>sender.js</code> announces to the DHT, but <code>receiver.js</code> never touches the DHT, swarm, or resume logic — it dials a hardcoded host:port directly. They work, but they duplicate what <code>transfer.js</code> + <code>chunkServer.js</code> already do properly. Delete once the real CLI commands are proven.
+      </div>
+    </section>
+
+    <section id="security">
+      <h2>Security finding from this audit</h2>
+      <div class="callout">
+        <b>Path traversal via file name.</b> Both <code>transfer.js</code>'s <code>downloadFileByHash</code> and the legacy <code>receiver.js</code> take the output file name straight from the remote peer's <code>FILE_OFFER</code> message — <code>resolvedOutputPath = outputPath || manifest.fileName</code>. On a trusted LAN demo that's harmless. Once the CLI is talking to arbitrary internet peers over the DHT, a malicious sender can offer a file named <code>../../../.ssh/authorized_keys</code> and the receiver will happily write attacker-controlled bytes there. Sanitize with <code>path.basename()</code> and reject any path that resolves outside the output directory — this needs to land in Phase A, not be deferred to a later "hardening" pass.
+      </div>
+    </section>
+
+    <section id="architecture">
+      <h2>Target architecture</h2>
+      <pre class="diagram">mesh send &lt;file&gt;                          mesh receive &lt;code&gt;
+      │                                          │
+      ▼                                          ▼
+ commander command                         commander command
+      │                                          │
+      ▼                                          ▼
+ index + chunk file (chunker.js)          resolve code → fileHash
+      │                                          │
+      ▼                                          ▼
+ DHTNode.listen() + announceFile()        DHTNode.listen() + bootstrap()
+      │                                          │
+      ▼                                          ▼
+ chunkServer (TCP, ECDH+AES-GCM)  ◄── connectivity layer ──►  transfer.js downloadFileByHash
+                                          │
+                              ┌───────────┴────────────┐
+                              │    connection ladder    │
+                              │ 1. direct dial          │
+                              │ 2. UPnP / NAT-PMP map   │
+                              │ 3. UDP hole punch       │
+                              │    (DHT peer rendezvous)│
+                              │ 4. TURN relay (coturn)  │
+                              └────────────┬────────────┘
+                                           ▼
+                              SwarmManager schedules chunks
+                                           ▼
+                              disk write + resume checkpoint
+                                           ▼
+                              Ink TUI renders live progress</pre>
+    </section>
+
+    <h2 style="border-top:none; padding-top:0;">The six phases</h2>
+    <p style="margin-top:-.4rem; color:var(--roast);">Each phase ends at a working, demoable checkpoint — same discipline as the rest of this project's build log.</p>
+
+    <section id="phase-a" class="card phase">
+      <div class="phase-head"><span class="chip">Phase A</span><h3>Wire the CLI to the engine</h3></div>
+      <p><b>Goal:</b> <code>mesh send ./file.zip</code> and <code>mesh receive &lt;code&gt;</code> work end-to-end on one machine / LAN, using what's already built — no new engine features.</p>
+      <ul>
+        <li>Real <code>commander</code> program in <code>src/index.js</code>: <code>mesh send &lt;path&gt; [--port] [--bootstrap host:port]</code>, <code>mesh receive &lt;code&gt; [--out dir] [--bootstrap host:port]</code>, <code>mesh seed &lt;path&gt;</code>.</li>
+        <li><code>commands/send.js</code>: index → start DHT node → bootstrap → open chunk server → announce. Print a short share code, not a raw 64-char hash.</li>
+        <li><code>commands/receive.js</code>: resolve code → bootstrap DHT → <code>downloadFileByHash()</code> → wire <code>SIGINT</code> to an <code>AbortController</code> for graceful pause (resume.js already supports it).</li>
+        <li>Fix the path-traversal bug as part of this phase, not deferred.</li>
+        <li>Retire <code>receiver.js</code> / <code>sender.js</code> once the new commands are proven equivalent.</li>
+        <li>New test: spawn <code>send</code> and <code>receive</code> as real child processes, assert the file arrives byte-identical.</li>
+      </ul>
+      <div class="exit"><b>Exit criteria</b><br>Two terminals, same machine, <code>mesh send</code> / <code>mesh receive</code>, file arrives correctly, resumes after Ctrl+C.</div>
+    </section>
+
+    <section id="phase-b" class="card phase">
+      <div class="phase-head"><span class="chip">Phase B</span><h3>NAT traversal &amp; real-internet connectivity</h3></div>
+      <p>The hardest phase, and the one that decides whether this is a real public tool or a LAN-only toy.</p>
+      <ul>
+        <li><b>B1 — UPnP / NAT-PMP.</b> On <code>mesh send</code>, try to auto-open a router port mapping (pure-JS lib, no native deps). Falls through silently if unsupported. Cheapest win.</li>
+        <li><b>B2 — UDP hole punching via the DHT as rendezvous.</b> Add a STUN binding request so each node learns its own reflexive address; exchange it through an already-reachable node, then both sides fire UDP simultaneously to punch through NAT. Needs a UDP sibling transport to the existing TCP <code>PeerConnection</code>/<code>chunkServer</code> — TCP simultaneous-open is much less reliable.</li>
+        <li><b>B3 — TURN relay, last resort.</b> Reuse the <code>coturn</code> container already in <code>docker-compose.yml</code>, and reimplement the same HMAC-SHA1 time-limited credential scheme from <code>packages/signaling/src/server.js</code> — it's plain TURN auth, nothing WebRTC-specific about it.</li>
+        <li><b>Ladder:</b> direct dial → after UPnP mapping → UDP hole punch → TURN relay. Log which tier won, surface it in the TUI.</li>
+      </ul>
+      <div class="exit"><b>Exit criteria</b><br>Two machines on different home networks, no port forwarding, no shared LAN — file transfers successfully.</div>
+    </section>
+
+    <section id="phase-c" class="card phase">
+      <div class="phase-head"><span class="chip">Phase C</span><h3>Production CLI UX</h3></div>
+      <ul>
+        <li><b>Share codes</b> instead of raw hashes — e.g. <code>mesh receive SWIFT-EAGLE-42</code>, encoding the fileHash plus a bootstrap hint.</li>
+        <li><b>Ink TUI</b> (currently a one-line stub): live progress bar, speed, connected-peer list, pause/resume state. Fall back to plain logging when stdout isn't a TTY.</li>
+        <li><b>Config persistence</b> at <code>~/.config/mesh/config.json</code> — a stable DHT node identity across runs, plus known-good bootstrap peers.</li>
+        <li><b>Signal handling</b> — SIGINT → pause + checkpoint, already supported by <code>resume.js</code>, just needs a <code>process.on('SIGINT', …)</code> wire-up.</li>
+        <li><b>Folder support:</b> chunker is single-file today. Ship single-file first; treat folders as a fast-follow rather than blocking release.</li>
+      </ul>
+      <div class="exit"><b>Exit criteria</b><br><code>mesh send</code> feels like a real tool a stranger could use without reading the source.</div>
+    </section>
+
+    <section id="phase-d" class="card phase">
+      <div class="phase-head"><span class="chip">Phase D</span><h3>Packaging &amp; npm publish</h3></div>
+      <ul>
+        <li><b>Bundle, don't workspace-link.</b> Build <code>@mesh/engine</code> + <code>commander</code> + <code>ink</code> into one file via esbuild (zero native deps — crypto/net/dgram/fs are Node core) so a global install doesn't need the monorepo.</li>
+        <li><b>Package name:</b> registry check confirms <code>mesh</code> and <code>mesh-cli</code> are already taken. Free: <code>mesh-p2p</code>, <code>meshdrop</code>, <code>mesh-transfer</code>, <code>meshfile</code>, <code>mesh-dht</code>. The npm package name and the <code>bin</code> command name are independent — you can publish as <code>mesh-p2p</code> and still ship a <code>mesh</code> command. Safest option: scope it under your own npm username, e.g. <code>@yourusername/mesh-cli</code> — guaranteed collision-free.</li>
+        <li><code>package.json</code>: add <code>files</code>, <code>engines.node &gt;=18</code>, <code>repository</code>, <code>homepage</code>, <code>keywords</code>, <code>publishConfig.access</code> if scoped.</li>
+        <li>Extend <code>.github/workflows</code> (only <code>deploy.yml</code> exists today) with a test-then-publish workflow on version tags.</li>
+      </ul>
+      <div class="exit"><b>Exit criteria</b><br><code>npm install -g mesh-p2p</code> on a clean machine, <code>mesh send</code>/<code>mesh receive</code> work, no monorepo in sight.</div>
+    </section>
+
+    <section id="phase-e" class="card phase">
+      <div class="phase-head"><span class="chip">Phase E</span><h3>Hardening &amp; security pass</h3></div>
+      <ul>
+        <li>Confirm the path-traversal fix landed.</li>
+        <li>Rate-limit / cap simultaneous connections per IP on <code>chunkServer.js</code> — it's internet-facing now, not LAN-only.</li>
+        <li>Validate all CLI-supplied paths, including <code>--out</code>, never resolve outside the intended directory.</li>
+        <li>Cross-platform pass — Windows Ctrl+C/SIGINT behaves differently than POSIX; test UPnP libs and path handling on Windows specifically.</li>
+        <li>Run a full security review once Phases A–D are code-complete, before publishing.</li>
+      </ul>
+    </section>
+
+    <section id="phase-f" class="card phase">
+      <div class="phase-head"><span class="chip">Phase F</span><h3>Docs, demo &amp; release</h3></div>
+      <ul>
+        <li>CLI-specific <code>README.md</code> inside <code>packages/cli</code> — npm renders this on the registry page.</li>
+        <li>Short demo GIF or asciinema of <code>send</code> + <code>receive</code> across two real machines.</li>
+        <li>Update <code>docs/phases.md</code>'s Phase 5 line once this lands — it currently understates what's already built.</li>
+        <li>Tag a release, <code>npm publish</code>.</li>
+      </ul>
+    </section>
+
+    <section id="turn">
+      <h2>"Will we use TURN?"</h2>
+      <p>Yes — as the <b>last tier of a connection ladder</b>, not the primary path: direct dial → UPnP-assisted direct → UDP hole punch (DHT-mediated rendezvous) → TURN relay. That's exactly what the browser/WebRTC side already does — STUN first, TURN only when direct candidates fail — and it reuses the <b>same coturn deployment and credential-minting algorithm</b> already running for the web app. No new server infrastructure, just a TURN client living in the CLI/engine instead of the browser's WebRTC stack.</p>
+    </section>
+
+    <section id="next">
+      <h2>Suggested order, and what's next</h2>
+      <p>Phase A is the highest-leverage, lowest-risk work — it makes ~90% of already-built, already-tested code reachable from a terminal. Phase B (NAT traversal) is the hardest and most time-consuming by a wide margin, and it's the phase that decides whether this becomes a genuinely usable public tool. Phases C–F are comparatively mechanical once A and B exist.</p>
+      <p><b>Recommended sequencing:</b> <span class="chip">A</span> → <span class="chip">E (path fix now)</span> → <span class="chip">B</span> → <span class="chip">C</span> → <span class="chip">D</span> → <span class="chip">E (rest)</span> → <span class="chip">F</span>.</p>
+      <div class="exit"><b>Next step</b><br>Say the word and Phase A starts: wiring commander + real send/receive commands directly against transfer.js, seed.js, and dht.js — with the path-traversal fix included from the start.</div>
+    </section>
+
+    <footer>Mesh — decentralised P2P file transfer. This page documents <code>packages/cli</code> and <code>packages/engine</code> only; see the project README for the web/WebRTC client.</footer>
+  </main>
+</div>
