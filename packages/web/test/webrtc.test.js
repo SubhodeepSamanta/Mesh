@@ -27,6 +27,12 @@ describe('isValidIceUrl', () => {
   it('rejects a url containing a comma', () => {
     expect(isValidIceUrl('turn:1.2.3.4:3478,turn:1.2.3.4:5349')).toBe(false);
   });
+
+  it('rejects urls containing environment variable placeholders', () => {
+    expect(isValidIceUrl('turn:${EXTERNAL_IP}:3478')).toBe(false);
+    expect(isValidIceUrl('turn:{EXTERNAL_IP}:3478')).toBe(false);
+    expect(isValidIceUrl('turn:<EXTERNAL_IP>:3478')).toBe(false);
+  });
 });
 
 describe('sanitizeIceServers', () => {

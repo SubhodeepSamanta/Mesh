@@ -12,3 +12,4 @@ dhtfiles-out.txt
 mesh_key.pem
 github_actions
 github_actions.pub
+.gemini/

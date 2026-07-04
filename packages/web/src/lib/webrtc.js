@@ -31,7 +31,12 @@ export const CONNECT_TIMEOUT_MS = 15000;
 const VALID_ICE_URL = /^(stun|turns?):[^\s:,][^\s,]*$/i;
 
 export function isValidIceUrl(url) {
-  return typeof url === 'string' && VALID_ICE_URL.test(url.trim());
+  if (typeof url !== 'string') return false;
+  const trimmed = url.trim();
+  if (trimmed.includes('$') || trimmed.includes('{') || trimmed.includes('}') || trimmed.includes('<') || trimmed.includes('>')) {
+    return false;
+  }
+  return VALID_ICE_URL.test(trimmed);
 }
 
 export function sanitizeIceServers(iceServers) {
