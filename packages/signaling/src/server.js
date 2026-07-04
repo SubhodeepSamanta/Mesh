@@ -157,7 +157,7 @@ export class SignalingServer {
           this._pruneRateLimits();
         }, 60 * 1000);
 
-        resolve(this._httpServer.address());
+        resolve(this._httpServer.address()); 
       });
     });
   }

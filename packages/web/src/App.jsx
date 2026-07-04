@@ -40,7 +40,7 @@ function App() {
           <Routes location={location} key={location.pathname}>
             <Route path="/" element={<AnimatedPage><Landing /></AnimatedPage>} />
             <Route path="/send" element={<AnimatedPage><Send /></AnimatedPage>} />
-            <Route path="/receive" element={<AnimatedPage><Receive /></AnimatedPage>} />
+            <Route path="/receive" element={<AnimatedPage><Receive /></AnimatedPage>} /> 
             <Route path="/dashboard" element={<AnimatedPage><Dashboard /></AnimatedPage>} />
             <Route path="/history" element={<AnimatedPage><History /></AnimatedPage>} />
             <Route path="*" element={<AnimatedPage><NotFound /></AnimatedPage>} />
