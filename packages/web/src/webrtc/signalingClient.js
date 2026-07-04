@@ -33,6 +33,30 @@ export class SignalingClient extends EventTarget {
     this._heartbeatTimer = null;
     this._lastPing = 0;
     this._closed = false;
+
+    // Backgrounded/frozen tabs throttle setInterval/setTimeout (mobile Safari
+    // and Chrome both do this aggressively once a tab is hidden for a while),
+    // so the 15s heartbeat tick and any scheduled reconnect timer can end up
+    // firing much later than intended. Force an immediate liveness check /
+    // reconnect attempt the moment the tab becomes visible again, instead of
+    // waiting for whatever throttled timer eventually fires.
+    this._onVisibilityChange = () => {
+      if (typeof document === 'undefined' || document.visibilityState !== 'visible') return;
+      if (this._closed || this._intentionalClose) return;
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        try { this.ws.send(JSON.stringify({ type: 'PING' })); } catch {}
+        if (Date.now() - this._lastPing > 45000) {
+          try { this.ws.close(); } catch {}
+        }
+      } else if (this._reconnectTimer) {
+        clearTimeout(this._reconnectTimer);
+        this._reconnectTimer = null;
+        this.connect().catch(() => {});
+      }
+    };
+    if (typeof document !== 'undefined' && document.addEventListener) {
+      document.addEventListener('visibilitychange', this._onVisibilityChange);
+    }
   }
 
   addEventListener(type, handler) {
@@ -237,6 +261,9 @@ export class SignalingClient extends EventTarget {
     this._intentionalClose = true;
     this._closed = true;
     this._cleanup();
+    if (typeof document !== 'undefined' && document.removeEventListener) {
+      document.removeEventListener('visibilitychange', this._onVisibilityChange);
+    }
     if (this.ws) this.ws.close();
   }
 }

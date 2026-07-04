@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { addHistoryEntry } from './useHistoryStore.js'
+import { hasPersistedSession, clearPersistedSession } from './useSignalingStore.js'
 
 const STORAGE_KEY = 'mesh-transfer-state'
 
@@ -17,6 +18,14 @@ const initial = {
   saveMode: 'files',
   startTime: null,
   roomCode: '',
+  // Mid-session "add another file" batches (see useTransfer.js's
+  // addFilesToSession/acceptBatchOffer). Not persisted across reload —
+  // an added batch that was still in flight is simply gone on resume,
+  // same as any other in-memory transfer state that isn't the main swarm.
+  extraBatches: [],
+  // Paths (within the main transfer's manifest) that have actually landed
+  // on disk / been downloaded — not persisted, same reasoning as above.
+  downloadedPaths: [],
 }
 
 function loadSaved() {
@@ -37,8 +46,23 @@ function loadSaved() {
     saved.canReseed = saved.canReseed !== undefined ? saved.canReseed : true
     const liveStatuses = ['transferring', 'waiting-for-peer', 'waiting-for-file', 'file-offered']
     if (liveStatuses.includes(saved.status)) {
-      saved.status = 'error'
-      saved.error = 'Transfer interrupted — connection lost on refresh'
+      // Receiver + a still-live signaling session means useSessionResume can attempt
+      // an automatic rejoin-and-redial (Stage B/C).
+      if (saved.role === 'receiver' && hasPersistedSession()) {
+        saved.status = 'reconnecting'
+        saved.error = null
+      } else if (saved.role === 'sender' && hasPersistedSession()) {
+        // Sender-side resume (Stage D) can't be automatic — the original
+        // File handles are gone after a reload — so this just parks the UI
+        // in a state that prompts the user to re-select the same file(s)
+        // rather than hard-failing outright.
+        saved.status = 'reconnecting-sender'
+        saved.error = null
+      } else {
+        clearPersistedSession()
+        saved.status = 'error'
+        saved.error = 'Transfer interrupted — connection lost on refresh'
+      }
     }
     return saved
   } catch { return null }
@@ -100,6 +124,46 @@ export const useTransferStore = create((set) => {
     setRoomCode: (roomCode) => set({ roomCode }),
     setSeeding: (seeding) => set({ seeding }),
     setSaveMode: (saveMode) => set({ saveMode }),
+
+    // Receiver side: a sender broadcast an offer for a new batch of files.
+    addExtraBatchOffer: ({ batchId, fileMeta, fromPeerId }) => set((s) => {
+      if (s.extraBatches.some((b) => b.batchId === batchId)) return s
+      return { extraBatches: [...s.extraBatches, {
+        batchId, role: 'receiver', status: 'offered', fileMeta, fromPeerId,
+        progress: { verified: 0, total: fileMeta.totalChunks, percent: 0 },
+      }] }
+    }),
+
+    // Sender side: files were just added and broadcast to the room.
+    addExtraBatchSent: ({ batchId, fileMeta }) => set((s) => ({
+      extraBatches: [...s.extraBatches, {
+        batchId, role: 'sender', status: 'offered', fileMeta, acceptedBy: [],
+        progress: { verified: 0, total: fileMeta.totalChunks, percent: 0 },
+      }],
+    })),
+
+    updateExtraBatch: (batchId, patch) => set((s) => ({
+      extraBatches: s.extraBatches.map((b) => b.batchId === batchId ? { ...b, ...patch } : b),
+    })),
+
+    removeExtraBatch: (batchId) => set((s) => ({
+      extraBatches: s.extraBatches.filter((b) => b.batchId !== batchId),
+    })),
+
+    markExtraBatchAcceptedBy: (batchId, peerId) => set((s) => ({
+      extraBatches: s.extraBatches.map((b) => (
+        b.batchId === batchId && b.role === 'sender' && !b.acceptedBy.includes(peerId)
+          ? { ...b, status: 'transferring', acceptedBy: [...b.acceptedBy, peerId] }
+          : b
+      )),
+    })),
+
+    markFileDownloaded: (path) => set((s) => (
+      s.downloadedPaths.includes(path) ? s : { downloadedPaths: [...s.downloadedPaths, path] }
+    )),
+    unmarkFileDownloaded: (path) => set((s) => ({
+      downloadedPaths: s.downloadedPaths.filter((p) => p !== path),
+    })),
 
     setComplete: (canSeed = true) => set((s) => {
       if (!s.fileMeta || s.role === null) return s

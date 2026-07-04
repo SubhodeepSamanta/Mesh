@@ -12,14 +12,17 @@ import PeerList from '../components/PeerList.jsx'
 import ChunkGrid from '../components/ChunkGrid.jsx'
 import SpeedChart from '../components/SpeedChart.jsx'
 import PeerGraph from '../components/PeerGraph.jsx'
+import ExtraBatches from '../components/ExtraBatches.jsx'
+import FileManifest from '../components/FileManifest.jsx'
+import SenderResumePrompt from '../components/SenderResumePrompt.jsx'
 import { formatEta } from '../lib/format.js'
 import { useConfirmStore } from '../store/useConfirmStore.js'
 
 export default function Dashboard() {
   const navigate = useNavigate()
   const roomCode = useSignalingStore((s) => s.roomCode)
-  const { role, peerStats, chunkStates, speedHistory, status, fileMeta, progress, seeding, canReseed } = useTransferStore()
-  const { disconnectAll, triggerDownload, resetDownload, stopSeeding, resumeSeeding, addSenderPeer } = useTransfer()
+  const { role, peerStats, chunkStates, speedHistory, status, fileMeta, progress, seeding, canReseed, extraBatches, downloadedPaths } = useTransferStore()
+  const { disconnectAll, triggerDownload, redownloadFile, resetDownload, stopSeeding, resumeSeeding, addSenderPeer, addFilesToSession, acceptBatchOffer, declineBatchOffer, triggerBatchDownload } = useTransfer()
   const downloadFired = useRef(false)
   const [elapsed, setElapsed] = useState(0)
   const startRef = useRef(null)
@@ -119,6 +122,24 @@ export default function Dashboard() {
 
   const bytesRemaining = fileMeta ? Math.max(0, fileMeta.fileSize - (verifiedChunks * (fileMeta.chunkSize || 65536))) : 0
   const eta = formatEta(bytesRemaining, speed)
+
+  if (status === 'reconnecting') {
+    return (
+      <div className="mx-auto max-w-2xl px-6 py-16">
+        <div className="flex flex-col items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--surface)] px-8 py-16">
+          <div className="mb-4 h-10 w-10 animate-spin rounded-full border-2 border-[var(--accent)]/30 border-t-[var(--accent)]" />
+          <p className="text-lg font-medium text-[var(--txt-primary)]">Reconnecting...</p>
+          <p className="mt-1 text-sm text-[var(--txt-secondary)] text-center max-w-sm">
+            {fileMeta?.fileName ? `Rejoining the room to resume "${fileMeta.fileName}".` : 'Rejoining the room to resume your transfer.'} The transfer will restart from the beginning.
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  if (status === 'reconnecting-sender') {
+    return <SenderResumePrompt />
+  }
 
   if (status === 'idle') {
     return (
@@ -305,6 +326,27 @@ export default function Dashboard() {
               <span>100%</span>
             </div>
           </Card>
+
+          {role === 'receiver' && fileMeta && (status === 'transferring' || status === 'complete') && (
+            <FileManifest
+              fileMeta={fileMeta}
+              selectable={false}
+              deselectedPaths={M.excludedPaths}
+              downloadedPaths={new Set(downloadedPaths)}
+              onRedownloadFile={redownloadFile}
+            />
+          )}
+
+          {(status === 'transferring' || status === 'complete') && (
+            <ExtraBatches
+              role={role}
+              extraBatches={extraBatches}
+              acceptBatchOffer={acceptBatchOffer}
+              declineBatchOffer={declineBatchOffer}
+              triggerBatchDownload={triggerBatchDownload}
+              addFilesToSession={addFilesToSession}
+            />
+          )}
 
           <div className="hidden lg:block">
             <ChunkGrid chunkStates={chunkStates} transferStatus={status} />

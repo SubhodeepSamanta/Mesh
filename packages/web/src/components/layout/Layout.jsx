@@ -14,7 +14,7 @@ export default function Layout({ children }) {
   const { dialPeer } = useTransfer()
 
   useEffect(() => {
-    const active = status === 'transferring' || status === 'file-offered' || status === 'waiting-for-peer' || status === 'waiting-for-file'
+    const active = status === 'transferring' || status === 'file-offered' || status === 'waiting-for-peer' || status === 'waiting-for-file' || status === 'reconnecting' || status === 'reconnecting-sender'
     if (active) {
       const handler = (e) => { e.preventDefault(); e.returnValue = '' }
       window.addEventListener('beforeunload', handler)
@@ -25,7 +25,7 @@ export default function Layout({ children }) {
   useEffect(() => {
     if (!roomCode || status === 'complete' || status === 'error' || role === 'sender') return
 
-    const interval = setInterval(() => {
+    function redialMissingPeers() {
       const currentPeers = useSignalingStore.getState().peers
       for (const peerId of currentPeers) {
         const hasActive = M.transports.has(peerId)
@@ -33,9 +33,23 @@ export default function Layout({ children }) {
           dialPeer(peerId)
         }
       }
-    }, 5000)
+    }
 
-    return () => clearInterval(interval)
+    const interval = setInterval(redialMissingPeers, 5000)
+
+    // This interval is throttled (or fully paused) while the tab is
+    // backgrounded/frozen, same as the signaling heartbeat — check
+    // immediately on returning instead of waiting for whatever delayed tick
+    // eventually fires.
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') redialMissingPeers()
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+
+    return () => {
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
   }, [roomCode, status, role, dialPeer])
 
   return (

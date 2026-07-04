@@ -1,12 +1,25 @@
 export const TYPE = { JSON: 0x00, CHUNK: 0x01 };
 
 export const MSG = {
-  FILE_OFFER:        'FILE_OFFER',
-  FILE_ACCEPT:       'FILE_ACCEPT',
-  CHUNK_REQUEST:     'CHUNK_REQUEST',
-  TRANSFER_COMPLETE: 'TRANSFER_COMPLETE',
-  KEEPALIVE:         'KEEPALIVE',
-  ERROR:             'ERROR',
+  FILE_OFFER:            'FILE_OFFER',
+  FILE_ACCEPT:           'FILE_ACCEPT',
+  CHUNK_REQUEST:         'CHUNK_REQUEST',
+  TRANSFER_COMPLETE:     'TRANSFER_COMPLETE',
+  KEEPALIVE:             'KEEPALIVE',
+  ERROR:                 'ERROR',
+  // Mid-session "add another file" flow: the sender broadcasts an offer for
+  // a new batch of files to everyone already in the room; each receiver
+  // decides independently whether to accept it. Accepted batches are
+  // transferred over the same data channel as the original transfer,
+  // multiplexed by batchId (see BATCH_STRIDE in transferManager.js).
+  FILE_OFFER_ADD:        'FILE_OFFER_ADD',
+  FILE_OFFER_ADD_ACCEPT: 'FILE_OFFER_ADD_ACCEPT',
+  // Byte-level reload resume (Stage C): lets a reloaded receiver ask for
+  // just the hash+proof of a chunk it believes it already wrote to disk
+  // before the reload, so it can verify its own on-disk bytes against the
+  // trusted merkleRoot without re-downloading them.
+  CHUNK_PROOF_REQUEST:   'CHUNK_PROOF_REQUEST',
+  CHUNK_PROOF:           'CHUNK_PROOF',
 };
 
 const textEncoder = new TextEncoder();

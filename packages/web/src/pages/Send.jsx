@@ -16,6 +16,7 @@ import RoomCode from '../components/RoomCode.jsx'
 import StatusLog from '../components/StatusLog.jsx'
 import { useConfirmStore } from '../store/useConfirmStore.js'
 import { useToastStore } from '../store/useToastStore.js'
+import SenderResumePrompt from '../components/SenderResumePrompt.jsx'
 
 export default function Send() {
   const navigate = useNavigate()
@@ -220,6 +221,10 @@ export default function Send() {
       </Accordion>
     </div>
   )
+
+  if (st === 'reconnecting-sender') {
+    return <SenderResumePrompt />
+  }
 
   if (!sending) {
     return (

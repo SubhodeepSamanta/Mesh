@@ -6,8 +6,12 @@ class FakeWebSocket extends EventTarget {
     super();
     this.url = url;
     this.sent = [];
+    this.readyState = FakeWebSocket.CONNECTING;
     FakeWebSocket.instances.push(this);
-    queueMicrotask(() => this.dispatchEvent(new Event('open')));
+    queueMicrotask(() => {
+      this.readyState = FakeWebSocket.OPEN;
+      this.dispatchEvent(new Event('open'));
+    });
   }
 
   send(data) {
@@ -15,6 +19,7 @@ class FakeWebSocket extends EventTarget {
   }
 
   close() {
+    this.readyState = FakeWebSocket.CLOSED;
     this.dispatchEvent(new Event('close'));
   }
 
@@ -23,6 +28,10 @@ class FakeWebSocket extends EventTarget {
   }
 }
 FakeWebSocket.instances = [];
+FakeWebSocket.CONNECTING = 0;
+FakeWebSocket.OPEN = 1;
+FakeWebSocket.CLOSING = 2;
+FakeWebSocket.CLOSED = 3;
 
 describe('SignalingClient', () => {
   let originalWebSocket;
@@ -197,3 +206,88 @@ describe('SignalingClient', () => {
     });
   });
 });
+
+class FakeDocument extends EventTarget {
+  constructor() { super(); this.visibilityState = 'visible' }
+  setVisibility(state) {
+    this.visibilityState = state
+    this.dispatchEvent(new Event('visibilitychange'))
+  }
+}
+
+describe('SignalingClient visibilitychange handling (§7 tab-backgrounding)', () => {
+  let originalWebSocket
+  let originalDocument
+
+  beforeEach(() => {
+    originalWebSocket = global.WebSocket
+    originalDocument = global.document
+    global.WebSocket = FakeWebSocket
+    global.document = new FakeDocument()
+    FakeWebSocket.instances = []
+  })
+
+  afterEach(() => {
+    global.WebSocket = originalWebSocket
+    global.document = originalDocument
+  })
+
+  it('sends an immediate PING when the tab becomes visible again', async () => {
+    const client = new SignalingClient('ws://localhost:8080')
+    await client.connect()
+    const socket = FakeWebSocket.instances[0]
+    socket.sent.length = 0
+
+    global.document.setVisibility('hidden')
+    global.document.setVisibility('visible')
+
+    expect(socket.sent).toContainEqual({ type: 'PING' })
+    client.close()
+  })
+
+  it('closes a stale connection on visibility restore if no PONG was seen recently', async () => {
+    const client = new SignalingClient('ws://localhost:8080')
+    await client.connect()
+    const socket = FakeWebSocket.instances[0]
+    client._lastPing = Date.now() - 60000 // older than the 45s staleness threshold
+
+    let closed = false
+    socket.addEventListener('close', () => { closed = true })
+    global.document.setVisibility('visible')
+
+    expect(closed).toBe(true)
+  })
+
+  it('fires a pending reconnect immediately instead of waiting for its throttled timer', async () => {
+    vi.useFakeTimers()
+    try {
+      const client = new SignalingClient('ws://localhost:8080')
+      await client.connect()
+      const socket = FakeWebSocket.instances[0]
+      socket.close() // triggers _scheduleReconnect(), which sets a backoff timer
+
+      expect(client._reconnectTimer).not.toBeNull()
+      const instancesBefore = FakeWebSocket.instances.length
+
+      global.document.setVisibility('visible')
+      await vi.advanceTimersByTimeAsync(0)
+
+      expect(FakeWebSocket.instances.length).toBeGreaterThan(instancesBefore)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('removeEventListener is called on close so a closed client stops reacting to visibility changes', async () => {
+    const client = new SignalingClient('ws://localhost:8080')
+    await client.connect()
+    const socket = FakeWebSocket.instances[0]
+    client.close()
+    socket.sent.length = 0
+
+    global.document.setVisibility('hidden')
+    global.document.setVisibility('visible')
+
+    expect(socket.sent).toEqual([])
+  })
+})

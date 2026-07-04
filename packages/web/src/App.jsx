@@ -10,6 +10,7 @@ import Dashboard from './pages/Dashboard.jsx'
 import History from './pages/History.jsx'
 import NotFound from './pages/NotFound.jsx'
 import { useUIStore } from './store/useUIStore.js'
+import { useSessionResume } from './hooks/useSessionResume.js'
 
 function AnimatedPage({ children }) {
   const shouldReduceMotion = useReducedMotion()
@@ -30,6 +31,7 @@ function App() {
   const location = useLocation()
 
   useEffect(() => { initTheme() }, [initTheme])
+  useSessionResume()
 
   return (
     <ErrorBoundary>

@@ -15,6 +15,7 @@ import ProgressBar from '../components/shared/ProgressBar.jsx'
 import ConnectionCode from '../components/ConnectionCode.jsx'
 import FileManifest from '../components/FileManifest.jsx'
 import { useToastStore } from '../store/useToastStore.js'
+import { saveDirHandle } from '../lib/dirHandleStore.js'
 
 export default function Receive() {
   const navigate = useNavigate()
@@ -30,6 +31,7 @@ export default function Receive() {
   const [tempRoomCode, setTempRoomCode] = useState('')
   const [roomPassword, setRoomPassword] = useState('')
   const [showPass, setShowPass] = useState(false)
+  const [deselectedPaths, setDeselectedPaths] = useState(new Set())
 
   useEffect(() => {
     mountedRef.current = true
@@ -49,8 +51,31 @@ export default function Receive() {
   const setComplete = useTransferStore((s) => s.setComplete)
   const error = useTransferStore((s) => s.error)
   const role = useTransferStore((s) => s.role)
+  const downloadedPathsArr = useTransferStore((s) => s.downloadedPaths)
 
-  const { startReceiving, addReceiverPeer, triggerDownload, resetDownload, disconnectAll, dialPeer } = useTransfer()
+  const { startReceiving, addReceiverPeer, triggerDownload, redownloadFile, resetDownload, disconnectAll, dialPeer } = useTransfer()
+
+  useEffect(() => {
+    setDeselectedPaths(new Set())
+  }, [fileMeta?.merkleRoot])
+
+  const handleToggleFile = useCallback((path) => {
+    setDeselectedPaths((prev) => {
+      const next = new Set(prev)
+      if (next.has(path)) next.delete(path)
+      else next.add(path)
+      return next
+    })
+  }, [])
+
+  const handleToggleAll = useCallback((makeAllSelected) => {
+    if (makeAllSelected) {
+      setDeselectedPaths(new Set())
+      return
+    }
+    const meta = useTransferStore.getState().fileMeta
+    setDeselectedPaths(new Set((meta?.files || []).map((f) => f.path)))
+  }, [])
 
   const prefillCode = searchParams.get('code') || ''
   const activeReceiver = role === 'receiver'
@@ -118,15 +143,38 @@ export default function Receive() {
   async function handleBeginTransfer() {
     if (!M.swarm || startingTransfer) return
     setStartingTransfer(true)
+    const meta = useTransferStore.getState().fileMeta
+
+    if (meta?.files && deselectedPaths.size > 0) {
+      const excludedIndices = []
+      for (const entry of meta.files) {
+        if (deselectedPaths.has(entry.path)) {
+          for (let i = entry.startChunk; i < entry.startChunk + entry.chunkCount; i++) excludedIndices.push(i)
+        }
+      }
+      M.swarm.applySelection(excludedIndices)
+      M.excludedPaths = new Set(deselectedPaths)
+      for (const path of deselectedPaths) M.fileRemaining.delete(path)
+    }
+
+    if (M.swarm.isComplete()) {
+      // Nothing left to fetch (e.g. every file was deselected) — the
+      // swarm's own 'complete' event already updated status.
+      setStartingTransfer(false)
+      return
+    }
+
     const isFileSystemAccess = typeof window !== 'undefined' && (
       ('showDirectoryPicker' in window) || ('showSaveFilePicker' in window)
     )
-    const meta = useTransferStore.getState().fileMeta
     if (meta && isFileSystemAccess && useTransferStore.getState().saveMode === 'auto') {
       try {
         const dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' })
         if (dirHandle) {
           M.streamHandle = { dirHandle }
+          // Best-effort: lets a reload later in this transfer potentially
+          // reopen the same folder and resume writing into it (Stage C).
+          saveDirHandle(dirHandle)
         }
       } catch (err) {
         if (err.name !== 'AbortError') {
@@ -478,13 +526,21 @@ export default function Receive() {
             <Card>
               <div className="mb-3 flex items-center gap-2">
                 <Badge color={status === 'complete' ? 'green' : 'amber'} dot>
-                  {status === 'complete' ? 'RECEIVED' : status === 'transferring' ? 'DOWNLOADING' : 'OFFERED'}
+                  {status === 'complete' ? 'RECEIVED' : status === 'transferring' ? 'DOWNLOADING' : status === 'reconnecting' ? 'RECONNECTING' : 'OFFERED'}
                 </Badge>
                 <span className="text-xs text-[var(--txt-secondary)]">
-                  {status === 'complete' ? 'Done!' : status === 'transferring' ? 'In progress' : 'Review and accept'}
+                  {status === 'complete' ? 'Done!' : status === 'transferring' ? 'In progress' : status === 'reconnecting' ? 'Rejoining room' : 'Review and accept'}
                 </span>
               </div>
-              <FileManifest fileMeta={fileMeta} />
+              <FileManifest
+                fileMeta={fileMeta}
+                selectable={status === 'file-offered'}
+                deselectedPaths={deselectedPaths}
+                onToggleFile={handleToggleFile}
+                onToggleAll={handleToggleAll}
+                downloadedPaths={new Set(downloadedPathsArr)}
+                onRedownloadFile={redownloadFile}
+              />
             </Card>
 
             {status === 'file-offered' && (
@@ -552,6 +608,14 @@ export default function Receive() {
                   </div>
                 </div>
               </div>
+            )}
+
+            {status === 'reconnecting' && (
+              <Card className="space-y-3 text-center">
+                <div className="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-[var(--accent)]/30 border-t-[var(--accent)]" />
+                <p className="text-sm font-medium text-[var(--txt-primary)]">Reconnecting...</p>
+                <p className="text-xs text-[var(--txt-secondary)]">Rejoining the room to resume this transfer. It will restart from the beginning.</p>
+              </Card>
             )}
 
             {status === 'transferring' && (
