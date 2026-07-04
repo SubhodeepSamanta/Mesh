@@ -23,6 +23,10 @@ describe('isValidIceUrl', () => {
     expect(isValidIceUrl('not-a-url')).toBe(false);
     expect(isValidIceUrl('turn: 3478')).toBe(false);
   });
+
+  it('rejects a url containing a comma', () => {
+    expect(isValidIceUrl('turn:1.2.3.4:3478,turn:1.2.3.4:5349')).toBe(false);
+  });
 });
 
 describe('sanitizeIceServers', () => {
@@ -32,6 +36,15 @@ describe('sanitizeIceServers', () => {
       { urls: 'turn:1.2.3.4:3478', username: 'u', credential: 'c' },
     ];
     expect(sanitizeIceServers(servers)).toEqual(servers);
+  });
+
+  it('splits comma-separated urls in a string into individual urls', () => {
+    const servers = [
+      { urls: 'turn:1.2.3.4:3478,turn:1.2.3.4:5349', username: 'u', credential: 'c' }
+    ];
+    expect(sanitizeIceServers(servers)).toEqual([
+      { urls: ['turn:1.2.3.4:3478', 'turn:1.2.3.4:5349'], username: 'u', credential: 'c' }
+    ]);
   });
 
   it('drops a malformed TURN entry but keeps the valid STUN entry', () => {

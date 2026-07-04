@@ -28,7 +28,7 @@ export const CONNECT_TIMEOUT_MS = 15000;
 // Filter out anything malformed instead, so a broken TURN config degrades
 // to "STUN-only, some networks might not connect" rather than "nothing
 // works for anyone, ever, with zero diagnostic trace."
-const VALID_ICE_URL = /^(stun|turns?):[^\s:][^\s]*$/i;
+const VALID_ICE_URL = /^(stun|turns?):[^\s:,][^\s,]*$/i;
 
 export function isValidIceUrl(url) {
   return typeof url === 'string' && VALID_ICE_URL.test(url.trim());
@@ -40,8 +40,20 @@ export function sanitizeIceServers(iceServers) {
   const cleaned = [];
   for (const entry of iceServers) {
     if (!entry || !entry.urls) continue;
-    const urls = Array.isArray(entry.urls) ? entry.urls : [entry.urls];
-    const validUrls = urls.filter(isValidIceUrl);
+    
+    let urls;
+    if (Array.isArray(entry.urls)) {
+      urls = entry.urls;
+    } else if (typeof entry.urls === 'string') {
+      urls = entry.urls.includes(',') ? entry.urls.split(',') : [entry.urls];
+    } else {
+      urls = [entry.urls];
+    }
+
+    const validUrls = urls
+      .map(u => typeof u === 'string' ? u.trim() : '')
+      .filter(u => u && isValidIceUrl(u));
+
     if (validUrls.length === 0) {
       console.warn('[mesh] dropping malformed ICE server entry:', entry);
       continue;
