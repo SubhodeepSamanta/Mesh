@@ -60,7 +60,18 @@ export default function Send() {
     addLine('Establishing WebRTC data channel...')
     const c = useSignalingStore.getState().client
     if (!c) return
-    const t = new WebRTCTransport(c, fromPeerId, { initiator: false })
+    let t
+    try {
+      // Constructing WebRTCTransport can throw synchronously (a malformed
+      // ICE server config makes `new RTCPeerConnection` reject it outright)
+      // — this used to have no try/catch at all around it, so that failure
+      // mode showed literally nothing: no console output, no "Connection
+      // error" line, just a peer that silently never got a file offer.
+      t = new WebRTCTransport(c, fromPeerId, { initiator: false })
+    } catch (e) {
+      addLine(`Connection error: ${e.message}`)
+      return
+    }
     t.connect(offerPayload).then(() => {
       addLine('Channel open — encrypted')
       addLine('Sending file offer...')

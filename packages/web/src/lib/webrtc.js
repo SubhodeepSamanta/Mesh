@@ -19,12 +19,49 @@ function buildIceServers() {
 export const ICE_SERVERS = buildIceServers();
 export const CONNECT_TIMEOUT_MS = 15000;
 
+// A malformed ICE server entry (e.g. turn::3478 — no host, which happens if
+// the signaling server's EXTERNAL_IP env var is unset/blank) makes
+// `new RTCPeerConnection(...)` throw *synchronously*. That exception used to
+// happen in code paths with no try/catch around them at all, silently
+// killing the connection attempt before it even started — no console
+// output, no error, just a permanently stuck peer with no explanation.
+// Filter out anything malformed instead, so a broken TURN config degrades
+// to "STUN-only, some networks might not connect" rather than "nothing
+// works for anyone, ever, with zero diagnostic trace."
+const VALID_ICE_URL = /^(stun|turns?):[^\s:][^\s]*$/i;
+
+export function isValidIceUrl(url) {
+  return typeof url === 'string' && VALID_ICE_URL.test(url.trim());
+}
+
+export function sanitizeIceServers(iceServers) {
+  const fallback = [{ urls: 'stun:stun.l.google.com:19302' }];
+  if (!Array.isArray(iceServers)) return fallback;
+  const cleaned = [];
+  for (const entry of iceServers) {
+    if (!entry || !entry.urls) continue;
+    const urls = Array.isArray(entry.urls) ? entry.urls : [entry.urls];
+    const validUrls = urls.filter(isValidIceUrl);
+    if (validUrls.length === 0) {
+      console.warn('[mesh] dropping malformed ICE server entry:', entry);
+      continue;
+    }
+    cleaned.push({ ...entry, urls: validUrls.length === 1 ? validUrls[0] : validUrls });
+  }
+  if (cleaned.length === 0) {
+    console.warn('[mesh] no valid ICE servers remained after sanitizing — falling back to public STUN only');
+    return fallback;
+  }
+  return cleaned;
+}
+
 export class WebRTCTransport {
   constructor(signalingClient, remotePeerId, { initiator }) {
     this.signalingClient = signalingClient;
     this.remotePeerId = remotePeerId;
     this.initiator = initiator;
-    const iceServers = (signalingClient && signalingClient.iceServers) || ICE_SERVERS;
+    const rawIceServers = (signalingClient && signalingClient.iceServers) || ICE_SERVERS;
+    const iceServers = sanitizeIceServers(rawIceServers);
     this.pc = new RTCPeerConnection({ iceServers });
     this.channel = null;
     this.jsonHandler = null;

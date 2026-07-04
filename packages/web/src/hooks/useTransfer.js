@@ -893,47 +893,57 @@ export function useTransfer() {
     if (M.dialingPeers.has(peerId) || M.transports.has(peerId)) return
 
     M.dialingPeers.add(peerId)
-    const t = new WebRTCTransport(client, peerId, { initiator: true })
-
-    let resolved = false
-    const offerTimeout = setTimeout(() => {
-      if (!resolved) {
-        resolved = true
-        t.close()
-        M.dialingPeers.delete(peerId)
-      }
-    }, 10000)
-
-    t.onJSON(async (msg) => {
-      if (msg.type === MSG.FILE_OFFER) {
-        t.offeredRoot = msg.merkleRoot
-        if (!M.swarm) {
-          M.swarm = await startReceiving(msg)
-        }
-        if (M.swarm && msg.merkleRoot === M.swarm.merkleRoot) {
-          if (!resolved) {
-            resolved = true
-            clearTimeout(offerTimeout)
-            M.dialingPeers.delete(peerId)
-          }
-          const currentStatus = useTransferStore.getState().status
-          if (currentStatus === 'transferring') {
-            addReceiverPeer(t, M.swarm)
-          }
-        } else {
-          if (!resolved) {
-            resolved = true
-            clearTimeout(offerTimeout)
-            M.dialingPeers.delete(peerId)
-          }
-          t.close()
-          M.transports.delete(peerId)
-        }
-      }
-    })
-
     M.pendingDials++
+
+    let t = null
+    let offerTimeout = null
     try {
+      // Constructing WebRTCTransport can throw synchronously (e.g. the
+      // server handed out a malformed TURN URL, so `new RTCPeerConnection`
+      // rejects it outright). This used to happen *before* the try/catch
+      // even started, so the exception was never caught, M.dialingPeers
+      // never got cleaned up, and every future retry silently no-op'd
+      // forever on the "already dialing this peer" guard above — a
+      // permanent, completely silent stuck state with zero console output.
+      t = new WebRTCTransport(client, peerId, { initiator: true })
+
+      let resolved = false
+      offerTimeout = setTimeout(() => {
+        if (!resolved) {
+          resolved = true
+          t.close()
+          M.dialingPeers.delete(peerId)
+        }
+      }, 10000)
+
+      t.onJSON(async (msg) => {
+        if (msg.type === MSG.FILE_OFFER) {
+          t.offeredRoot = msg.merkleRoot
+          if (!M.swarm) {
+            M.swarm = await startReceiving(msg)
+          }
+          if (M.swarm && msg.merkleRoot === M.swarm.merkleRoot) {
+            if (!resolved) {
+              resolved = true
+              clearTimeout(offerTimeout)
+              M.dialingPeers.delete(peerId)
+            }
+            const currentStatus = useTransferStore.getState().status
+            if (currentStatus === 'transferring') {
+              addReceiverPeer(t, M.swarm)
+            }
+          } else {
+            if (!resolved) {
+              resolved = true
+              clearTimeout(offerTimeout)
+              M.dialingPeers.delete(peerId)
+            }
+            t.close()
+            M.transports.delete(peerId)
+          }
+        }
+      })
+
       await t.connect()
       t.pc.addEventListener('connectionstatechange', () => {
         if (t.pc.connectionState === 'disconnected' || t.pc.connectionState === 'failed') {
@@ -948,7 +958,8 @@ export function useTransfer() {
       // feedback — making a stuck "never connects" case indistinguishable
       // from a slow-but-working one. Surface it so it's actually visible.
       console.warn(`[mesh] dialPeer(${peerId}) failed to establish a WebRTC connection:`, err)
-      t.close()
+      if (offerTimeout) clearTimeout(offerTimeout)
+      if (t) { try { t.close() } catch {} }
       M.transports.delete(peerId)
     } finally {
       M.dialingPeers.delete(peerId)

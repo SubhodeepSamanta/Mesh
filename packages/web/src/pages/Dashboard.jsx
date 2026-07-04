@@ -86,8 +86,16 @@ export default function Dashboard() {
     }
     M.startSeederListener(c, (fromPeerId, offerPayload) => {
       if (M.transports.has(fromPeerId)) return
-      const t = new WebRTCTransport(c, fromPeerId, { initiator: false })
-      t.connect(offerPayload).then(() => addSenderPeer(t, idx)).catch(() => {})
+      let t
+      try {
+        t = new WebRTCTransport(c, fromPeerId, { initiator: false })
+      } catch (e) {
+        console.warn(`[mesh] failed to construct a reseed transport for ${fromPeerId}:`, e)
+        return
+      }
+      t.connect(offerPayload).then(() => addSenderPeer(t, idx)).catch((e) => {
+        console.warn(`[mesh] reseed connection to ${fromPeerId} failed:`, e)
+      })
     })
     return () => M.stopSeederListener()
   }, [fileMeta, seeding, addSenderPeer])

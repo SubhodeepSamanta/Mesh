@@ -1,6 +1,66 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { WebRTCTransport, CONNECT_TIMEOUT_MS } from '../src/lib/webrtc.js';
+import { WebRTCTransport, CONNECT_TIMEOUT_MS, isValidIceUrl, sanitizeIceServers } from '../src/lib/webrtc.js';
 import { buildJSONBody, parseMessage } from '../src/webrtc/protocol.js';
+
+describe('isValidIceUrl', () => {
+  it('accepts well-formed stun/turn/turns urls', () => {
+    expect(isValidIceUrl('stun:stun.l.google.com:19302')).toBe(true);
+    expect(isValidIceUrl('turn:1.2.3.4:3478')).toBe(true);
+    expect(isValidIceUrl('turn:example.com:3478?transport=udp')).toBe(true);
+    expect(isValidIceUrl('turns:example.com:5349')).toBe(true);
+  });
+
+  it('rejects a turn url with no host (the EXTERNAL_IP-unset case)', () => {
+    // This is exactly what docker-compose.yml's TURN_URL substitution
+    // produces when EXTERNAL_IP is blank: "turn::3478".
+    expect(isValidIceUrl('turn::3478')).toBe(false);
+  });
+
+  it('rejects empty, non-string, or scheme-less values', () => {
+    expect(isValidIceUrl('')).toBe(false);
+    expect(isValidIceUrl(null)).toBe(false);
+    expect(isValidIceUrl(undefined)).toBe(false);
+    expect(isValidIceUrl('not-a-url')).toBe(false);
+    expect(isValidIceUrl('turn: 3478')).toBe(false);
+  });
+});
+
+describe('sanitizeIceServers', () => {
+  it('passes through a well-formed list unchanged', () => {
+    const servers = [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'turn:1.2.3.4:3478', username: 'u', credential: 'c' },
+    ];
+    expect(sanitizeIceServers(servers)).toEqual(servers);
+  });
+
+  it('drops a malformed TURN entry but keeps the valid STUN entry', () => {
+    const servers = [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'turn::3478', username: 'u', credential: 'c' },
+    ];
+    expect(sanitizeIceServers(servers)).toEqual([
+      { urls: 'stun:stun.l.google.com:19302' },
+    ]);
+  });
+
+  it('falls back to public STUN if every entry is malformed', () => {
+    const servers = [{ urls: 'turn::3478' }, { urls: '' }];
+    expect(sanitizeIceServers(servers)).toEqual([{ urls: 'stun:stun.l.google.com:19302' }]);
+  });
+
+  it('falls back to public STUN for a non-array input', () => {
+    expect(sanitizeIceServers(undefined)).toEqual([{ urls: 'stun:stun.l.google.com:19302' }]);
+    expect(sanitizeIceServers(null)).toEqual([{ urls: 'stun:stun.l.google.com:19302' }]);
+  });
+
+  it('filters an array-of-urls entry down to just the valid ones', () => {
+    const servers = [{ urls: ['turn::3478', 'turn:1.2.3.4:3478'], username: 'u', credential: 'c' }];
+    expect(sanitizeIceServers(servers)).toEqual([
+      { urls: 'turn:1.2.3.4:3478', username: 'u', credential: 'c' },
+    ]);
+  });
+});
 
 class FakeDataChannel extends EventTarget {
   constructor() {
@@ -194,6 +254,24 @@ describe('WebRTCTransport', () => {
 
     expect(pcA.remoteDescription).toBeNull();
     transportA.close();
+  });
+
+  it('never lets a malformed TURN url from the server reach RTCPeerConnection (would otherwise throw synchronously)', () => {
+    const pcA = new FakeRTCPeerConnection();
+    global.RTCPeerConnection = vi.fn().mockImplementationOnce(function () { return pcA; });
+
+    const sigA = new FakeSignalingClient('peerA');
+    // Simulates a signaling server whose EXTERNAL_IP env var is blank —
+    // getIceServers() would produce exactly this malformed TURN entry.
+    sigA.iceServers = [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'turn::3478', username: 'u', credential: 'c' },
+    ];
+
+    expect(() => new WebRTCTransport(sigA, 'peerB', { initiator: true })).not.toThrow();
+    expect(global.RTCPeerConnection).toHaveBeenCalledWith({
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+    });
   });
 
   it('rejects if the data channel never opens before the timeout', async () => {
