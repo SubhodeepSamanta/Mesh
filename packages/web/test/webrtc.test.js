@@ -216,4 +216,40 @@ describe('WebRTCTransport', () => {
     await vi.advanceTimersByTimeAsync(CONNECT_TIMEOUT_MS + 100);
     await assertion;
   });
+
+  it('surfaces the connection timeout via visibilitychange even if the setTimeout itself never fires (throttled/backgrounded tab)', async () => {
+    vi.useFakeTimers();
+    const originalDocument = global.document;
+
+    class FakeDocument extends EventTarget {
+      constructor() { super(); this.visibilityState = 'visible'; }
+      setVisibility(state) {
+        this.visibilityState = state;
+        this.dispatchEvent(new Event('visibilitychange'));
+      }
+    }
+    global.document = new FakeDocument();
+
+    try {
+      const pcA = new FakeRTCPeerConnection();
+      global.RTCPeerConnection = vi.fn().mockImplementationOnce(function () { return pcA; });
+      const sigA = new FakeSignalingClient('peerA');
+
+      const transportA = new WebRTCTransport(sigA, 'peerB', { initiator: true });
+      const connectA = transportA.connect();
+      const assertion = expect(connectA).rejects.toThrow('Connection timeout');
+
+      // Move the clock past the deadline WITHOUT advancing the fake timer
+      // queue — this is what a throttled/paused setTimeout in a backgrounded
+      // tab looks like from the code's perspective: time has passed, but the
+      // timer callback never got to run.
+      vi.setSystemTime(Date.now() + CONNECT_TIMEOUT_MS + 500);
+      global.document.setVisibility('visible');
+
+      await assertion;
+    } finally {
+      global.document = originalDocument;
+      vi.useRealTimers();
+    }
+  });
 });

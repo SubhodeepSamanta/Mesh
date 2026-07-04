@@ -112,15 +112,47 @@ export class WebRTCTransport {
     return new Promise((resolve, reject) => {
       this._resolve = resolve;
       this._reject = reject;
-      const timeout = setTimeout(() => {
+      const deadline = Date.now() + CONNECT_TIMEOUT_MS;
+      const fail = () => {
         if (this._reject) {
           this._reject(new Error('Connection timeout'));
           this._reject = null;
           this.close();
         }
-      }, CONNECT_TIMEOUT_MS);
+      };
+      const timeout = setTimeout(fail, CONNECT_TIMEOUT_MS);
+      // A backgrounded tab (screen locked, user switched away) throttles or
+      // fully pauses setTimeout, so this plain timer alone can silently
+      // never fire — leaving connect() hanging forever with no error, no
+      // matter how long the real handshake has actually been dead. Re-check
+      // the deadline the moment the tab is visible again so a stuck
+      // connection always surfaces an error instead of hanging silently.
+      const onVisible = () => {
+        if (typeof document === 'undefined' || document.visibilityState !== 'visible') return;
+        if (Date.now() >= deadline) {
+          clearTimeout(timeout);
+          fail();
+        }
+      };
+      if (typeof document !== 'undefined' && document.addEventListener) {
+        document.addEventListener('visibilitychange', onVisible);
+      }
       const orig = this._resolve;
-      this._resolve = () => { clearTimeout(timeout); orig(); };
+      this._resolve = () => {
+        clearTimeout(timeout);
+        if (typeof document !== 'undefined' && document.removeEventListener) {
+          document.removeEventListener('visibilitychange', onVisible);
+        }
+        orig();
+      };
+      const origReject = this._reject;
+      this._reject = (err) => {
+        clearTimeout(timeout);
+        if (typeof document !== 'undefined' && document.removeEventListener) {
+          document.removeEventListener('visibilitychange', onVisible);
+        }
+        origReject(err);
+      };
       if (this.initiator) {
         this.pc.createOffer().then((offer) => {
           this.pc.setLocalDescription(offer);
