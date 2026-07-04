@@ -238,7 +238,7 @@ export default function Dashboard() {
                 onClick={handleManualDownload}
                 className="flex-1 px-3 py-2 text-xs sm:flex-initial sm:px-5 sm:py-2.5 sm:text-sm"
               >
-                DOWNLOAD
+                REDOWNLOAD
               </Button>
             )}
             {(status === 'transferring' || status === 'complete') && (

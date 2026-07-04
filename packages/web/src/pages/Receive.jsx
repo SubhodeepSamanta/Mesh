@@ -205,7 +205,9 @@ export default function Receive() {
   }
 
   useEffect(() => {
-    if (status === 'transferring') navigate('/dashboard')
+    if (status === 'transferring' || status === 'complete') {
+      navigate('/dashboard')
+    }
   }, [status, navigate])
 
   const handleManualDownload = () => {

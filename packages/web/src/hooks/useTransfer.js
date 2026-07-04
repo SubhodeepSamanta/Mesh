@@ -883,6 +883,7 @@ export function useTransfer() {
 
   const resetDownload = useCallback(() => {
     M.downloadGuard = false
+    useTransferStore.setState({ downloadedPaths: [] })
   }, [])
 
   const dialPeer = useCallback(async (peerId) => {
