@@ -9,7 +9,6 @@ const CHUNK_COLORS = {
 
 export default function ChunkGrid({ chunkStates = [], transferStatus }) {
   const scrollRef = useRef(null)
-  const atBottomRef = useRef(true)
 
   const { displayStates, cols, completePercent } = useMemo(() => {
     const total = chunkStates.length
@@ -33,21 +32,29 @@ export default function ChunkGrid({ chunkStates = [], transferStatus }) {
     return { displayStates: compressed, cols: Math.min(sqrt, 50), completePercent: percent }
   }, [chunkStates])
 
-  useEffect(() => {
-    if (scrollRef.current && atBottomRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
-    }
-  }, [completePercent])
+  const focusIndex = useMemo(() => {
+    const idx = displayStates.findIndex(item => item.state !== 'verified')
+    return idx !== -1 ? idx : displayStates.length - 1
+  }, [displayStates])
 
   useEffect(() => {
     const el = scrollRef.current
-    if (!el) return
-    const handleScroll = () => {
-      atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 30
-    }
-    el.addEventListener('scroll', handleScroll, { passive: true })
-    return () => el.removeEventListener('scroll', handleScroll)
-  }, [])
+    if (!el || displayStates.length === 0) return
+
+    const total = displayStates.length
+    const totalRows = Math.ceil(total / cols)
+    if (totalRows <= 1) return
+
+    const activeRow = Math.floor(focusIndex / cols)
+    const rowHeight = el.scrollHeight / totalRows
+    
+    const targetScrollTop = (activeRow * rowHeight) - (el.clientHeight / 2) + (rowHeight / 2)
+    
+    el.scrollTo({
+      top: Math.max(0, Math.min(el.scrollHeight - el.clientHeight, targetScrollTop)),
+      behavior: 'smooth'
+    })
+  }, [focusIndex, cols, displayStates.length])
 
   if (chunkStates.length === 0) {
     return (

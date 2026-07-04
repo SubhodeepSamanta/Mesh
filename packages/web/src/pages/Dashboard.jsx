@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useSignalingStore } from '../store/useSignalingStore.js'
 import { useTransferStore } from '../store/useTransferStore.js'
@@ -17,6 +17,8 @@ import FileManifest from '../components/FileManifest.jsx'
 import SenderResumePrompt from '../components/SenderResumePrompt.jsx'
 import { formatEta } from '../lib/format.js'
 import { useConfirmStore } from '../store/useConfirmStore.js'
+import { looksLikeVideo } from '../lib/videoFormat.js'
+import VideoPlayerModal from '../components/VideoPlayerModal.jsx'
 
 export default function Dashboard() {
   const navigate = useNavigate()
@@ -27,6 +29,32 @@ export default function Dashboard() {
   const [elapsed, setElapsed] = useState(0)
   const startRef = useRef(null)
   const timerRef = useRef(null)
+  const [playingFile, setPlayingFile] = useState(null)
+
+  const videoFile = useMemo(() => {
+    if (!fileMeta) return null
+    if (fileMeta.files) {
+      const found = fileMeta.files.find(f => looksLikeVideo(f.name))
+      if (found) {
+        return {
+          path: found.path,
+          name: found.name,
+          size: found.size,
+          startChunk: found.startChunk,
+          chunkCount: found.chunkCount
+        }
+      }
+    } else if (looksLikeVideo(fileMeta.fileName)) {
+      return {
+        path: fileMeta.fileName,
+        name: fileMeta.fileName,
+        size: fileMeta.fileSize,
+        startChunk: 0,
+        chunkCount: fileMeta.totalChunks || 0
+      }
+    }
+    return null
+  }, [fileMeta])
 
   useEffect(() => {
     if (status === 'idle') navigate('/', { replace: true })
@@ -191,8 +219,8 @@ export default function Dashboard() {
     <div className="mx-auto flex min-h-screen max-w-7xl flex-col gap-4 px-4 py-6 sm:px-6">
       <div className="flex flex-col gap-4 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4 sm:flex-row sm:items-center sm:justify-between sm:px-6 sm:py-4">
         {/* Left Side: Logo, Room Code, File Details */}
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
-          <div className="flex items-center gap-3">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4 min-w-0 flex-1">
+          <div className="flex items-center gap-3 shrink-0">
             <span className="text-lg font-bold tracking-wider text-[var(--accent)]">mesh</span>
             <Badge color="amber">{roomCode || '\u2014\u2014'}</Badge>
             {/* Mobile-only role badge */}
@@ -205,13 +233,13 @@ export default function Dashboard() {
             )}
           </div>
           {fileMeta && (
-            <div className="flex items-center gap-2 text-xs text-[var(--txt-secondary)] sm:text-sm">
-              <span className={`hidden rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider sm:inline-block ${
+            <div className="flex items-center gap-2 text-xs text-[var(--txt-secondary)] sm:text-sm min-w-0">
+              <span className={`hidden rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider sm:inline-block shrink-0 ${
                 role === 'sender' ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'bg-[var(--success)]/10 text-[var(--success)]'
               }`}>
                 {role === 'sender' ? 'SENDER' : 'RECEIVER'}
               </span>
-              <span className="truncate max-w-[180px] sm:max-w-none" title={fileMeta.fileName}>
+              <span className="truncate max-w-[120px] sm:max-w-[200px] md:max-w-[280px] lg:max-w-[360px]" title={fileMeta.fileName}>
                 {fileMeta.fileName} · {fileCount} file{fileCount > 1 ? 's' : ''}
               </span>
             </div>
@@ -232,6 +260,15 @@ export default function Dashboard() {
 
           {/* Action Buttons Container */}
           <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+            {role === 'receiver' && videoFile && (
+              <Button
+                variant="primary"
+                onClick={() => setPlayingFile(videoFile)}
+                className="flex-1 px-3 py-2 text-xs sm:flex-initial sm:px-5 sm:py-2.5 sm:text-sm"
+              >
+                {status === 'complete' ? 'PLAY VIDEO' : 'STREAM VIDEO'}
+              </Button>
+            )}
             {status === 'complete' && role === 'receiver' && (
               <Button
                 variant="secondary"
@@ -406,6 +443,9 @@ export default function Dashboard() {
           <SpeedChart data={speedHistory} peerCount={peerStats.length} />
         </div>
       </div>
+      {playingFile && (
+        <VideoPlayerModal fileEntry={playingFile} onClose={() => setPlayingFile(null)} />
+      )}
     </div>
   )
 }
