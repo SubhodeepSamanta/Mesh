@@ -43,7 +43,11 @@ export class WebRTCTransport {
       });
     };
 
-    this._relayHandler = (event) => { this._handleSignal(event.detail).catch(() => {}) };
+    this._relayHandler = (event) => {
+      this._handleSignal(event.detail).catch((err) => {
+        console.warn(`[mesh] failed to process a ${event.detail?.payload?.kind || 'signal'} message from ${this.remotePeerId}:`, err)
+      })
+    };
     this.signalingClient.addEventListener('relay', this._relayHandler);
 
     if (initiator) {
@@ -93,7 +97,9 @@ export class WebRTCTransport {
       await this._flushIce();
     } else if (p.kind === 'ice-candidate') {
       if (this._remoteDescSet) {
-        await this.pc.addIceCandidate(p.candidate).catch(() => {});
+        await this.pc.addIceCandidate(p.candidate).catch((err) => {
+          console.warn(`[mesh] addIceCandidate failed for ${this.remotePeerId}:`, err)
+        });
       } else {
         this._pendingIce.push(p.candidate);
       }
@@ -104,7 +110,9 @@ export class WebRTCTransport {
     const cs = this._pendingIce;
     this._pendingIce = [];
     for (const c of cs) {
-      await this.pc.addIceCandidate(c).catch(() => {});
+      await this.pc.addIceCandidate(c).catch((err) => {
+        console.warn(`[mesh] addIceCandidate (flushed) failed for ${this.remotePeerId}:`, err)
+      });
     }
   }
 
@@ -157,10 +165,21 @@ export class WebRTCTransport {
         this.pc.createOffer().then((offer) => {
           this.pc.setLocalDescription(offer);
           this.signalingClient.relay(this.remotePeerId, { kind: 'offer', sdp: offer.sdp });
+        }).catch((err) => {
+          console.warn(`[mesh] createOffer failed for ${this.remotePeerId}:`, err)
         });
       } else if (offerPayload) {
-        this._handleSignal({ fromPeerId: this.remotePeerId, payload: offerPayload }).catch(() => {});
+        this._handleSignal({ fromPeerId: this.remotePeerId, payload: offerPayload }).catch((err) => {
+          console.warn(`[mesh] failed to handle incoming offer from ${this.remotePeerId}:`, err)
+        });
       }
+      // ICE connection state is the single most useful signal for diagnosing
+      // a stuck handshake — log every transition so "stuck with no error" is
+      // never the only information available (e.g. 'checking' stuck forever
+      // means no usable candidate pair was found; 'failed' means ICE gave up).
+      this.pc.addEventListener('iceconnectionstatechange', () => {
+        console.info(`[mesh] ICE connection state (${this.remotePeerId}):`, this.pc.iceConnectionState)
+      });
     });
   }
 

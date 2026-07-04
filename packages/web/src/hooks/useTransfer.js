@@ -943,7 +943,11 @@ export function useTransfer() {
         }
       })
       M.transports.set(peerId, t)
-    } catch {
+    } catch (err) {
+      // This used to fail completely silently — no console output, no UI
+      // feedback — making a stuck "never connects" case indistinguishable
+      // from a slow-but-working one. Surface it so it's actually visible.
+      console.warn(`[mesh] dialPeer(${peerId}) failed to establish a WebRTC connection:`, err)
       t.close()
       M.transports.delete(peerId)
     } finally {
