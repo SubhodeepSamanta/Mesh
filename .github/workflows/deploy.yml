@@ -4,6 +4,16 @@ on:
   push:
     branches:
       - main
+    paths:
+      - 'packages/signaling/**'
+      - 'docker-compose.yml'
+      - 'docker-compose.override.yml'
+      - 'Caddyfile'
+      - '.github/workflows/deploy.yml'
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
 
 jobs:
   deploy:
