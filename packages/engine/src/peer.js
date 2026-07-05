@@ -7,10 +7,11 @@ export const HANDSHAKE_TIMEOUT_MS = 5000;
 export const METADATA_TIMEOUT_MS = 10000;
 
 export class PeerConnection {
-  constructor(addr, port) {
+  constructor(addr, port, { transport = null } = {}) {
     this.addr = addr;
     this.port = port;
     this.socket = null;
+    this.transport = transport;
     this.metadata = null;
     this.pendingRequests = new Map();
     this.keyPair = generateKeyPair();
@@ -22,26 +23,33 @@ export class PeerConnection {
 
   connect() {
     return new Promise((resolve, reject) => {
-      this.socket = net.createConnection({ host: this.addr, port: this.port });
+      this.socket = this.transport || net.createConnection({ host: this.addr, port: this.port });
       this.socket.setNoDelay(true);
       this.socket.setMaxListeners(0);
 
       const framer = createFramer((body) => this._handleMessage(body));
 
-      this.socket.once('connect', async () => {
+      const onReady = async () => {
         try {
           await this._performHandshake();
           resolve(this);
         } catch (e) {
           reject(e);
         }
-      });
+      };
+
+      if (this.transport) {
+        onReady();
+      } else {
+        this.socket.once('connect', onReady);
+      }
 
       this.socket.once('error', reject);
       this.socket.on('data', framer);
 
       this.socket.on('close', () => {
-        for (const { reject: rej } of this.pendingRequests.values()) {
+        for (const { reject: rej, timeout } of this.pendingRequests.values()) {
+          clearTimeout(timeout);
           rej(new Error('Connection closed'));
         }
         this.pendingRequests.clear();

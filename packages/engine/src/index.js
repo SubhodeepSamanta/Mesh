@@ -8,3 +8,8 @@ export * from './transfer.js';
 export * from './resume.js';
 export * from './chunkServer.js';
 export * from './seed.js';
+export * from './net/stun.js';
+export * from './net/upnp.js';
+export * from './net/turn.js';
+export * from './net/reliableDatagram.js';
+export * from './net/connect.js';

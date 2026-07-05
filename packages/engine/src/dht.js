@@ -110,14 +110,16 @@ getClosest(targetId, count = DHT_K) {
 }
 
 export const DHT_MSG = {
-  PING:         'DHT_PING',
-  PONG:         'DHT_PONG',
-  FIND_NODE:    'DHT_FIND_NODE',
-  FOUND_NODE:   'DHT_FOUND_NODE',
-  ANNOUNCE:     'DHT_ANNOUNCE',
-  ANNOUNCE_ACK: 'DHT_ANNOUNCE_ACK',
-  GET_PEERS:    'DHT_GET_PEERS',
-  PEERS:        'DHT_PEERS',
+  PING:             'DHT_PING',
+  PONG:             'DHT_PONG',
+  FIND_NODE:        'DHT_FIND_NODE',
+  FOUND_NODE:       'DHT_FOUND_NODE',
+  ANNOUNCE:         'DHT_ANNOUNCE',
+  ANNOUNCE_ACK:     'DHT_ANNOUNCE_ACK',
+  GET_PEERS:        'DHT_GET_PEERS',
+  PEERS:            'DHT_PEERS',
+  RELAY_HELLO:      'DHT_RELAY_HELLO',
+  RELAY_HELLO_ACK:  'DHT_RELAY_HELLO_ACK',
 };
 
 export class DHTNode extends EventEmitter {
@@ -129,16 +131,27 @@ export class DHTNode extends EventEmitter {
     this.pending = new Map();
     this.port = null;
     this.address = null;
+    this.publicAddress = null;
     this.fileStore = new Map();
+    this.relayPermissionHandlers = new Set();
   }
 
-listen(port = 0, host = '127.0.0.1') {
+  addRelayPermissionHandler(handler) {
+    this.relayPermissionHandlers.add(handler);
+  }
+
+  removeRelayPermissionHandler(handler) {
+    this.relayPermissionHandlers.delete(handler);
+  }
+
+listen(port = 0, host = '0.0.0.0', { publicAddress = null } = {}) {
   return new Promise((resolve, reject) => {
     this.socket.once('error', reject);
     this.socket.bind(port, host, () => {
       const addr = this.socket.address();
       this.port = addr.port;
       this.address = addr.address;
+      this.publicAddress = publicAddress || (addr.address === '0.0.0.0' || addr.address === '::' ? '127.0.0.1' : addr.address);
       this.socket.removeListener('error', reject);
       this.socket.on('message', (msg, rinfo) => this._handleMessage(msg, rinfo));
       this.socket.on('error', (e) => this.emit('error', e));
@@ -208,10 +221,14 @@ _handleMessage(msgBuf, rinfo) {
       if (typeof msg.fileHash !== 'string' || typeof msg.port !== 'number') return;
       const peers = this.fileStore.get(msg.fileHash) || [];
       const existingIdx = peers.findIndex(p => p.addr === rinfo.address && p.port === msg.port);
+      const relay = msg.relay || null;
       if (existingIdx === -1) {
-        peers.push({ addr: rinfo.address, port: msg.port, announcedAt: Date.now() });
+        peers.push({ addr: rinfo.address, port: msg.port, dhtAddr: rinfo.address, dhtPort: rinfo.port, relay, announcedAt: Date.now() });
       } else {
         peers[existingIdx].announcedAt = Date.now();
+        peers[existingIdx].dhtAddr = rinfo.address;
+        peers[existingIdx].dhtPort = rinfo.port;
+        peers[existingIdx].relay = relay;
       }
       this.fileStore.set(msg.fileHash, peers);
       this._send(rinfo.address, rinfo.port, {
@@ -226,13 +243,22 @@ _handleMessage(msgBuf, rinfo) {
       this._send(rinfo.address, rinfo.port, {
         type: DHT_MSG.PEERS, msgId: msg.msgId, nodeId: this.nodeId,
         fileHash: msg.fileHash,
-        peers: peers.map(p => ({ addr: p.addr, port: p.port })),
+        peers: peers.map(p => ({ addr: p.addr, port: p.port, dhtAddr: p.dhtAddr, dhtPort: p.dhtPort, relay: p.relay || null })),
+      });
+      return;
+    }
+
+    if (msg.type === DHT_MSG.RELAY_HELLO) {
+      const handlers = [...this.relayPermissionHandlers];
+      Promise.allSettled(handlers.map(handler => handler(rinfo.address, rinfo.port))).then(() => {
+        this._send(rinfo.address, rinfo.port, { type: DHT_MSG.RELAY_HELLO_ACK, msgId: msg.msgId, nodeId: this.nodeId });
       });
       return;
     }
 
     if (msg.type === DHT_MSG.PONG || msg.type === DHT_MSG.FOUND_NODE ||
-        msg.type === DHT_MSG.ANNOUNCE_ACK || msg.type === DHT_MSG.PEERS) {
+        msg.type === DHT_MSG.ANNOUNCE_ACK || msg.type === DHT_MSG.PEERS ||
+        msg.type === DHT_MSG.RELAY_HELLO_ACK) {
       const handler = this.pending.get(msg.msgId);
       if (handler) {
         clearTimeout(handler.timeout);
@@ -241,6 +267,18 @@ _handleMessage(msgBuf, rinfo) {
       }
       return;
     }
+  }
+
+  requestRelayPermission(dhtAddr, dhtPort, { timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
+    return new Promise((resolve, reject) => {
+      const msgId = this._msgId();
+      const timeout = setTimeout(() => {
+        this.pending.delete(msgId);
+        reject(new Error('RELAY_HELLO timeout'));
+      }, timeoutMs);
+      this.pending.set(msgId, { resolve, reject, timeout });
+      this._send(dhtAddr, dhtPort, { type: DHT_MSG.RELAY_HELLO, msgId, nodeId: this.nodeId }).catch(reject);
+    });
   }
 
   ping(addr, port) {
@@ -326,7 +364,7 @@ _handleMessage(msgBuf, rinfo) {
     return closest;
   }
 
-  _announceToOne(addr, port, fileHash, myPort) {
+  _announceToOne(addr, port, fileHash, myPort, relay = null) {
     return new Promise((resolve, reject) => {
       const msgId = this._msgId();
       const timeout = setTimeout(() => {
@@ -334,9 +372,9 @@ _handleMessage(msgBuf, rinfo) {
         reject(new Error('ANNOUNCE timeout'));
       }, REQUEST_TIMEOUT_MS);
       this.pending.set(msgId, { resolve, reject, timeout });
-      this._send(addr, port, {
-        type: DHT_MSG.ANNOUNCE, msgId, nodeId: this.nodeId, fileHash, port: myPort,
-      }).catch(reject);
+      const payload = { type: DHT_MSG.ANNOUNCE, msgId, nodeId: this.nodeId, fileHash, port: myPort };
+      if (relay) payload.relay = relay;
+      this._send(addr, port, payload).catch(reject);
     });
   }
 
@@ -358,11 +396,11 @@ _handleMessage(msgBuf, rinfo) {
     });
   }
 
-async announceFile(fileHash, myPort) {
+async announceFile(fileHash, myPort, relay = null) {
   const localPeers = this.fileStore.get(fileHash) || [];
-  const existsLocally = localPeers.some(p => p.addr === this.address && p.port === myPort);
+  const existsLocally = localPeers.some(p => p.addr === this.publicAddress && p.port === myPort);
   if (!existsLocally) {
-    localPeers.push({ addr: this.address, port: myPort, announcedAt: Date.now() });
+    localPeers.push({ addr: this.publicAddress, port: myPort, dhtAddr: this.publicAddress, dhtPort: this.port, relay, announcedAt: Date.now() });
   }
   this.fileStore.set(fileHash, localPeers);
 
@@ -374,7 +412,7 @@ async announceFile(fileHash, myPort) {
   }
 
   const results = await Promise.allSettled(
-    closest.map(peer => this._announceToOne(peer.addr, peer.port, fileHash, myPort))
+    closest.map(peer => this._announceToOne(peer.addr, peer.port, fileHash, myPort, relay))
   );
 
   return closest.filter((_, i) => results[i].status === 'fulfilled');
@@ -390,7 +428,10 @@ async getPeersForFile(fileHash) {
 
   for (const peer of localPeers) {
     const key = `${peer.addr}:${peer.port}`;
-    if (!seen.has(key)) { seen.add(key); merged.push({ addr: peer.addr, port: peer.port }); }
+    if (!seen.has(key)) {
+      seen.add(key);
+      merged.push({ addr: peer.addr, port: peer.port, dhtAddr: peer.dhtAddr, dhtPort: peer.dhtPort, relay: peer.relay || null });
+    }
   }
 
   const allLists = await Promise.allSettled(

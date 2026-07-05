@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'net';
 import { randomBytes } from 'crypto';
-import { readFile, unlink } from 'fs/promises';
+import { readFile, unlink, mkdir, rm } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { DHTNode } from '../src/dht.js';
@@ -330,6 +330,49 @@ await assert.rejects(
     assert.deepEqual(resultBuf, Buffer.concat(chunks));
 
     await unlink(outputPath);
+    server.close();
+    await seederNode.close();
+    await downloaderNode.close();
+  });
+
+  it('downloadFileByHash saves into a directory using the sender-provided file name when outputPath is a directory', async () => {
+    const numChunks = 4;
+    const chunkSize = 1024;
+    const chunks = [];
+    const hashes = [];
+    for (let i = 0; i < numChunks; i++) {
+      const chunk = randomBytes(chunkSize);
+      chunks.push(chunk);
+      hashes.push(sha256(chunk));
+    }
+    const tree = buildMerkleTree(hashes);
+    const fileHash = tree.root;
+
+    const seederNode = new DHTNode();
+    const downloaderNode = new DHTNode();
+    await seederNode.listen();
+    await downloaderNode.listen();
+
+    downloaderNode.routingTable.addPeer({
+      id: seederNode.nodeId, addr: '127.0.0.1', port: seederNode.port,
+    });
+
+    const tcpPort = 19200 + Math.floor(Math.random() * 500);
+    const fileSize = numChunks * chunkSize;
+    const server = await startTestSeeder(chunks, hashes, tree, tree.root, fileSize, tcpPort);
+    await seederNode.announceFile(fileHash, tcpPort);
+
+    const outputDir = join(tmpdir(), `mesh-dir-out-${Date.now()}`);
+    await mkdir(outputDir, { recursive: true });
+
+    const result = await downloadFileByHash({ fileHash, outputPath: outputDir, dhtNode: downloaderNode });
+
+    assert.equal(result.status, 'complete');
+    assert.equal(result.outputPath, join(outputDir, 'testfile.bin'));
+    const resultBuf = await readFile(result.outputPath);
+    assert.deepEqual(resultBuf, Buffer.concat(chunks));
+
+    await rm(outputDir, { recursive: true, force: true });
     server.close();
     await seederNode.close();
     await downloaderNode.close();

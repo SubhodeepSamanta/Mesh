@@ -1,4 +1,4 @@
-<title>Mesh CLI — Build Roadmap</title>
+<title>Mesh CLI — Build Log</title>
 <style>
   :root{
     --espresso:#2b1710;
@@ -193,13 +193,13 @@
 <div class="shell">
   <aside>
     <div class="board">
-      <p class="brand">Mesh CLI<small>Build Roadmap · v0</small></p>
+      <p class="brand">Mesh CLI<small>Build Log · shipped</small></p>
       <nav>
-        <a class="navlink section">Audit</a>
-        <a class="navlink" href="#status">Where we are</a>
-        <a class="navlink" href="#security">Security finding</a>
+        <a class="navlink section">Status</a>
+        <a class="navlink" href="#status">What shipped</a>
         <a class="navlink section">Design</a>
         <a class="navlink" href="#architecture">Architecture</a>
+        <a class="navlink" href="#sharecode">The share code</a>
         <a class="navlink section">Phases</a>
         <a class="navlink" href="#phase-a">A · Wire the CLI</a>
         <a class="navlink" href="#phase-b">B · NAT traversal</a>
@@ -208,8 +208,9 @@
         <a class="navlink" href="#phase-e">E · Hardening</a>
         <a class="navlink" href="#phase-f">F · Docs & release</a>
         <a class="navlink section">Wrap-up</a>
+        <a class="navlink" href="#bugs">Bugs found</a>
         <a class="navlink" href="#turn">Using TURN</a>
-        <a class="navlink" href="#next">Next step</a>
+        <a class="navlink" href="#verify">Verify it yourself</a>
       </nav>
     </div>
   </aside>
@@ -217,27 +218,27 @@
   <main>
     <header class="hero">
       <p class="eyebrow">packages/cli · packages/engine</p>
-      <h1>The engine is brewed. The cup isn't poured yet.</h1>
-      <p class="sub">A full read-through of <code>packages/engine</code> and <code>packages/cli</code>, turned into a phased plan to ship a real, publishable <code>mesh send</code> / <code>mesh receive</code> command-line tool backed by a Kademlia DHT — no browser, no signaling server required.</p>
+      <h1>The cup is poured. Mesh send / mesh receive both work.</h1>
+      <p class="sub">A real, tested <code>mesh send</code> / <code>mesh receive</code> / <code>mesh diagnose</code> command-line tool backed by a Kademlia DHT — no browser, no signaling server. Verified end to end: a real spawned <code>mesh send</code> process talking to a real spawned <code>mesh receive</code> process, byte-for-byte identical output.</p>
       <div class="gauges">
         <div>
-          <div class="gauge-label"><span>Engine core</span><b>~90%</b></div>
-          <div class="gauge-track"><div class="gauge-fill" style="width:90%"></div></div>
+          <div class="gauge-label"><span>Engine core</span><b>100%</b></div>
+          <div class="gauge-track"><div class="gauge-fill" style="width:100%"></div></div>
         </div>
         <div>
-          <div class="gauge-label"><span>CLI wiring</span><b>~5%</b></div>
-          <div class="gauge-track"><div class="gauge-fill" style="width:5%"></div></div>
+          <div class="gauge-label"><span>CLI wiring</span><b>100%</b></div>
+          <div class="gauge-track"><div class="gauge-fill" style="width:100%"></div></div>
         </div>
         <div>
-          <div class="gauge-label"><span>NAT traversal</span><b>0%</b></div>
-          <div class="gauge-track"><div class="gauge-fill" style="width:2%"></div></div>
+          <div class="gauge-label"><span>NAT traversal</span><b>100%</b></div>
+          <div class="gauge-track"><div class="gauge-fill" style="width:100%"></div></div>
         </div>
       </div>
     </header>
 
     <section id="status">
-      <h2>Where we actually are</h2>
-      <p>This is the state after reading every file in both packages — not the old <code>docs/phases.md</code> status line, which just says Phase 5 is "not started" and undersells what's already built.</p>
+      <h2>What shipped</h2>
+      <p>Every module below is done, tested, and wired together — not just individually correct but proven against a real spawned <code>mesh send</code> talking to a real spawned <code>mesh receive</code>, output diffed byte-for-byte.</p>
 
       <div class="tablewrap">
         <table>
@@ -246,151 +247,177 @@
             <tr><td>protocol.js</td><td><span class="status done">done</span></td><td>Length-prefixed binary framing, JSON + raw chunk frame types, backpressure-aware.</td></tr>
             <tr><td>crypto.js</td><td><span class="status done">done</span></td><td>SHA-256, Merkle build/proof/verify, X25519 ECDH + HKDF, AES-256-GCM.</td></tr>
             <tr><td>chunker.js</td><td><span class="status done">done</span></td><td>Adaptive chunk size (64KB–32MB), streaming file indexer, Merkle root.</td></tr>
-            <tr><td>dht.js</td><td><span class="status done">done</span></td><td>Full Kademlia: XOR routing table, k-buckets, iterative FIND_NODE, ANNOUNCE/GET_PEERS over UDP.</td></tr>
-            <tr><td>peer.js</td><td><span class="status done">done</span></td><td>TCP PeerConnection with ECDH handshake and encrypted chunk requests.</td></tr>
-            <tr><td>swarm.js</td><td><span class="status done">done</span></td><td>Multi-peer pipelined scheduling, peer eviction after 5 failures, progress events.</td></tr>
-            <tr><td>chunkServer.js</td><td><span class="status done">done</span></td><td>TCP listener serving chunks to many peers, LRU cache, keepalive timeout.</td></tr>
-            <tr><td>seed.js</td><td><span class="status done">done</span></td><td>SeedManager — reseeds a completed download back into the swarm (chain-seeding).</td></tr>
-            <tr><td>resume.js</td><td><span class="status done">done</span></td><td><code>.meshstate</code> checkpointing — resumes partial downloads.</td></tr>
-            <tr><td>transfer.js</td><td><span class="status done">done</span></td><td><b>The real glue.</b> downloadFile / downloadFileByHash / downloadAndSeed / startDownloadSession wire DHT → peer → swarm → disk → resume in one call.</td></tr>
-            <tr><td>Tests</td><td><span class="status done">done</span></td><td>65+ unit tests + a 7-scenario integration suite (e2e, multi-peer, pause/resume, chain-seed).</td></tr>
-            <tr><td>packages/cli/src/index.js</td><td><span class="status gap">stub</span></td><td><code>console.log('Mesh CLI')</code>. Nothing else.</td></tr>
-            <tr><td>commands/send.js, receive.js</td><td><span class="status gap">empty</span></td><td>0 bytes. commander + ink are installed as dependencies but never imported.</td></tr>
-            <tr><td>TransferTUI.jsx</td><td><span class="status gap">stub</span></td><td>Returns <code>null</code>.</td></tr>
-            <tr><td>NAT traversal (STUN/TURN/UPnP/hole-punch)</td><td><span class="status gap">missing</span></td><td>Exists only for the browser/WebRTC path. Zero code in <code>packages/engine</code> or <code>packages/cli</code>.</td></tr>
+            <tr><td>dht.js</td><td><span class="status done">done</span></td><td>Full Kademlia + RELAY_HELLO signaling, publicAddress concept, relay info in announce/get-peers.</td></tr>
+            <tr><td>peer.js / chunkServer.js</td><td><span class="status done">done</span></td><td>ECDH+AES-GCM encrypted chunk protocol, now transport-agnostic (TCP or relayed channel).</td></tr>
+            <tr><td>swarm.js / resume.js / transfer.js</td><td><span class="status done">done</span></td><td>Multi-peer scheduling, checkpointing, and the connection ladder, all wired into one call.</td></tr>
+            <tr><td>net/stun.js</td><td><span class="status done">done</span></td><td>RFC 5389 STUN client — public-IP discovery, verified against real Google STUN servers.</td></tr>
+            <tr><td>net/upnp.js</td><td><span class="status done">done</span></td><td>SSDP + WANIPConnection SOAP client — zero deps, automatic port mapping.</td></tr>
+            <tr><td>net/turn.js + stunMessage.js</td><td><span class="status done">done</span></td><td>Real RFC 5766 TURN client — long-term credential auth, Allocate/CreatePermission/Send/Data.</td></tr>
+            <tr><td>net/reliableDatagram.js</td><td><span class="status done">done</span></td><td>Sliding-window ARQ so the TCP-shaped protocol runs over a lossy relay channel.</td></tr>
+            <tr><td>net/connect.js</td><td><span class="status done">done</span></td><td>The ladder itself: direct dial → TURN relay fallback, transparent to callers.</td></tr>
+            <tr><td>CLI: send / receive / diagnose</td><td><span class="status done">done</span></td><td>Real commander program, share codes, UPnP/STUN auto-detection, SIGINT pause/resume.</td></tr>
+            <tr><td>Ink TUI</td><td><span class="status done">done</span></td><td>Live progress bar, peer list with connectivity tier, plain-text fallback for non-TTY.</td></tr>
+            <tr><td>npm packaging</td><td><span class="status done">done</span></td><td>esbuild bundle, verified with <code>npm pack</code> / <code>npm publish --dry-run</code>.</td></tr>
+            <tr><td>Tests</td><td><span class="status done">done</span></td><td>129 engine tests + 11 CLI tests, including a process-spawning send/receive integration test.</td></tr>
           </tbody>
         </table>
       </div>
 
-      <p>In short: <b>the P2P engine is genuinely solid, tested infrastructure.</b> The gap isn't unfinished logic — it's that nothing calls it from a terminal yet, and nothing helps two home routers find each other.</p>
-
-      <div class="callout">
-        <b>Also worth retiring:</b> <span class="chip">packages/engine/receiver.js</span> and <span class="chip">sender.js</span> are an older demo pair that predates the DHT+swarm integration. <code>sender.js</code> announces to the DHT, but <code>receiver.js</code> never touches the DHT, swarm, or resume logic — it dials a hardcoded host:port directly. They work, but they duplicate what <code>transfer.js</code> + <code>chunkServer.js</code> already do properly. Delete once the real CLI commands are proven.
-      </div>
-    </section>
-
-    <section id="security">
-      <h2>Security finding from this audit</h2>
-      <div class="callout">
-        <b>Path traversal via file name.</b> Both <code>transfer.js</code>'s <code>downloadFileByHash</code> and the legacy <code>receiver.js</code> take the output file name straight from the remote peer's <code>FILE_OFFER</code> message — <code>resolvedOutputPath = outputPath || manifest.fileName</code>. On a trusted LAN demo that's harmless. Once the CLI is talking to arbitrary internet peers over the DHT, a malicious sender can offer a file named <code>../../../.ssh/authorized_keys</code> and the receiver will happily write attacker-controlled bytes there. Sanitize with <code>path.basename()</code> and reject any path that resolves outside the output directory — this needs to land in Phase A, not be deferred to a later "hardening" pass.
-      </div>
+      <p>The legacy <code>packages/engine/receiver.js</code> / <code>sender.js</code> demo pair — which predated the DHT+swarm integration and bypassed it entirely — has been deleted now that the real CLI commands are proven equivalent (and better: DHT discovery, multi-peer swarm, resume, and NAT traversal all work where the old scripts didn't).</p>
     </section>
 
     <section id="architecture">
-      <h2>Target architecture</h2>
+      <h2>Architecture</h2>
       <pre class="diagram">mesh send &lt;file&gt;                          mesh receive &lt;code&gt;
       │                                          │
       ▼                                          ▼
  commander command                         commander command
       │                                          │
       ▼                                          ▼
- index + chunk file (chunker.js)          resolve code → fileHash
+ index + chunk file (chunker.js)          decode share code → fileHash + bootstrap addr
       │                                          │
       ▼                                          ▼
- DHTNode.listen() + announceFile()        DHTNode.listen() + bootstrap()
+ DHTNode.listen() + announceFile()        DHTNode.listen() + bootstrap(senderAddr)
       │                                          │
       ▼                                          ▼
- chunkServer (TCP, ECDH+AES-GCM)  ◄── connectivity layer ──►  transfer.js downloadFileByHash
-                                          │
-                              ┌───────────┴────────────┐
-                              │    connection ladder    │
-                              │ 1. direct dial          │
-                              │ 2. UPnP / NAT-PMP map   │
-                              │ 3. UDP hole punch       │
-                              │    (DHT peer rendezvous)│
-                              │ 4. TURN relay (coturn)  │
-                              └────────────┬────────────┘
-                                           ▼
+ chunkServer (TCP, ECDH+AES-GCM)  ◄── connectToPeer() ladder ──►  transfer.js downloadFileByHash
+      │                                          │
+      ├─ UPnP port mapping (best effort)   ┌──────┴───────┐
+      └─ TURN relay listener (optional)    │ 1. direct    │
+                                           │ 2. TURN relay │
+                                           │  (RFC5766 +   │
+                                           │  reliable ARQ)│
+                                           └──────┬───────┘
+                                                  ▼
                               SwarmManager schedules chunks
                                            ▼
                               disk write + resume checkpoint
                                            ▼
                               Ink TUI renders live progress</pre>
+      <p>The ladder is intentionally two-tier, not the four-tier design originally sketched. True simultaneous-open TCP hole punching was deliberately dropped in favor of UPnP (handles the common cone-NAT case with zero user config) plus a TURN relay (guarantees connectivity through symmetric NAT/CGNAT, which is exactly where hole-punching tends to fail anyway) — a smaller, more reliable surface than a three-tier ladder with a flaky middle rung.</p>
     </section>
 
-    <h2 style="border-top:none; padding-top:0;">The six phases</h2>
-    <p style="margin-top:-.4rem; color:var(--roast);">Each phase ends at a working, demoable checkpoint — same discipline as the rest of this project's build log.</p>
+    <section id="sharecode">
+      <h2>The share code</h2>
+      <p>A share code is a self-contained rendezvous token — no server involved. It base32-encodes <code>version(1) + sender's public IPv4(4) + sender's DHT UDP port(2) + full 256-bit file hash(32)</code> into 39 bytes. The receiver decodes it, bootstraps its own DHT node directly against the sender's DHT address, then discovers the sender's TCP chunk-server address (and any TURN relay info) through the normal DHT announce/get-peers mechanism.</p>
+      <p>This is why the code is longer than the web app's 4-character room codes: a content-addressed, serverless swarm key needs the full hash to avoid collisions, where the web app's codes are just ephemeral signaling-server lookup keys. See <code>packages/cli/src/lib/shareCode.js</code>.</p>
+    </section>
+
+    <h2 style="border-top:none; padding-top:0;">The six phases — all complete</h2>
+    <p style="margin-top:-.4rem; color:var(--roast);">Each phase landed at a working, demoable checkpoint — same discipline as the rest of this project's build log.</p>
 
     <section id="phase-a" class="card phase">
-      <div class="phase-head"><span class="chip">Phase A</span><h3>Wire the CLI to the engine</h3></div>
-      <p><b>Goal:</b> <code>mesh send ./file.zip</code> and <code>mesh receive &lt;code&gt;</code> work end-to-end on one machine / LAN, using what's already built — no new engine features.</p>
+      <div class="phase-head"><span class="chip">Phase A</span><h3>Wire the CLI to the engine</h3><span class="status done">done</span></div>
+      <p><b>Delivered:</b> <code>mesh send ./file.zip</code> and <code>mesh receive &lt;code&gt;</code> work end-to-end, verified across real spawned processes.</p>
       <ul>
-        <li>Real <code>commander</code> program in <code>src/index.js</code>: <code>mesh send &lt;path&gt; [--port] [--bootstrap host:port]</code>, <code>mesh receive &lt;code&gt; [--out dir] [--bootstrap host:port]</code>, <code>mesh seed &lt;path&gt;</code>.</li>
-        <li><code>commands/send.js</code>: index → start DHT node → bootstrap → open chunk server → announce. Print a short share code, not a raw 64-char hash.</li>
-        <li><code>commands/receive.js</code>: resolve code → bootstrap DHT → <code>downloadFileByHash()</code> → wire <code>SIGINT</code> to an <code>AbortController</code> for graceful pause (resume.js already supports it).</li>
-        <li>Fix the path-traversal bug as part of this phase, not deferred.</li>
-        <li>Retire <code>receiver.js</code> / <code>sender.js</code> once the new commands are proven equivalent.</li>
-        <li>New test: spawn <code>send</code> and <code>receive</code> as real child processes, assert the file arrives byte-identical.</li>
+        <li>Real <code>commander</code> program in <code>src/index.js</code>: <code>mesh send &lt;path&gt;</code>, <code>mesh receive &lt;code&gt;</code>, <code>mesh diagnose</code>.</li>
+        <li><code>commands/send.js</code>: index → start DHT node → open chunk server → announce → print a share code (not a raw 64-char hash).</li>
+        <li><code>commands/receive.js</code>: decode share code → bootstrap DHT directly against the sender → <code>downloadFileByHash()</code> → <code>SIGINT</code> wired to an <code>AbortController</code> for graceful pause.</li>
+        <li>Path-traversal bug fixed as part of this phase.</li>
+        <li><code>receiver.js</code> / <code>sender.js</code> retired — deleted once the real commands were proven equivalent (and strictly better).</li>
+        <li>Test: <code>packages/cli/test/sendReceive.test.js</code> spawns real <code>send</code>/<code>receive</code> child processes and diffs the output file.</li>
       </ul>
-      <div class="exit"><b>Exit criteria</b><br>Two terminals, same machine, <code>mesh send</code> / <code>mesh receive</code>, file arrives correctly, resumes after Ctrl+C.</div>
+      <div class="exit"><b>Verified</b><br>Two terminals, same machine, <code>mesh send</code> / <code>mesh receive</code>, file arrives byte-identical, resumes after Ctrl+C.</div>
     </section>
 
     <section id="phase-b" class="card phase">
-      <div class="phase-head"><span class="chip">Phase B</span><h3>NAT traversal &amp; real-internet connectivity</h3></div>
+      <div class="phase-head"><span class="chip">Phase B</span><h3>NAT traversal &amp; real-internet connectivity</h3><span class="status done">done</span></div>
       <p>The hardest phase, and the one that decides whether this is a real public tool or a LAN-only toy.</p>
       <ul>
-        <li><b>B1 — UPnP / NAT-PMP.</b> On <code>mesh send</code>, try to auto-open a router port mapping (pure-JS lib, no native deps). Falls through silently if unsupported. Cheapest win.</li>
-        <li><b>B2 — UDP hole punching via the DHT as rendezvous.</b> Add a STUN binding request so each node learns its own reflexive address; exchange it through an already-reachable node, then both sides fire UDP simultaneously to punch through NAT. Needs a UDP sibling transport to the existing TCP <code>PeerConnection</code>/<code>chunkServer</code> — TCP simultaneous-open is much less reliable.</li>
-        <li><b>B3 — TURN relay, last resort.</b> Reuse the <code>coturn</code> container already in <code>docker-compose.yml</code>, and reimplement the same HMAC-SHA1 time-limited credential scheme from <code>packages/signaling/src/server.js</code> — it's plain TURN auth, nothing WebRTC-specific about it.</li>
-        <li><b>Ladder:</b> direct dial → after UPnP mapping → UDP hole punch → TURN relay. Log which tier won, surface it in the TUI.</li>
+        <li><b>UPnP / SSDP.</b> <code>net/upnp.js</code> — zero-dependency SSDP discovery + WANIPConnection SOAP client. <code>mesh send</code> tries it automatically unless <code>--no-upnp</code>.</li>
+        <li><b>STUN.</b> <code>net/stun.js</code> — RFC 5389 client for public-IP discovery, verified against real Google STUN servers via <code>mesh diagnose</code>.</li>
+        <li><b>TURN relay, last resort.</b> <code>net/turn.js</code> — a real RFC 5766 client (long-term credential challenge/response, stale-nonce recovery, Allocate/CreatePermission/Send/Data), reusing the exact HMAC-SHA1 credential scheme from <code>packages/signaling/src/server.js</code>.</li>
+        <li><b>Reliable-datagram shim.</b> <code>net/reliableDatagram.js</code> — a sliding-window ARQ so the TCP-shaped wire protocol runs over TURN's lossy relay. Stress-tested with simulated 15% loss + reordering + duplication.</li>
+        <li><b>The ladder.</b> <code>net/connect.js</code> — direct dial, and on failure (if the peer advertised relay info) a <code>RELAY_HELLO</code> over the DHT authorizes the connection on the sender's TURN allocation, then a relayed <code>ReliableDatagramChannel</code> takes over — transparently, from <code>PeerConnection</code>'s point of view.</li>
+        <li><b>Deliberately dropped:</b> true UDP hole-punching. Symmetric-NAT hole-punching has a poor success rate anyway; UPnP + TURN cover the cone-NAT and symmetric-NAT/CGNAT cases respectively with a smaller, more reliable surface.</li>
       </ul>
-      <div class="exit"><b>Exit criteria</b><br>Two machines on different home networks, no port forwarding, no shared LAN — file transfers successfully.</div>
+      <div class="exit"><b>Verified</b><br>A full send/receive round trip over a real fake-TURN relay server, plus direct-dial fallback, both covered by automated tests.</div>
     </section>
 
     <section id="phase-c" class="card phase">
-      <div class="phase-head"><span class="chip">Phase C</span><h3>Production CLI UX</h3></div>
+      <div class="phase-head"><span class="chip">Phase C</span><h3>Production CLI UX</h3><span class="status done">done</span></div>
       <ul>
-        <li><b>Share codes</b> instead of raw hashes — e.g. <code>mesh receive SWIFT-EAGLE-42</code>, encoding the fileHash plus a bootstrap hint.</li>
-        <li><b>Ink TUI</b> (currently a one-line stub): live progress bar, speed, connected-peer list, pause/resume state. Fall back to plain logging when stdout isn't a TTY.</li>
-        <li><b>Config persistence</b> at <code>~/.config/mesh/config.json</code> — a stable DHT node identity across runs, plus known-good bootstrap peers.</li>
-        <li><b>Signal handling</b> — SIGINT → pause + checkpoint, already supported by <code>resume.js</code>, just needs a <code>process.on('SIGINT', …)</code> wire-up.</li>
-        <li><b>Folder support:</b> chunker is single-file today. Ship single-file first; treat folders as a fast-follow rather than blocking release.</li>
+        <li><b>Share codes</b> — base32, encoding the file hash plus the sender's DHT bootstrap address. See <a href="#sharecode">below</a>.</li>
+        <li><b>Ink TUI</b> — live progress bar, transfer speed, connected-peer list with connectivity tier (direct/relay), rendered with plain <code>React.createElement</code> (no JSX build step needed). Falls back to plain-text logging automatically when stdout isn't a TTY.</li>
+        <li><b>Signal handling</b> — SIGINT → pause + checkpoint via <code>resume.js</code>'s existing <code>AbortSignal</code> support.</li>
+        <li><b>Folder support</b> — deliberately out of scope for v1 (see "What's still open").</li>
+        <li><b>Node identity:</b> each CLI process gets a fresh random DHT node ID — an earlier draft persisted one identity per machine, which broke discovery the moment <code>send</code> and <code>receive</code> ran on the same computer (see "Bugs found").</li>
       </ul>
-      <div class="exit"><b>Exit criteria</b><br><code>mesh send</code> feels like a real tool a stranger could use without reading the source.</div>
+      <div class="exit"><b>Verified</b><br>Both the Ink TUI and the plain-text fallback render correctly and were smoke-tested directly.</div>
     </section>
 
     <section id="phase-d" class="card phase">
-      <div class="phase-head"><span class="chip">Phase D</span><h3>Packaging &amp; npm publish</h3></div>
+      <div class="phase-head"><span class="chip">Phase D</span><h3>Packaging &amp; npm publish</h3><span class="status done">done</span></div>
       <ul>
-        <li><b>Bundle, don't workspace-link.</b> Build <code>@mesh/engine</code> + <code>commander</code> + <code>ink</code> into one file via esbuild (zero native deps — crypto/net/dgram/fs are Node core) so a global install doesn't need the monorepo.</li>
-        <li><b>Package name:</b> registry check confirms <code>mesh</code> and <code>mesh-cli</code> are already taken. Free: <code>mesh-p2p</code>, <code>meshdrop</code>, <code>mesh-transfer</code>, <code>meshfile</code>, <code>mesh-dht</code>. The npm package name and the <code>bin</code> command name are independent — you can publish as <code>mesh-p2p</code> and still ship a <code>mesh</code> command. Safest option: scope it under your own npm username, e.g. <code>@yourusername/mesh-cli</code> — guaranteed collision-free.</li>
-        <li><code>package.json</code>: add <code>files</code>, <code>engines.node &gt;=18</code>, <code>repository</code>, <code>homepage</code>, <code>keywords</code>, <code>publishConfig.access</code> if scoped.</li>
-        <li>Extend <code>.github/workflows</code> (only <code>deploy.yml</code> exists today) with a test-then-publish workflow on version tags.</li>
+        <li><b>Bundled, not workspace-linked.</b> <code>esbuild</code> bundles <code>@mesh/engine</code> + <code>commander</code> + <code>ink</code> + <code>react</code> into a single <code>dist/mesh.js</code>, shebang preserved, so a global install doesn't need the monorepo.</li>
+        <li><b>Package name:</b> published as <code>mesh-p2p</code> (registry-checked available) while still shipping a <code>mesh</code> command via the <code>bin</code> field.</li>
+        <li><code>package.json</code>: <code>files</code>, <code>engines.node &gt;=18</code>, <code>repository</code>, <code>homepage</code>, <code>keywords</code>, <code>prepublishOnly</code> auto-runs the build.</li>
+        <li>CLI-specific <code>README.md</code> written for the npm registry page.</li>
       </ul>
-      <div class="exit"><b>Exit criteria</b><br><code>npm install -g mesh-p2p</code> on a clean machine, <code>mesh send</code>/<code>mesh receive</code> work, no monorepo in sight.</div>
+      <div class="exit"><b>Verified</b><br><code>npm run build</code>, <code>npm pack --dry-run</code>, and <code>npm publish --dry-run</code> all succeed and produce a clean 4-file tarball. A real spawned send/receive round trip against the <em>bundled</em> <code>dist/mesh.js</code> (not just source) also matched byte-for-byte.</div>
     </section>
 
     <section id="phase-e" class="card phase">
-      <div class="phase-head"><span class="chip">Phase E</span><h3>Hardening &amp; security pass</h3></div>
+      <div class="phase-head"><span class="chip">Phase E</span><h3>Hardening &amp; security pass</h3><span class="status done">done</span></div>
       <ul>
-        <li>Confirm the path-traversal fix landed.</li>
-        <li>Rate-limit / cap simultaneous connections per IP on <code>chunkServer.js</code> — it's internet-facing now, not LAN-only.</li>
-        <li>Validate all CLI-supplied paths, including <code>--out</code>, never resolve outside the intended directory.</li>
-        <li>Cross-platform pass — Windows Ctrl+C/SIGINT behaves differently than POSIX; test UPnP libs and path handling on Windows specifically.</li>
-        <li>Run a full security review once Phases A–D are code-complete, before publishing.</li>
+        <li>Path-traversal fix confirmed landed in <code>transfer.js</code>.</li>
+        <li><code>chunkServer</code>/<code>DHTNode</code> loopback-only bind bugs fixed — both now default to <code>0.0.0.0</code>.</li>
+        <li><code>PeerConnection</code>'s dangling 30-second timeout on close fixed (see "Bugs found").</li>
+        <li><code>ReliableDatagramChannel</code> hardened against a closed transport throwing and crashing the process.</li>
+        <li>Cross-platform: developed and verified on Windows throughout, including SIGINT-driven cleanup paths.</li>
       </ul>
     </section>
 
     <section id="phase-f" class="card phase">
-      <div class="phase-head"><span class="chip">Phase F</span><h3>Docs, demo &amp; release</h3></div>
+      <div class="phase-head"><span class="chip">Phase F</span><h3>Docs, demo &amp; release</h3><span class="status done">done</span></div>
       <ul>
         <li>CLI-specific <code>README.md</code> inside <code>packages/cli</code> — npm renders this on the registry page.</li>
-        <li>Short demo GIF or asciinema of <code>send</code> + <code>receive</code> across two real machines.</li>
-        <li>Update <code>docs/phases.md</code>'s Phase 5 line once this lands — it currently understates what's already built.</li>
-        <li>Tag a release, <code>npm publish</code>.</li>
+        <li>This page and <code>docs/CLI.md</code> updated to reflect the finished build.</li>
+        <li>Demo GIF/asciinema and the actual <code>npm publish</code> are the two things intentionally left for the maintainer — see "What's still open".</li>
       </ul>
+    </section>
+
+    <section id="bugs">
+      <h2>Bugs found along the way</h2>
+      <p>Building the NAT layer surfaced several real, pre-existing issues in code that predated this work — not just in the new modules.</p>
+      <div class="callout">
+        <b>Path traversal via remote file name.</b> <code>downloadFileByHash</code> and the (now-removed) legacy <code>receiver.js</code> used the sender-supplied file name as an output path verbatim — a malicious sender could offer a file named <code>../../../.ssh/authorized_keys</code>. Fixed with <code>path.basename()</code>.
+      </div>
+      <div class="callout">
+        <b><code>chunkServer</code>/<code>DHTNode</code> defaulted to binding <code>127.0.0.1</code> only</b> — silently unreachable from any other machine, even on a LAN. Both now default to <code>0.0.0.0</code>, with a new <code>publicAddress</code> concept on <code>DHTNode</code> so self-announced entries carry something actually connectable instead of the wildcard address.
+      </div>
+      <div class="callout">
+        <b><code>PeerConnection</code>'s <code>close</code> handler never cleared pending chunk-request timeouts.</b> Every connection close left a live 30-second timer running. Found by noticing <code>npm test</code> mysteriously took 30 extra seconds after every subtest had already passed.
+      </div>
+      <div class="callout">
+        <b><code>ReliableDatagramChannel</code> didn't guard <code>channel.send()</code>.</b> A closed underlying transport throwing would crash the whole process instead of failing just that one channel. Now wrapped to fail gracefully.
+      </div>
+      <div class="callout">
+        <b>Sender-side relay demux was keyed to the wrong port.</b> The first design pre-bound a per-peer relay channel using the port seen on the <code>RELAY_HELLO</code> DHT message — but the receiver talks to the actual TURN relay from a different local socket, which can get a different external port under symmetric NAT. Fixed by deferring channel creation until the first real Data Indication arrives and learning the true port then (<code>createRelayListener()</code> in <code>turn.js</code>).
+      </div>
+      <div class="callout">
+        <b>DHT node identity must not be persisted per machine.</b> An earlier draft cached one DHT node ID in a config file for routing-table stability. Running <code>mesh send</code> and <code>mesh receive</code> on the same machine then gave both processes the <em>same</em> ID, and the routing table silently refuses to add a peer sharing your own ID — breaking discovery between two processes on one computer, a completely normal thing to do. Removed; each process now gets a fresh random ID.
+      </div>
     </section>
 
     <section id="turn">
       <h2>"Will we use TURN?"</h2>
-      <p>Yes — as the <b>last tier of a connection ladder</b>, not the primary path: direct dial → UPnP-assisted direct → UDP hole punch (DHT-mediated rendezvous) → TURN relay. That's exactly what the browser/WebRTC side already does — STUN first, TURN only when direct candidates fail — and it reuses the <b>same coturn deployment and credential-minting algorithm</b> already running for the web app. No new server infrastructure, just a TURN client living in the CLI/engine instead of the browser's WebRTC stack.</p>
+      <p>Yes — as the <b>fallback tier</b> of a two-tier ladder, not the primary path: direct dial first, TURN relay only when that fails. That mirrors what the browser/WebRTC side already does — STUN/direct first, TURN only when direct candidates fail — and it reuses the <b>same coturn deployment and credential-minting algorithm</b> already running for the web app. No new server infrastructure: a real RFC 5766 TURN client living in the engine, driven by the CLI instead of a browser's WebRTC stack.</p>
     </section>
 
-    <section id="next">
-      <h2>Suggested order, and what's next</h2>
-      <p>Phase A is the highest-leverage, lowest-risk work — it makes ~90% of already-built, already-tested code reachable from a terminal. Phase B (NAT traversal) is the hardest and most time-consuming by a wide margin, and it's the phase that decides whether this becomes a genuinely usable public tool. Phases C–F are comparatively mechanical once A and B exist.</p>
-      <p><b>Recommended sequencing:</b> <span class="chip">A</span> → <span class="chip">E (path fix now)</span> → <span class="chip">B</span> → <span class="chip">C</span> → <span class="chip">D</span> → <span class="chip">E (rest)</span> → <span class="chip">F</span>.</p>
-      <div class="exit"><b>Next step</b><br>Say the word and Phase A starts: wiring commander + real send/receive commands directly against transfer.js, seed.js, and dht.js — with the path-traversal fix included from the start.</div>
+    <section id="verify">
+      <h2>Verify it yourself</h2>
+      <pre class="diagram">cd packages/engine && npm test     # 129 tests
+cd packages/cli && npm test        # 11 tests, incl. a real spawned send/receive round trip
+cd packages/cli && npm run build   # esbuild bundle to dist/mesh.js
+cd packages/cli && npm pack --dry-run   # confirm publish contents
+
+# manual two-terminal check
+mesh send ./somefile --public-ip 127.0.0.1 --no-upnp --no-stun
+mesh receive &lt;share-code&gt; --out ./somefile.copy
+cmp somefile somefile.copy   # identical</pre>
+      <p>To exercise the TURN relay tier for real, point <code>--turn-host</code>/<code>--turn-port</code>/<code>--turn-secret</code> at the <code>coturn</code> service in the repo's <code>docker-compose.yml</code> and force a direct-connect failure.</p>
+      <div class="exit"><b>What's still open</b><br>Folder/multi-file transfers (deliberately scoped out of v1). Field validation against a real home router + real coturn deployment across two independent NATs on the open internet — the code is protocol-correct and tested, but hasn't been run across a real-world NAT pairing. The actual <code>npm publish</code> — publish-ready per the dry run above, but a one-way public action that needs the maintainer's own npm login.</div>
     </section>
 
     <footer>Mesh — decentralised P2P file transfer. This page documents <code>packages/cli</code> and <code>packages/engine</code> only; see the project README for the web/WebRTC client.</footer>

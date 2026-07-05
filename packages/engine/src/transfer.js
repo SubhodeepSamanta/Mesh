@@ -1,14 +1,15 @@
-import { open } from 'fs/promises';
+import { open, stat } from 'fs/promises';
+import { basename, join } from 'path';
 import { DHTNode } from './dht.js';
 import { SwarmManager } from './swarm.js';
-import { PeerConnection } from './peer.js';
+import { connectToPeer } from './net/connect.js';
 import { loadResumeState, saveResumeState, deleteResumeState, resumeStateMatches } from './resume.js';
 
 export const TRANSFER_VERSION = '1.0.0';
 export const MAX_CONCURRENT_CONNECTIONS = 30;
 export const CHECKPOINT_INTERVAL_MS = 2000;
 
-export async function downloadFile({ fileHash, fileSize, totalChunks, chunkSize, merkleRoot, outputPath, dhtNode, signal }) {
+export async function downloadFile({ fileHash, fileSize, totalChunks, chunkSize, merkleRoot, outputPath, dhtNode, signal, onSwarmReady }) {
   if (totalChunks === 0) {
     const emptyHandle = await open(outputPath, 'w');
     await emptyHandle.close();
@@ -20,6 +21,7 @@ export async function downloadFile({ fileHash, fileSize, totalChunks, chunkSize,
   const alreadyVerified = canResume ? existingState.completedChunks : [];
 
   const swarm = new SwarmManager(totalChunks, merkleRoot, chunkSize, alreadyVerified);
+  if (onSwarmReady) onSwarmReady(swarm, { outputPath, fileSize, totalChunks, chunkSize, merkleRoot });
 
   if (swarm.isComplete()) {
     await deleteResumeState(outputPath);
@@ -61,9 +63,8 @@ export async function downloadFile({ fileHash, fileSize, totalChunks, chunkSize,
       peersToTry.map(async (peerInfo) => {
         const peerId = `${peerInfo.addr}:${peerInfo.port}`;
         try {
-          const conn = new PeerConnection(peerInfo.addr, peerInfo.port);
-          await conn.connect();
-          return { peerId, conn };
+          const { connection, tier } = await connectToPeer(peerInfo, { dhtNode });
+          return { peerId, conn: connection, tier };
         } catch (e) {
           return { peerId, error: e };
         }
@@ -71,9 +72,10 @@ export async function downloadFile({ fileHash, fileSize, totalChunks, chunkSize,
     );
 
     for (const result of connectionAttempts) {
-      const { peerId, conn, error } = result.value;
+      const { peerId, conn, tier, error } = result.value;
       if (conn) {
         connections.set(peerId, conn);
+        swarm.emit('peerConnected', { peerId, tier });
         swarm.addPeer(peerId, async (chunkIndex) => {
           const chunkMsg = await conn.requestChunk(chunkIndex);
           const verified = swarm.onChunkReceived(
@@ -135,7 +137,7 @@ export async function downloadFile({ fileHash, fileSize, totalChunks, chunkSize,
   }
 }
 
-export async function downloadFileByHash({ fileHash, outputPath, dhtNode, signal }) {
+export async function downloadFileByHash({ fileHash, outputPath, dhtNode, signal, onSwarmReady }) {
   const peers = await dhtNode.getPeersForFile(fileHash);
   if (peers.length === 0) {
     throw new Error('No peers found for this file');
@@ -147,8 +149,7 @@ export async function downloadFileByHash({ fileHash, outputPath, dhtNode, signal
   for (const peerInfo of peers) {
     let conn = null;
     try {
-      conn = new PeerConnection(peerInfo.addr, peerInfo.port);
-      await conn.connect();
+      ({ connection: conn } = await connectToPeer(peerInfo, { dhtNode }));
       manifest = await conn.waitForMetadata();
       conn.close();
       break;
@@ -162,7 +163,14 @@ export async function downloadFileByHash({ fileHash, outputPath, dhtNode, signal
     throw new Error(`Could not retrieve file metadata from any peer. ${manifestErrors.join('; ')}`);
   }
 
-  const resolvedOutputPath = outputPath || manifest.fileName;
+  const safeFileName = basename(manifest.fileName || 'download');
+  let resolvedOutputPath;
+  if (!outputPath) {
+    resolvedOutputPath = safeFileName;
+  } else {
+    const targetIsDirectory = await stat(outputPath).then((s) => s.isDirectory()).catch(() => false);
+    resolvedOutputPath = targetIsDirectory ? join(outputPath, safeFileName) : outputPath;
+  }
 
   return downloadFile({
     fileHash,
@@ -173,10 +181,11 @@ export async function downloadFileByHash({ fileHash, outputPath, dhtNode, signal
     outputPath: resolvedOutputPath,
     dhtNode,
     signal,
+    onSwarmReady,
   });
 }
-export async function downloadAndSeed({ fileHash, fileSize, totalChunks, chunkSize, merkleRoot, outputPath, dhtNode, signal, seedManager }) {
-  const result = await downloadFile({ fileHash, fileSize, totalChunks, chunkSize, merkleRoot, outputPath, dhtNode, signal });
+export async function downloadAndSeed({ fileHash, fileSize, totalChunks, chunkSize, merkleRoot, outputPath, dhtNode, signal, seedManager, onSwarmReady }) {
+  const result = await downloadFile({ fileHash, fileSize, totalChunks, chunkSize, merkleRoot, outputPath, dhtNode, signal, onSwarmReady });
 
   if (result.status === 'complete' && seedManager) {
     const seedEntry = await seedManager.seedFile(outputPath, { chunkSize });
@@ -190,7 +199,7 @@ export async function downloadAndSeed({ fileHash, fileSize, totalChunks, chunkSi
 
   return { ...result, seeding: false };
 }
-export async function startDownloadSession({ fileHash, fileSize, totalChunks, chunkSize, merkleRoot, outputPath, bootstrapAddr, bootstrapPort, signal }) {
+export async function startDownloadSession({ fileHash, fileSize, totalChunks, chunkSize, merkleRoot, outputPath, bootstrapAddr, bootstrapPort, signal, onSwarmReady }) {
   const dhtNode = new DHTNode();
   await dhtNode.listen();
 
@@ -199,7 +208,7 @@ export async function startDownloadSession({ fileHash, fileSize, totalChunks, ch
   }
 
   try {
-    return await downloadFile({ fileHash, fileSize, totalChunks, chunkSize, merkleRoot, outputPath, dhtNode, signal });
+    return await downloadFile({ fileHash, fileSize, totalChunks, chunkSize, merkleRoot, outputPath, dhtNode, signal, onSwarmReady });
   } finally {
     await dhtNode.close();
   }

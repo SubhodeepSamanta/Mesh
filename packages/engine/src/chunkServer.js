@@ -17,7 +17,7 @@ export function createChunkServer({ fileHandle, hashes, tree, merkleRoot, fileNa
     return data;
   }
 
-  const server = net.createServer((socket) => {
+  function handleConnection(socket) {
     socket.setMaxListeners(0);
     socket.setNoDelay(true);
 
@@ -77,7 +77,9 @@ export function createChunkServer({ fileHandle, hashes, tree, merkleRoot, fileNa
       type: MSG.FILE_OFFER,
       fileName, fileSize, totalChunks, chunkSize, merkleRoot,
     });
-  });
+  }
 
+  const server = net.createServer(handleConnection);
+  server.handleRelayConnection = handleConnection;
   return server;
 }

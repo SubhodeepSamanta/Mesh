@@ -1,18 +1,50 @@
 {
-  "name": "@mesh/cli",
+  "name": "mesh-p2p",
   "version": "1.0.0",
-  "description": "Mesh CLI for sending and receiving files",
+  "description": "Decentralised, serverless peer-to-peer file transfer CLI over a Kademlia DHT — mesh send / mesh receive",
   "main": "src/index.js",
   "type": "module",
   "bin": {
-    "mesh": "src/index.js"
+    "mesh": "dist/mesh.js"
   },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "p2p",
+    "file-transfer",
+    "dht",
+    "kademlia",
+    "cli",
+    "webrtc",
+    "turn",
+    "decentralized"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/subhodeepsamanta/mesh.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/subhodeepsamanta/mesh#readme",
   "scripts": {
-    "dev": "node src/index.js"
+    "dev": "node src/index.js",
+    "build": "esbuild src/index.js --bundle --platform=node --format=esm --target=node18 --outfile=dist/mesh.js",
+    "test": "node --test --test-concurrency=4 --test-timeout=30000 test/*.test.js",
+    "prepublishOnly": "npm run build"
   },
   "license": "ISC",
   "dependencies": {
+    "@mesh/engine": "1.0.0",
     "commander": "^15.0.0",
-    "ink": "^7.1.0"
+    "ink": "^7.1.0",
+    "react": "^19.0.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "react-devtools-core": "^7.0.1"
   }
 }
