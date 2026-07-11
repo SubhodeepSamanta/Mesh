@@ -37,6 +37,7 @@ export async function downloadFile({ fileHash, fileSize, totalChunks, chunkSize,
   const peersToTry = peers.slice(0, MAX_CONCURRENT_CONNECTIONS);
   const connections = new Map();
   const connectionErrors = [];
+  const pendingWrites = new Set();
   const fileHandle = await open(outputPath, canResume ? 'r+' : 'w');
 
   let checkpointTimer = null;
@@ -82,9 +83,15 @@ export async function downloadFile({ fileHash, fileSize, totalChunks, chunkSize,
             peerId, chunkIndex, chunkMsg.chunkData, chunkMsg.chunkHash, chunkMsg.proof
           );
           if (verified) {
-            await fileHandle.write(
+            const writePromise = fileHandle.write(
               chunkMsg.chunkData, 0, chunkMsg.chunkData.length, chunkIndex * chunkSize
             );
+            pendingWrites.add(writePromise);
+            try {
+              await writePromise;
+            } finally {
+              pendingWrites.delete(writePromise);
+            }
             scheduleCheckpoint();
           }
         });
@@ -119,6 +126,9 @@ export async function downloadFile({ fileHash, fileSize, totalChunks, chunkSize,
     });
 
     if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+
+    // the swarm 'complete' event fires before the last chunk write settles
+    if (pendingWrites.size > 0) await Promise.allSettled([...pendingWrites]);
 
     if (signal && signal.aborted) {
       await checkpoint();

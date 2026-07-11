@@ -200,16 +200,17 @@ export function createRelayListener(turnClient, onNewSession) {
   const handlers = new Map();
 
   const onData = (address, port, data) => {
-    let handlerRef = handlers.get(address);
+    const sessionKey = `${address}:${port}`;
+    let handlerRef = handlers.get(sessionKey);
     if (!handlerRef) {
       handlerRef = { current: null };
-      handlers.set(address, handlerRef);
+      handlers.set(sessionKey, handlerRef);
 
       const virtualChannel = {
         send: (buffer) => turnClient.send(address, port, buffer),
         on: (event, cb) => { if (event === 'message') handlerRef.current = cb; },
         removeListener: () => { handlerRef.current = null; },
-        close: () => { handlers.delete(address); },
+        close: () => { handlers.delete(sessionKey); },
       };
 
       onNewSession(address, port, virtualChannel);

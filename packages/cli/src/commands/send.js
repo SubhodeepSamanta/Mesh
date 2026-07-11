@@ -1,8 +1,20 @@
 import { resolve, basename } from 'path';
 import { stat } from 'fs/promises';
+import { lookup } from 'dns/promises';
+import { isIP } from 'net';
 import { DHTNode, SeedManager } from '@mesh/engine';
-import { resolvePublicEndpoint } from '../lib/network.js';
+import { resolveCandidates, makeTransferCandidateResolver } from '../lib/network.js';
 import { encodeShareCode, formatShareCode } from '../lib/shareCode.js';
+
+async function resolveBootstrapTarget(hostPort) {
+  const [host, portStr] = hostPort.split(':');
+  const port = Number(portStr);
+  if (!host || !Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`Invalid --bootstrap value, expected host:port, got: ${hostPort}`);
+  }
+  const ip = isIP(host) === 4 ? host : (await lookup(host, { family: 4 })).address;
+  return { host: ip, port };
+}
 
 export async function sendCommand(filePath, options, { log = console.log, onSeedReady = null } = {}) {
   const absolutePath = resolve(filePath);
@@ -14,14 +26,32 @@ export async function sendCommand(filePath, options, { log = console.log, onSeed
   const dhtNode = new DHTNode();
   await dhtNode.listen(options.dhtPort ? Number(options.dhtPort) : 0, '0.0.0.0');
 
+  let bootstrapTarget = null;
   if (options.bootstrap) {
-    const [bootstrapHost, bootstrapPortStr] = options.bootstrap.split(':');
     try {
-      await dhtNode.bootstrap(bootstrapHost, Number(bootstrapPortStr));
+      bootstrapTarget = await resolveBootstrapTarget(options.bootstrap);
+      await dhtNode.bootstrap(bootstrapTarget.host, bootstrapTarget.port);
     } catch (e) {
+      bootstrapTarget = null;
       log(`Warning: could not bootstrap into ${options.bootstrap}: ${e.message}`);
     }
   }
+
+  const explicitHost = options.publicIp || process.env.MESH_PUBLIC_IP || null;
+  const skipUpnp = options.upnp === false;
+  const skipStun = options.stun === false;
+
+  const dhtResolved = await resolveCandidates({
+    localPort: dhtNode.port,
+    protocol: 'UDP',
+    description: 'mesh-dht',
+    explicitHost,
+    skipUpnp,
+    skipStun,
+    stunSocket: dhtNode.socket,
+  });
+
+  dhtNode.publicAddress = dhtResolved.primaryHost;
 
   const seedManager = new SeedManager(dhtNode);
 
@@ -37,31 +67,24 @@ export async function sendCommand(filePath, options, { log = console.log, onSeed
     fileName: basename(absolutePath),
     port: options.port ? Number(options.port) : 0,
     turnConfig,
+    resolveTransferCandidates: makeTransferCandidateResolver({
+      explicitHost,
+      skipUpnp,
+      publicHost: dhtResolved.primaryHost,
+    }),
   });
 
-  const dhtEndpoint = await resolvePublicEndpoint({
-    localPort: dhtNode.port,
-    protocol: 'UDP',
-    description: 'mesh-dht',
-    explicitHost: options.publicIp || process.env.MESH_PUBLIC_IP || null,
-    skipUpnp: Boolean(options.noUpnp),
-    skipStun: Boolean(options.noStun),
-  });
-
-  if (!options.noUpnp) {
-    await resolvePublicEndpoint({
-      localPort: seedEntry.port,
-      protocol: 'TCP',
-      description: 'mesh-transfer',
-      explicitHost: options.publicIp || process.env.MESH_PUBLIC_IP || null,
-      skipStun: true,
-    }).catch(() => {});
-  }
+  // The receiver bootstraps its DHT node via these candidates. If we joined an
+  // existing DHT (e.g. a public bootstrap node), include it too — it is often
+  // the only address reachable when this machine is behind NAT.
+  const shareCodeCandidates = [
+    ...(bootstrapTarget ? [{ host: bootstrapTarget.host, port: bootstrapTarget.port }] : []),
+    ...dhtResolved.candidates.map((c) => ({ host: c.addr, port: c.port })),
+  ];
 
   const shareCode = encodeShareCode({
     fileHash: seedEntry.merkleRoot,
-    host: dhtEndpoint.host,
-    port: dhtNode.port,
+    candidates: shareCodeCandidates,
   });
 
   const summary = {
@@ -72,7 +95,7 @@ export async function sendCommand(filePath, options, { log = console.log, onSeed
     merkleRoot: seedEntry.merkleRoot,
     shareCode,
     shareCodeFormatted: formatShareCode(shareCode),
-    connectivity: dhtEndpoint.method,
+    connectivity: dhtResolved.method,
     dhtPort: dhtNode.port,
     transferPort: seedEntry.port,
     turnConfigured: Boolean(turnConfig),

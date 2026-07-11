@@ -6,6 +6,7 @@ import { dirname, join, basename } from 'path';
 import { sendCommand } from './commands/send.js';
 import { receiveCommand } from './commands/receive.js';
 import { diagnoseCommand } from './commands/diagnose.js';
+import { daemonCommand } from './commands/daemon.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'));
@@ -70,6 +71,8 @@ program
   .description('Download a file using a share code from mesh send')
   .option('--out <path>', 'output file path (default: sender-provided filename in the current directory)')
   .option('--seed', 'keep seeding the file to other peers after the download completes')
+  .option('--no-upnp', 'skip automatic UPnP port mapping when re-seeding with --seed')
+  .option('--no-stun', 'skip STUN public-IP discovery when re-seeding with --seed')
   .option('--no-tui', 'disable the interactive terminal UI and use plain log output')
   .action(async (code, options) => {
     let tuiInstance = null;
@@ -126,6 +129,24 @@ program
       }
     } catch (e) {
       if (tuiInstance) tuiInstance.unmount();
+      console.error(`Error: ${e.message}`);
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command('daemon')
+  .description('Run a standalone DHT bootstrap node (e.g. on a public VPS) that helps NATed peers find each other')
+  .option('--dht-port <port>', 'UDP port to listen on', '4001')
+  .action(async (options) => {
+    try {
+      const daemon = await daemonCommand(options);
+      process.on('SIGINT', async () => {
+        console.log('\nStopping...');
+        await daemon.stop();
+        process.exit(0);
+      });
+    } catch (e) {
       console.error(`Error: ${e.message}`);
       process.exitCode = 1;
     }

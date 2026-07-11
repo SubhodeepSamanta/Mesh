@@ -222,13 +222,17 @@ _handleMessage(msgBuf, rinfo) {
       const peers = this.fileStore.get(msg.fileHash) || [];
       const existingIdx = peers.findIndex(p => p.addr === rinfo.address && p.port === msg.port);
       const relay = msg.relay || null;
+      const candidates = Array.isArray(msg.candidates) && msg.candidates.length > 0
+        ? msg.candidates
+        : [{ addr: rinfo.address, port: msg.port }];
       if (existingIdx === -1) {
-        peers.push({ addr: rinfo.address, port: msg.port, dhtAddr: rinfo.address, dhtPort: rinfo.port, relay, announcedAt: Date.now() });
+        peers.push({ addr: rinfo.address, port: msg.port, dhtAddr: rinfo.address, dhtPort: rinfo.port, relay, candidates, announcedAt: Date.now() });
       } else {
         peers[existingIdx].announcedAt = Date.now();
         peers[existingIdx].dhtAddr = rinfo.address;
         peers[existingIdx].dhtPort = rinfo.port;
         peers[existingIdx].relay = relay;
+        peers[existingIdx].candidates = candidates;
       }
       this.fileStore.set(msg.fileHash, peers);
       this._send(rinfo.address, rinfo.port, {
@@ -243,7 +247,10 @@ _handleMessage(msgBuf, rinfo) {
       this._send(rinfo.address, rinfo.port, {
         type: DHT_MSG.PEERS, msgId: msg.msgId, nodeId: this.nodeId,
         fileHash: msg.fileHash,
-        peers: peers.map(p => ({ addr: p.addr, port: p.port, dhtAddr: p.dhtAddr, dhtPort: p.dhtPort, relay: p.relay || null })),
+        peers: peers.map(p => ({
+          addr: p.addr, port: p.port, dhtAddr: p.dhtAddr, dhtPort: p.dhtPort, relay: p.relay || null,
+          candidates: p.candidates || [{ addr: p.addr, port: p.port }],
+        })),
       });
       return;
     }
@@ -311,10 +318,27 @@ _handleMessage(msgBuf, rinfo) {
     });
   }
 
-  async bootstrap(addr, port) {
-    const closest = await this.findNode(addr, port, this.nodeId);
-    closest.forEach(peer => this.routingTable.addPeer(peer));
-    return closest;
+  async bootstrap(addrOrCandidates, port) {
+    const candidates = Array.isArray(addrOrCandidates)
+      ? addrOrCandidates
+      : [{ host: addrOrCandidates, port }];
+
+    if (candidates.length === 0) {
+      throw new Error('No bootstrap candidates provided');
+    }
+
+    try {
+      const closest = await Promise.any(
+        candidates.map(c => this.findNode(c.host, c.port, this.nodeId))
+      );
+      closest.forEach(peer => this.routingTable.addPeer(peer));
+      return closest;
+    } catch (aggregateError) {
+      const reasons = (aggregateError.errors || [aggregateError])
+        .map((e, i) => `${candidates[i]?.host}:${candidates[i]?.port}: ${e.message}`)
+        .join('; ');
+      throw new Error(`Could not bootstrap via any of ${candidates.length} candidate(s). ${reasons}`);
+    }
   }
 
   async iterativeFindNode(targetId) {
@@ -364,7 +388,7 @@ _handleMessage(msgBuf, rinfo) {
     return closest;
   }
 
-  _announceToOne(addr, port, fileHash, myPort, relay = null) {
+  _announceToOne(addr, port, fileHash, myPort, relay = null, candidates = null) {
     return new Promise((resolve, reject) => {
       const msgId = this._msgId();
       const timeout = setTimeout(() => {
@@ -374,6 +398,7 @@ _handleMessage(msgBuf, rinfo) {
       this.pending.set(msgId, { resolve, reject, timeout });
       const payload = { type: DHT_MSG.ANNOUNCE, msgId, nodeId: this.nodeId, fileHash, port: myPort };
       if (relay) payload.relay = relay;
+      if (candidates) payload.candidates = candidates;
       this._send(addr, port, payload).catch(reject);
     });
   }
@@ -396,11 +421,23 @@ _handleMessage(msgBuf, rinfo) {
     });
   }
 
-async announceFile(fileHash, myPort, relay = null) {
+async announceFile(fileHash, myPort, relay = null, candidates = null) {
+  const effectiveCandidates = candidates && candidates.length > 0
+    ? candidates
+    : [{ addr: this.publicAddress, port: myPort }];
+
   const localPeers = this.fileStore.get(fileHash) || [];
   const existsLocally = localPeers.some(p => p.addr === this.publicAddress && p.port === myPort);
   if (!existsLocally) {
-    localPeers.push({ addr: this.publicAddress, port: myPort, dhtAddr: this.publicAddress, dhtPort: this.port, relay, announcedAt: Date.now() });
+    localPeers.push({
+      addr: this.publicAddress, port: myPort, dhtAddr: this.publicAddress, dhtPort: this.port,
+      relay, candidates: effectiveCandidates, announcedAt: Date.now(),
+    });
+  } else {
+    const entry = localPeers.find(p => p.addr === this.publicAddress && p.port === myPort);
+    entry.candidates = effectiveCandidates;
+    entry.relay = relay;
+    entry.announcedAt = Date.now();
   }
   this.fileStore.set(fileHash, localPeers);
 
@@ -412,7 +449,7 @@ async announceFile(fileHash, myPort, relay = null) {
   }
 
   const results = await Promise.allSettled(
-    closest.map(peer => this._announceToOne(peer.addr, peer.port, fileHash, myPort, relay))
+    closest.map(peer => this._announceToOne(peer.addr, peer.port, fileHash, myPort, relay, effectiveCandidates))
   );
 
   return closest.filter((_, i) => results[i].status === 'fulfilled');
@@ -430,7 +467,10 @@ async getPeersForFile(fileHash) {
     const key = `${peer.addr}:${peer.port}`;
     if (!seen.has(key)) {
       seen.add(key);
-      merged.push({ addr: peer.addr, port: peer.port, dhtAddr: peer.dhtAddr, dhtPort: peer.dhtPort, relay: peer.relay || null });
+      merged.push({
+        addr: peer.addr, port: peer.port, dhtAddr: peer.dhtAddr, dhtPort: peer.dhtPort, relay: peer.relay || null,
+        candidates: peer.candidates || [{ addr: peer.addr, port: peer.port }],
+      });
     }
   }
 

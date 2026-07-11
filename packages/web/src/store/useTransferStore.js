@@ -167,6 +167,7 @@ export const useTransferStore = create((set) => {
 
     setComplete: (canSeed = true) => set((s) => {
       if (!s.fileMeta || s.role === null) return s
+      if (s.status === 'complete') return s
       const meta = s.fileMeta
       const fileCount = meta?.files?.length || 1
       const totalChunks = meta?.totalChunks || s.progress.total

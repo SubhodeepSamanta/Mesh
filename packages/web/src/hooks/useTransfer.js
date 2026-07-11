@@ -35,6 +35,21 @@ function validateFileMeta(meta) {
   return null
 }
 
+// Classifies what a "download" click can actually do for one manifest entry:
+// 'memory'   — every chunk is in the in-memory buffer, a blob can be built
+// 'streamed' — the bytes went straight to the picked folder during transfer
+// 'missing'  — the data is gone (typically: the tab was closed/reloaded
+//              after completion and only the UI state was persisted)
+export function entryAvailability(chunks, entry) {
+  let streamed = false
+  for (let i = 0; i < entry.chunkCount; i++) {
+    const c = chunks[entry.startChunk + i]
+    if (c == null) return 'missing'
+    if (c === true) streamed = true
+  }
+  return streamed ? 'streamed' : 'memory'
+}
+
 const PEER_CHECK_GRACE_MS = 3000
 
 function checkPeersRemaining(swarm) {
@@ -407,6 +422,13 @@ export function useTransfer() {
           M.transports.delete(transport.remotePeerId)
         }
         transport.close()
+        // With selective download the receiver can be done without us ever
+        // reaching servedRef.size >= total — when the last receiver reports
+        // completion, don't leave the sender stuck on "transferring" forever.
+        const st = useTransferStore.getState()
+        if (st.role === 'sender' && st.status === 'transferring' && M.transports.size === 0) {
+          st.setComplete()
+        }
         return
       }
       if (msg.type === MSG.FILE_OFFER_ADD_ACCEPT) {
@@ -540,6 +562,14 @@ export function useTransfer() {
       if (transport.pc.connectionState === 'disconnected' || transport.pc.connectionState === 'failed') {
         transport.close()
         M.transports.delete(transport.remotePeerId)
+        // Receiver vanished mid-transfer (closed tab, lost network). Surface
+        // it and go back to waiting so a rejoining receiver can restart,
+        // instead of showing a forever-frozen progress bar.
+        const st = useTransferStore.getState()
+        if (st.role === 'sender' && st.status === 'transferring' && M.transports.size === 0) {
+          useToastStore.getState().addToast('The receiver disconnected before the transfer finished. Waiting for them to rejoin…', 'error', 6000)
+          useTransferStore.setState({ status: 'waiting-for-peer' })
+        }
       }
     })
     M.transports.set(transport.remotePeerId, transport)
@@ -555,7 +585,13 @@ export function useTransfer() {
     transport.onJSON((msg) => {
       if (msg.type === MSG.TRANSFER_COMPLETE) {
         if (!msg.batchId) {
-          useTransferStore.getState().setComplete(M.receivedMeta?.tree != null)
+          // The sender says it served everything, but our own verification
+          // may still be in flight (or we deliberately skipped deselected
+          // files). Only trust our swarm — its 'complete' event is what
+          // flips the status; this message is just a hint.
+          if (M.swarm && M.swarm.isComplete()) {
+            useTransferStore.getState().setComplete(M.receivedMeta?.tree != null)
+          }
         } else if (M.extraBatches.has(msg.batchId)) {
           useTransferStore.getState().updateExtraBatch(msg.batchId, { status: 'complete' })
         }
@@ -618,7 +654,10 @@ export function useTransfer() {
     const ordered = []
     for (let i = 0; i < entry.chunkCount; i++) {
       const c = M.chunks[entry.startChunk + i]
-      if (c === true) return null
+      // `true` means streamed to disk; null/undefined means the data is
+      // simply gone (e.g. the tab was reloaded after completion). Either
+      // way there are no bytes here to build a blob from.
+      if (c === true || c == null) return null
       ordered.push(c)
     }
     return new Blob(ordered, { type: 'application/octet-stream' })
@@ -645,12 +684,30 @@ export function useTransfer() {
     // the caller explicitly asked to re-download specific paths (B6 fix).
     const onlyPaths = options?.onlyPaths ? new Set(options.onlyPaths) : null
     const downloaded = new Set(useTransferStore.getState().downloadedPaths)
-    const pending = files.filter((f) => {
+    let pending = files.filter((f) => {
       if (M.excludedPaths.has(f.path)) return false
       if (onlyPaths) return onlyPaths.has(f.path)
       return !downloaded.has(f.path)
     })
     if (pending.length === 0) return
+
+    // The received bytes only ever live in this tab's memory (or were
+    // streamed straight to disk during the transfer). After a reload both
+    // are gone — without this guard a "download" would serialize undefined
+    // chunk slots into a tiny corrupt file.
+    const availability = pending.map((f) => entryAvailability(M.chunks, f))
+    const downloadable = pending.filter((_, i) => availability[i] === 'memory')
+    if (downloadable.length === 0 && meta.totalChunks > 0) {
+      useToastStore.getState().addToast(
+        availability.includes('streamed')
+          ? 'These files were already saved into the folder you picked during the transfer — check that folder, there is nothing to re-download.'
+          : 'The received data is no longer in this tab (it was closed or reloaded). Ask the sender for a new room code to send the file again.',
+        'info',
+        6000
+      )
+      return
+    }
+    if (meta.totalChunks > 0) pending = downloadable
 
     if (isMulti && saveMode === 'auto') {
       let wroteAny = false

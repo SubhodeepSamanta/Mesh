@@ -72,12 +72,32 @@ describe('mesh send/receive CLI integration', () => {
 
   test('receiving a well-formed code for an unreachable sender fails with a clear error', { timeout: 15000 }, async () => {
     const { encodeShareCode } = await import('../src/lib/shareCode.js');
-    const fakeCode = encodeShareCode({ fileHash: 'a'.repeat(64), host: '127.0.0.1', port: 1 });
+    const fakeCode = encodeShareCode({ fileHash: 'a'.repeat(64), candidates: [{ host: '127.0.0.1', port: 1 }] });
 
     const receiver = runCli(['receive', fakeCode]);
     const exitCode = await waitForExit(receiver.child);
 
     assert.notEqual(exitCode, 0);
     assert.match(receiver.getStderr(), /Could not reach sender/);
+  });
+
+  test('--no-upnp and --no-stun actually suppress UPnP/STUN through real commander parsing (regression: option name mismatch)', { timeout: 15000 }, async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'mesh-cli-flags-'));
+    const srcPath = join(dir, 'source.bin');
+
+    try {
+      await writeFile(srcPath, randomBytes(1000));
+
+      const sender = runCli(['send', srcPath, '--no-upnp', '--no-stun']);
+      await waitForShareCode(sender);
+
+      assert.match(sender.getStdout(), /Connectivity: local/);
+      assert.doesNotMatch(sender.getStdout(), /Connectivity: (stun|upnp)/);
+
+      sender.child.kill();
+      await waitForExit(sender.child);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

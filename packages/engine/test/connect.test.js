@@ -104,10 +104,106 @@ describe('connectToPeer', () => {
     }
   }, { timeout: 20000 });
 
+  test('relays through the receiver-side TURN allocation when the announce carries turn credentials, without any RELAY_HELLO', async () => {
+    const { dir, filePath } = await makeTempFile(Buffer.from('own-allocation relay payload. '.repeat(80)));
+    try {
+      const fakeTurn = startFakeTurnServer({ secret: SECRET });
+      const { host: turnHost, port: turnPort } = await fakeTurn.ready();
+
+      const { hashes, tree, merkleRoot, totalChunks, fileSize, chunkSize } = await indexFile(filePath);
+      const fileHandle = await open(filePath, 'r');
+      const server = createChunkServer({ fileHandle, hashes, tree, merkleRoot, fileName: 'payload.bin', fileSize, totalChunks, chunkSize });
+
+      const { username, credential } = generateTurnCredentials(SECRET, `seeder:${merkleRoot}`);
+      const turnClient = new TurnClient({ host: turnHost, port: turnPort, username, credential });
+      const { relayedAddress } = await turnClient.allocate({ timeoutMs: 2000 });
+      // like SeedManager.setupRelay: allow traffic arriving from the relay's own IP
+      await turnClient.createPermission(relayedAddress.address, relayedAddress.port, { timeoutMs: 2000 });
+
+      const relayListener = createRelayListener(turnClient, (addr, port, virtualChannel) => {
+        const reliableChannel = new ReliableDatagramChannel(virtualChannel);
+        server.handleRelayConnection(reliableChannel);
+      });
+
+      const peerInfo = {
+        addr: '127.0.0.1',
+        port: 1, // unreachable on purpose: forces the relay tier
+        relay: {
+          addr: relayedAddress.address,
+          port: relayedAddress.port,
+          turn: { host: turnHost, port: turnPort, username, credential },
+        },
+      };
+
+      // no dhtNode passed: the legacy RELAY_HELLO path is impossible here
+      const { connection, tier } = await connectToPeer(peerInfo, { directTimeoutMs: 300 });
+      assert.equal(tier, 'relay');
+
+      const manifest = await connection.waitForMetadata();
+      assert.equal(manifest.merkleRoot, merkleRoot);
+
+      const chunkMsg = await connection.requestChunk(0);
+      assert.equal(chunkMsg.chunkHash, hashes[0]);
+
+      connection.close();
+      relayListener.close();
+      turnClient.close();
+      await new Promise((resolve) => server.close(resolve));
+      await fileHandle.close();
+      await fakeTurn.close();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, { timeout: 20000 });
+
   test('rejects with the direct error when there is no relay info to fall back to', async () => {
     await assert.rejects(
       connectToPeer({ addr: '127.0.0.1', port: 1 }, { directTimeoutMs: 200 }),
       /timed out|ECONNREFUSED/
+    );
+  });
+
+  test('races multiple candidates and succeeds via whichever one is actually reachable', async () => {
+    const { dir, filePath } = await makeTempFile(Buffer.from('multi-candidate race payload'));
+    try {
+      const { hashes, tree, merkleRoot, totalChunks, fileSize, chunkSize } = await indexFile(filePath);
+      const fileHandle = await open(filePath, 'r');
+      const server = createChunkServer({ fileHandle, hashes, tree, merkleRoot, fileName: 'payload.bin', fileSize, totalChunks, chunkSize });
+      await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const realPort = server.address().port;
+
+      const peerInfo = {
+        addr: '127.0.0.1',
+        port: 1,
+        candidates: [
+          { addr: '203.0.113.5', port: 1 },
+          { addr: '127.0.0.1', port: realPort },
+        ],
+      };
+
+      const { connection, tier } = await connectToPeer(peerInfo, { directTimeoutMs: 2000 });
+      assert.equal(tier, 'direct');
+      const manifest = await connection.waitForMetadata();
+      assert.equal(manifest.merkleRoot, merkleRoot);
+
+      connection.close();
+      await new Promise((resolve) => server.close(resolve));
+      await fileHandle.close();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('reports every failed candidate when all direct candidates fail and there is no relay', async () => {
+    await assert.rejects(
+      connectToPeer(
+        { addr: '127.0.0.1', port: 1, candidates: [{ addr: '127.0.0.1', port: 1 }, { addr: '127.0.0.1', port: 2 }] },
+        { directTimeoutMs: 300 }
+      ),
+      (err) => {
+        assert.match(err.message, /2 direct candidate\(s\) failed/);
+        return true;
+      }
     );
   });
 });

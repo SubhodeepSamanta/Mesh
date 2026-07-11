@@ -86,6 +86,14 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (status === 'complete' && role === 'receiver' && !M.autoDownloaded) {
+      // Only auto-save when the transfer actually finished in THIS tab.
+      // A 'complete' status can also come from localStorage rehydration
+      // after the tab was closed/reopened — the chunk bytes are gone then,
+      // and "downloading" would write a tiny corrupt file. The REDOWNLOAD
+      // button stays available and explains this if clicked.
+      const meta = useTransferStore.getState().fileMeta
+      const hasLiveData = (meta?.totalChunks || 0) === 0 || M.chunks.length > 0 || M.streamWriters.size > 0
+      if (!hasLiveData) return
       M.autoDownloaded = true
       triggerDownload()
     }

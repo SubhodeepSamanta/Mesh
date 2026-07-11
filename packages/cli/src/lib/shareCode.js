@@ -1,4 +1,5 @@
-export const SHARE_CODE_VERSION = 1;
+export const SHARE_CODE_VERSION = 2;
+export const MAX_CANDIDATES = 4;
 const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 
 function base32Encode(buffer) {
@@ -45,35 +46,57 @@ function base32Decode(input) {
 function parseIPv4(host) {
   const parts = host.split('.').map(Number);
   if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) {
-    throw new Error(`Only IPv4 bootstrap addresses are supported, got: ${host}`);
+    throw new Error(`Only IPv4 candidate addresses are supported, got: ${host}`);
   }
   return parts;
 }
 
-export function encodeShareCode({ fileHash, host, port }) {
+function dedupeCandidates(candidates) {
+  const seen = new Set();
+  const result = [];
+  for (const c of candidates) {
+    const key = `${c.host}:${c.port}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(c);
+  }
+  return result;
+}
+
+export function encodeShareCode({ fileHash, candidates }) {
   if (!/^[0-9a-f]{64}$/i.test(fileHash)) {
     throw new Error('fileHash must be a 64-character hex sha256 digest');
   }
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new Error(`Invalid bootstrap port: ${port}`);
+  if (!Array.isArray(candidates) || candidates.length === 0) {
+    throw new Error('At least one bootstrap candidate {host, port} is required');
   }
 
-  const hostParts = parseIPv4(host);
-  const hashBytes = Buffer.from(fileHash, 'hex');
+  const uniqueCandidates = dedupeCandidates(candidates).slice(0, MAX_CANDIDATES);
 
-  const buf = Buffer.alloc(1 + 4 + 2 + 32);
+  const buf = Buffer.alloc(1 + 1 + uniqueCandidates.length * 6 + 32);
   buf.writeUInt8(SHARE_CODE_VERSION, 0);
-  hostParts.forEach((n, i) => buf.writeUInt8(n, 1 + i));
-  buf.writeUInt16BE(port, 5);
-  hashBytes.copy(buf, 7);
+  buf.writeUInt8(uniqueCandidates.length, 1);
+
+  let offset = 2;
+  for (const { host, port } of uniqueCandidates) {
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error(`Invalid candidate port: ${port}`);
+    }
+    const hostParts = parseIPv4(host);
+    hostParts.forEach((n, i) => buf.writeUInt8(n, offset + i));
+    buf.writeUInt16BE(port, offset + 4);
+    offset += 6;
+  }
+
+  Buffer.from(fileHash, 'hex').copy(buf, offset);
 
   return base32Encode(buf);
 }
 
 export function decodeShareCode(code) {
   const buf = base32Decode(code);
-  if (buf.length !== 39) {
-    throw new Error('Invalid mesh share code: wrong length');
+  if (buf.length < 2) {
+    throw new Error('Invalid mesh share code: too short');
   }
 
   const version = buf.readUInt8(0);
@@ -81,11 +104,24 @@ export function decodeShareCode(code) {
     throw new Error(`Unsupported share code version: ${version}`);
   }
 
-  const host = [buf[1], buf[2], buf[3], buf[4]].join('.');
-  const port = buf.readUInt16BE(5);
-  const fileHash = buf.subarray(7, 39).toString('hex');
+  const count = buf.readUInt8(1);
+  const expectedLength = 2 + count * 6 + 32;
+  if (count === 0 || count > MAX_CANDIDATES || buf.length !== expectedLength) {
+    throw new Error('Invalid mesh share code: malformed candidate list');
+  }
 
-  return { host, port, fileHash };
+  const candidates = [];
+  let offset = 2;
+  for (let i = 0; i < count; i++) {
+    const host = [buf[offset], buf[offset + 1], buf[offset + 2], buf[offset + 3]].join('.');
+    const port = buf.readUInt16BE(offset + 4);
+    candidates.push({ host, port });
+    offset += 6;
+  }
+
+  const fileHash = buf.subarray(offset, offset + 32).toString('hex');
+
+  return { candidates, fileHash };
 }
 
 export function formatShareCode(code, groupSize = 5) {
