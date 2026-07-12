@@ -34,6 +34,7 @@
     "dev": "node src/index.js",
     "build": "esbuild src/index.js --bundle --platform=node --format=esm --target=node18 --outfile=dist/mesh.js --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\"",
     "test": "node --test --test-concurrency=4 --test-timeout=30000 test/*.test.js",
+    "prepare": "npm run build",
     "prepublishOnly": "npm run build"
   },
   "license": "ISC",
