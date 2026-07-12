@@ -22,15 +22,10 @@ function ProgressBar({ percent, width = 30 }) {
   return h(Text, null, `[${bar}] ${clamped.toFixed(1)}%`);
 }
 
+// Deliberately renders exactly once (no ticking timers): any re-render makes
+// the terminal redraw the box, which breaks text selection while the user is
+// trying to copy the share code.
 function SendApp({ summary }) {
-  const [elapsedSec, setElapsedSec] = useState(0);
-
-  useEffect(() => {
-    const start = Date.now();
-    const timer = setInterval(() => setElapsedSec(Math.floor((Date.now() - start) / 1000)), 1000);
-    return () => clearInterval(timer);
-  }, []);
-
   return h(
     Box,
     { flexDirection: 'column', paddingX: 1, borderStyle: 'round', borderColor: 'cyan' },
@@ -41,7 +36,8 @@ function SendApp({ summary }) {
     h(Text, null, 'Share code:'),
     h(Text, { bold: true, color: 'green' }, summary.shareCodeFormatted),
     h(Newline),
-    h(Text, { dimColor: true }, `Seeding for ${elapsedSec}s — Ctrl+C to stop`)
+    h(Text, { dimColor: true }, 'Seeding — waiting for receivers. Ctrl+C to stop.'),
+    h(Text, { dimColor: true }, `Receiver command: mesh receive ${summary.shareCode}`)
   );
 }
 
