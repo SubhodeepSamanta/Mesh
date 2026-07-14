@@ -6,6 +6,8 @@ on:
       - main
     paths:
       - 'packages/signaling/**'
+      - 'packages/engine/**'
+      - 'packages/cli/**'
       - 'docker-compose.yml'
       - 'docker-compose.override.yml'
       - 'Caddyfile'
@@ -32,12 +34,22 @@ jobs:
 
             cd ~/mesh
 
-            git pull origin main
+            # The VM is a deploy target, not a workspace: make it an exact
+            # mirror of origin/main. Unlike `git pull`, this never merges, so
+            # local drift or a rewritten/force-pushed history can't break it.
+            git fetch origin main
+            git reset --hard origin/main
 
-            docker compose down --remove-orphans
-
-            docker compose up -d --build --force-recreate
+            # Recreates only services whose config/image changed — no full
+            # stack teardown, so coturn/caddy stay up through web-only deploys.
+            docker compose up -d --build --remove-orphans
 
             docker image prune -f
 
+            # Keep the DHT bootstrap daemon on the same code as the repo.
+            cd packages/cli
+            sudo npm install -g .
+            sudo systemctl restart mesh-daemon || true
+
+            cd ~/mesh
             docker compose ps
