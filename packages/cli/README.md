@@ -1,6 +1,8 @@
 <div align="center">
 
-# ⬡ mesh
+<img src="https://raw.githubusercontent.com/SubhodeepSamanta/Mesh/main/screenshots/logo.png" width="84" alt="mesh logo" />
+
+# mesh
 
 **Send a file from one terminal to another — anywhere on Earth. No accounts, no upload servers, no configuration.**
 

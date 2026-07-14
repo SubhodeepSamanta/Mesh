@@ -1,6 +1,8 @@
 <div align="center">
 
-# ⬡ mesh
+<img src="screenshots/logo.png" width="84" alt="mesh logo" />
+
+# mesh
 
 **Serverless, end-to-end encrypted, peer-to-peer file sharing — in your browser *and* your terminal.**
 
