@@ -5,8 +5,12 @@ import { createChunkServer } from './chunkServer.js';
 import { TurnClient, generateTurnCredentials, createRelayListener } from './net/turn.js';
 import { ReliableDatagramChannel } from './net/reliableDatagram.js';
 
-// TURN allocations/permissions expire (600s/300s); refresh well inside both windows.
-export const TURN_REFRESH_INTERVAL_MS = 120 * 1000;
+// This cadence is NOT about the TURN allocation/permission lifetimes (600s/300s)
+// — it's about the seeder's NAT: home/CGNAT routers drop idle UDP mappings in
+// as little as 30s, and once the mapping dies the TURN server can no longer
+// deliver anything to us (the relay goes silently deaf). Keep the control
+// socket warm well inside the tightest common NAT timeout.
+export const TURN_REFRESH_INTERVAL_MS = 15 * 1000;
 // Re-announce keeps the seeder's NAT mapping to the DHT alive and its entry fresh.
 export const ANNOUNCE_INTERVAL_MS = 25 * 1000;
 

@@ -5,7 +5,10 @@ import { TurnClient } from './turn.js';
 
 export const DIRECT_CONNECT_TIMEOUT_MS = 4000;
 export const RELAY_HELLO_TIMEOUT_MS = 4000;
-export const RELAY_REFRESH_INTERVAL_MS = 120 * 1000;
+// Short on purpose: this doubles as a NAT keepalive for the receiver's TURN
+// control socket — idle UDP mappings on home/CGNAT routers die in ~30s, which
+// would silently cut the relay mid-transfer.
+export const RELAY_REFRESH_INTERVAL_MS = 15 * 1000;
 
 function withTimeout(promise, ms, message) {
   return new Promise((resolve, reject) => {
