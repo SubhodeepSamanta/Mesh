@@ -4,6 +4,11 @@ export const FRAME_TYPE = { DATA: 0, ACK: 1, CLOSE: 2 };
 export const DEFAULT_MTU = 1100;
 export const DEFAULT_WINDOW = 16;
 export const DEFAULT_RTO_MS = 300;
+// Retransmit delay doubles per consecutive timeout up to this cap: mobile
+// hotspots stall for whole seconds (tower handoff, uplink bufferbloat), and a
+// fixed 300ms timer burned all retries in ~6s — killing transfers a patient
+// sender would have completed.
+export const DEFAULT_MAX_RTO_MS = 4000;
 export const DEFAULT_MAX_RETRIES = 20;
 export const DEFAULT_HIGH_WATER_MARK = 1024 * 1024;
 
@@ -32,6 +37,7 @@ export class ReliableDatagramChannel extends EventEmitter {
     this.mtu = opts.mtu ?? DEFAULT_MTU;
     this.windowSize = opts.windowSize ?? DEFAULT_WINDOW;
     this.rtoMs = opts.rtoMs ?? DEFAULT_RTO_MS;
+    this.maxRtoMs = opts.maxRtoMs ?? DEFAULT_MAX_RTO_MS;
     this.maxRetries = opts.maxRetries ?? DEFAULT_MAX_RETRIES;
     this.highWaterMark = opts.highWaterMark ?? DEFAULT_HIGH_WATER_MARK;
 
@@ -92,7 +98,10 @@ export class ReliableDatagramChannel extends EventEmitter {
   }
 
   _armRetransmitTimer() {
-    this.retransmitTimer = setTimeout(() => this._onRetransmitTimeout(), this.rtoMs);
+    // Exponential backoff: retryCount resets whenever an ACK makes progress,
+    // so healthy paths stay at the base RTO while stalls back off gracefully.
+    const delay = Math.min(this.rtoMs * 2 ** this.retryCount, this.maxRtoMs);
+    this.retransmitTimer = setTimeout(() => this._onRetransmitTimeout(), delay);
   }
 
   _onRetransmitTimeout() {

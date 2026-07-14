@@ -45,24 +45,28 @@ function ReceiveApp({ fileLabel, swarm }) {
   const [progress, setProgress] = useState({ verified: 0, total: swarm.totalChunks || 0 });
   const [peers, setPeers] = useState([]);
   const [warnings, setWarnings] = useState([]);
+  const [retrying, setRetrying] = useState(null);
   const [startTime] = useState(Date.now());
   const [done, setDone] = useState(false);
 
   useEffect(() => {
-    const onChunkVerified = ({ verified, total }) => setProgress({ verified, total });
+    const onChunkVerified = ({ verified, total }) => { setProgress({ verified, total }); setRetrying(null); };
     const onPeerConnected = ({ peerId, tier }) => setPeers((prev) => [...prev, { peerId, tier }]);
     const onWarnings = (list) => setWarnings((prev) => [...prev, ...list]);
+    const onRetrying = (info) => setRetrying(info);
     const onComplete = () => setDone(true);
 
     swarm.on('chunkVerified', onChunkVerified);
     swarm.on('peerConnected', onPeerConnected);
     swarm.on('connectionWarnings', onWarnings);
+    swarm.on('retrying', onRetrying);
     swarm.on('complete', onComplete);
 
     return () => {
       swarm.removeListener('chunkVerified', onChunkVerified);
       swarm.removeListener('peerConnected', onPeerConnected);
       swarm.removeListener('connectionWarnings', onWarnings);
+      swarm.removeListener('retrying', onRetrying);
       swarm.removeListener('complete', onComplete);
     };
   }, [swarm]);
@@ -86,6 +90,12 @@ function ReceiveApp({ fileLabel, swarm }) {
         h(Text, { dimColor: true, key: 'peers-label' }, 'Peers:'),
         ...peers.map((p, i) => h(Text, { key: `peer-${i}` }, `  ${p.peerId} (${p.tier})`))
       )
+    );
+  }
+
+  if (retrying && !done) {
+    children.push(
+      h(Text, { color: 'yellow', key: 'retrying' }, `Connection lost — reconnecting (attempt ${retrying.attempt}, ${retrying.verified}/${retrying.total} chunks kept)...`)
     );
   }
 

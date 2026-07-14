@@ -103,6 +103,9 @@ program
           swarm.on('connectionWarnings', (warnings) => {
             console.warn(`\nSkipped ${warnings.length} unreachable peer listing(s)`);
           });
+          swarm.on('retrying', ({ attempt, verified, total }) => {
+            console.warn(`\nConnection lost — reconnecting (attempt ${attempt}, ${verified}/${total} chunks kept)...`);
+          });
         },
       });
 

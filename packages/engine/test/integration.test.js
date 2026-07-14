@@ -281,6 +281,7 @@ await assert.rejects(
       () => downloadFile({
         fileHash, fileSize: 1024 * 5, totalChunks: 5, chunkSize: 1024,
         merkleRoot: 'a'.repeat(64), outputPath, dhtNode: downloaderNode,
+        maxAttempts: 1, // this test asserts the *error detail*, not retry patience
       }),
       (err) => {
         assert.match(err.message, /Could not connect to any peer/);

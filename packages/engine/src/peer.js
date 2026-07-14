@@ -135,6 +135,13 @@ export class PeerConnection {
 
   requestChunk(index) {
     return new Promise((resolve, reject) => {
+      // A request issued after the socket died would park a 30s timer in
+      // pendingRequests that nothing ever clears — the close handler already
+      // ran. Fail fast instead.
+      if (!this.socket || this.socket.destroyed) {
+        reject(new Error('Connection closed'));
+        return;
+      }
       const timeout = setTimeout(() => {
         this.pendingRequests.delete(index);
         reject(new Error(`Chunk ${index} request timeout`));

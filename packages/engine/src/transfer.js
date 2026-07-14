@@ -8,8 +8,13 @@ import { loadResumeState, saveResumeState, deleteResumeState, resumeStateMatches
 export const TRANSFER_VERSION = '1.0.0';
 export const MAX_CONCURRENT_CONNECTIONS = 30;
 export const CHECKPOINT_INTERVAL_MS = 2000;
+// Losing every peer mid-transfer is usually a transient network stall (mobile
+// hotspots especially), not a dead seeder — seeders re-announce every 25s, so
+// re-discovering and reconnecting resumes from the exact chunk we stopped at.
+export const MAX_TRANSFER_ATTEMPTS = 4;
+export const RETRY_DELAY_MS = 5000;
 
-export async function downloadFile({ fileHash, fileSize, totalChunks, chunkSize, merkleRoot, outputPath, dhtNode, signal, onSwarmReady }) {
+export async function downloadFile({ fileHash, fileSize, totalChunks, chunkSize, merkleRoot, outputPath, dhtNode, signal, onSwarmReady, maxAttempts = MAX_TRANSFER_ATTEMPTS, retryDelayMs = RETRY_DELAY_MS }) {
   if (totalChunks === 0) {
     const emptyHandle = await open(outputPath, 'w');
     await emptyHandle.close();
@@ -34,9 +39,7 @@ export async function downloadFile({ fileHash, fileSize, totalChunks, chunkSize,
     throw new Error('No peers found for this file');
   }
 
-  const peersToTry = peers.slice(0, MAX_CONCURRENT_CONNECTIONS);
   const connections = new Map();
-  const connectionErrors = [];
   const pendingWrites = new Set();
   const fileHandle = await open(outputPath, canResume ? 'r+' : 'w');
 
@@ -55,14 +58,14 @@ export async function downloadFile({ fileHash, fileSize, totalChunks, chunkSize,
     }, CHECKPOINT_INTERVAL_MS);
   };
 
-  try {
-    if (!canResume) {
-      await fileHandle.truncate(fileSize);
-    }
+  const connectToPeerList = async (peerList) => {
+    const peersToTry = peerList.slice(0, MAX_CONCURRENT_CONNECTIONS);
+    const connectionErrors = [];
 
     const connectionAttempts = await Promise.allSettled(
       peersToTry.map(async (peerInfo) => {
         const peerId = `${peerInfo.addr}:${peerInfo.port}`;
+        if (connections.has(peerId)) return { peerId, skipped: true };
         try {
           const { connection, tier } = await connectToPeer(peerInfo, { dhtNode });
           return { peerId, conn: connection, tier };
@@ -73,7 +76,8 @@ export async function downloadFile({ fileHash, fileSize, totalChunks, chunkSize,
     );
 
     for (const result of connectionAttempts) {
-      const { peerId, conn, tier, error } = result.value;
+      const { peerId, conn, tier, error, skipped } = result.value;
+      if (skipped) continue;
       if (conn) {
         connections.set(peerId, conn);
         swarm.emit('peerConnected', { peerId, tier });
@@ -100,32 +104,79 @@ export async function downloadFile({ fileHash, fileSize, totalChunks, chunkSize,
       }
     }
 
-    if (connections.size === 0) {
-      const detail = connectionErrors.map(e => `${e.peerId}: ${e.reason}`).join('; ');
-      throw new Error(`Could not connect to any peer for this file. Tried ${peersToTry.length} of ${peers.length} discovered peer(s). ${detail}`);
+    return { tried: peersToTry.length, connectionErrors };
+  };
+
+  // Resolves 'complete' | 'failed' (every peer evicted) | 'aborted', with all
+  // listeners detached — attempts must not leak handlers onto the swarm.
+  const waitForOutcome = () => new Promise((resolve) => {
+    const settle = (outcome) => {
+      swarm.removeListener('complete', onComplete);
+      swarm.removeListener('peerFailed', onPeerFailed);
+      if (signal) signal.removeEventListener('abort', onAbort);
+      resolve(outcome);
+    };
+    const onComplete = () => settle('complete');
+    const onPeerFailed = () => {
+      if (swarm.peers.size === 0 && !swarm.isComplete()) settle('failed');
+    };
+    const onAbort = () => { swarm.abort(); settle('aborted'); };
+
+    swarm.on('complete', onComplete);
+    swarm.on('peerFailed', onPeerFailed);
+    if (signal) {
+      if (signal.aborted) { onAbort(); return; }
+      signal.addEventListener('abort', onAbort, { once: true });
     }
 
-    if (connectionErrors.length > 0) {
-      swarm.emit('connectionWarnings', connectionErrors);
+    // Guard against events that fired before we attached: a very fast peer
+    // (or a very fast eviction) must not leave this promise hanging.
+    if (swarm.isComplete()) settle('complete');
+    else if (swarm.peers.size === 0) settle('failed');
+  });
+
+  try {
+    if (!canResume) {
+      await fileHandle.truncate(fileSize);
     }
 
-    let onAbort = null;
+    let peerList = peers;
+    for (let attempt = 1; ; attempt++) {
+      const { tried, connectionErrors } = await connectToPeerList(peerList);
 
-    await new Promise((resolve, reject) => {
-      swarm.on('complete', resolve);
-      swarm.on('peerFailed', () => {
-        if (swarm.peers.size === 0 && !swarm.isComplete()) {
-          reject(new Error('All peers failed'));
-        }
-      });
-      if (signal) {
-        onAbort = () => { swarm.abort(); resolve(); };
-        if (signal.aborted) onAbort();
-        else signal.addEventListener('abort', onAbort, { once: true });
+      if (connections.size === 0 && attempt >= maxAttempts) {
+        const detail = connectionErrors.map(e => `${e.peerId}: ${e.reason}`).join('; ');
+        throw new Error(`Could not connect to any peer for this file. Tried ${tried} of ${peerList.length} discovered peer(s). ${detail}`);
       }
-    });
 
-    if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+      if (connectionErrors.length > 0) {
+        swarm.emit('connectionWarnings', connectionErrors);
+      }
+
+      const outcome = connections.size > 0 ? await waitForOutcome() : 'failed';
+      if (outcome === 'complete' || outcome === 'aborted') break;
+
+      // 'failed': every connection died — almost always a transient network
+      // stall, not a stopped seeder. Progress is preserved in the swarm, so
+      // reconnect and continue from the next unverified chunk.
+      for (const conn of connections.values()) conn.close();
+      connections.clear();
+
+      if (attempt >= maxAttempts) {
+        throw new Error(`All peers failed (gave up after ${attempt} attempts; ${swarm.verifiedCount}/${totalChunks} chunks verified — re-run the same command to resume)`);
+      }
+
+      swarm.emit('retrying', { attempt: attempt + 1, verified: swarm.verifiedCount, total: totalChunks });
+      await checkpoint();
+      await new Promise((resolve) => {
+        const t = setTimeout(resolve, retryDelayMs);
+        if (signal) signal.addEventListener('abort', () => { clearTimeout(t); resolve(); }, { once: true });
+      });
+      if (signal && signal.aborted) { swarm.abort(); break; }
+
+      peerList = await dhtNode.getPeersForFile(fileHash).catch(() => []);
+      if (peerList.length === 0) peerList = peers;
+    }
 
     // the swarm 'complete' event fires before the last chunk write settles
     if (pendingWrites.size > 0) await Promise.allSettled([...pendingWrites]);
