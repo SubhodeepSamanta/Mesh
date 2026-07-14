@@ -1,6 +1,6 @@
 # Mesh CLI — Build Log
 
-Companion package to `packages/web`. `npm install -g mesh-p2p` then `mesh send ./file.zip` / `mesh receive <code>` from any terminal, no browser, no signaling server — pure Kademlia DHT peer discovery, with UPnP and TURN relay fallback for NAT traversal.
+Companion package to `packages/web`. `npm install -g mesh-share` then `mesh send ./file.zip` / `mesh receive <code>` from any terminal, no browser, no signaling server — pure Kademlia DHT peer discovery, with UPnP and TURN relay fallback for NAT traversal.
 
 **Status: shipped.** All six phases below are complete, tested, and verified against a real end-to-end transfer.
 

@@ -350,7 +350,7 @@
       <div class="phase-head"><span class="chip">Phase D</span><h3>Packaging &amp; npm publish</h3><span class="status done">done</span></div>
       <ul>
         <li><b>Bundled, not workspace-linked.</b> <code>esbuild</code> bundles <code>@mesh/engine</code> + <code>commander</code> + <code>ink</code> + <code>react</code> into a single <code>dist/mesh.js</code>, shebang preserved, so a global install doesn't need the monorepo.</li>
-        <li><b>Package name:</b> published as <code>mesh-p2p</code> (registry-checked available) while still shipping a <code>mesh</code> command via the <code>bin</code> field.</li>
+        <li><b>Package name:</b> published as <code>mesh-share</code> (registry-checked available) while still shipping a <code>mesh</code> command via the <code>bin</code> field.</li>
         <li><code>package.json</code>: <code>files</code>, <code>engines.node &gt;=18</code>, <code>repository</code>, <code>homepage</code>, <code>keywords</code>, <code>prepublishOnly</code> auto-runs the build.</li>
         <li>CLI-specific <code>README.md</code> written for the npm registry page.</li>
       </ul>

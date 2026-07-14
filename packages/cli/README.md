@@ -10,7 +10,7 @@ mesh receive <share-code>
 ## Install
 
 ```
-npm install -g mesh-p2p
+npm install -g mesh-share
 ```
 
 This installs the `mesh` command globally.

@@ -1,5 +1,5 @@
 {
-  "name": "mesh-p2p",
+  "name": "mesh-share",
   "version": "1.0.0",
   "description": "Decentralised, serverless peer-to-peer file transfer CLI over a Kademlia DHT — mesh send / mesh receive",
   "main": "dist/mesh.js",
