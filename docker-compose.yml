@@ -10,8 +10,8 @@ services:
       - TRUST_PROXY=0
       - MAX_PEERS_PER_ROOM=16
       - MAX_ROOMS=5000
-      - TURN_URL=turn:$${EXTERNAL_IP:-127.0.0.1}:3478
-      - TURN_SECRET=$${TURN_SECRET:-meshsecret}
+      - TURN_URL=turn:${EXTERNAL_IP:-127.0.0.1}:3478
+      - TURN_SECRET=${TURN_SECRET:-meshsecret}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
@@ -20,16 +20,37 @@ services:
       retries: 3
       start_period: 10s
 
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+    depends_on:
+      - signaling
+    restart: unless-stopped
+
+  # Host networking on purpose: with the default bridge network, docker-proxy
+  # NATs relayed UDP so packets arrive from the wrong source address, which
+  # breaks TURN permission checks and relay-to-relay transfers.
   coturn:
     image: coturn/coturn:latest
+    network_mode: host
     mem_limit: 250m
-    ports:
-      - "3478:3478/udp"
-      - "3478:3478/tcp"
     command:
       - -n
       - --log-file=stdout
-      - --external-ip=$${EXTERNAL_IP:-127.0.0.1}
-      - --static-auth-secret=$${TURN_SECRET:-meshsecret}
-      - --realm=$${TURN_REALM:-mesh.local}
+      - --listening-ip=0.0.0.0
+      - --listening-port=3478
+      - --relay-ip=${PRIVATE_IP:-127.0.0.1}
+      - --external-ip=${EXTERNAL_IP:-127.0.0.1}/${PRIVATE_IP:-127.0.0.1}
+      - --static-auth-secret=${TURN_SECRET:-meshsecret}
+      - --realm=${TURN_REALM:-mesh.local}
+      - --min-port=49160
+      - --max-port=49200
     restart: unless-stopped
+
+volumes:
+  caddy_data:
