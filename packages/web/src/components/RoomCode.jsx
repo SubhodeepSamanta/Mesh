@@ -10,12 +10,14 @@ export default function RoomCode({ roomCode }) {
   const shareUrl = `${window.location.origin}/receive?code=${roomCode}`
 
   return (
-    <div className="flex flex-col items-center gap-4">
+    <div className="flex w-full min-w-0 flex-col items-center gap-4">
       <Badge color="gray" dot={false}>ROOM CODE</Badge>
-      <div className="rounded-xl bg-[var(--bg-secondary)] p-4">
-        <QRCodeSVG value={shareUrl} size={180} bgColor="transparent" fgColor={theme === 'dark' ? '#ffffff' : '#111111'} />
+      <div className="rounded-xl bg-[var(--bg-secondary)] p-3 sm:p-4">
+        {/* Fixed size shrinks responsively: the SVG scales down via CSS on
+            screens too narrow for the full 180px + card padding. */}
+        <QRCodeSVG value={shareUrl} size={180} bgColor="transparent" fgColor={theme === 'dark' ? '#ffffff' : '#111111'} className="h-auto w-full max-w-[180px]" />
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center justify-center gap-2">
         <MonoText text={roomCode} copyable className="text-2xl tracking-[0.2em]" />
         <button
           onClick={() => {

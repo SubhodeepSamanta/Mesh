@@ -347,7 +347,7 @@ export default function Send() {
   }
 
   return (
-    <div className="mx-auto max-w-4xl px-6 py-12">
+    <div className="mx-auto max-w-4xl px-4 py-12 sm:px-6">
       <div className="mb-8">
         <p className="mb-1 text-xs uppercase tracking-[0.15em] text-[var(--accent)]">Secure Peer-to-Peer</p>
         <h1 className="text-3xl font-bold text-[var(--txt-primary)]">Sending...</h1>
@@ -363,7 +363,10 @@ export default function Send() {
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <Card className="flex flex-col items-center justify-center py-8">
+        {/* min-w-0: grid items otherwise refuse to shrink below their
+            content's width, and one long log line drags the whole page
+            into horizontal scroll on phones. */}
+        <Card className="flex min-w-0 flex-col items-center justify-center py-6 sm:py-8">
           {roomCode ? (
             <>
               <p className="mb-3 text-xs uppercase tracking-widest text-[var(--txt-secondary)]">Share this code</p>
@@ -379,7 +382,7 @@ export default function Send() {
             </div>
           )}
         </Card>
-        <Card>
+        <Card className="min-w-0">
           <div className="mb-2 flex items-center gap-2">
             <Badge color="amber" dot={!done && hp}>{done ? 'COMPLETE' : hp ? 'ACTIVE' : 'WAITING'}</Badge>
             <span className="text-xs text-[var(--txt-secondary)]">
