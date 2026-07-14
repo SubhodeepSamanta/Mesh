@@ -13,3 +13,10 @@ mesh_key.pem
 github_actions
 github_actions.pub
 .gemini/
+# personal interview-prep doc — never commit
+Mesh-Complete-Guide.docx
+
+# local test artifacts / private notes
+drone.mp4
+*.meshstate
+instructions_for_claude.md

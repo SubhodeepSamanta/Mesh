@@ -1,106 +1,186 @@
-# Mesh — Secure, Decentralized P2P File Sharing
+<div align="center">
 
-Mesh is a secure, end-to-end encrypted, zero-server-storage peer-to-peer file and folder sharing platform. It operates entirely in the browser using WebRTC for direct data transfers, coordinated by a lightweight signaling server.
+# ⬡ mesh
 
----
+**Serverless, end-to-end encrypted, peer-to-peer file sharing — in your browser *and* your terminal.**
 
-## 🚀 Key Features
+Files travel machine-to-machine. No uploads. No accounts. No file ever touches a server.
 
-*   **100% P2P Data Channels**: Files are streamed directly browser-to-browser. Your data never touches a server's disk or RAM.
-*   **End-to-End Encrypted (E2EE)**: Direct WebRTC connections are secured using DTLS 1.3.
-*   **Zero-RAM Streaming**: Utilizes the File System Access API to stream chunks directly to the receiver's disk, allowing transfers of multi-gigabyte files and folders without browser crashes.
-*   **Cryptographic Integrity Verification**: Files are indexed and verified chunk-by-chunk in real-time using a Merkle Tree structure and SHA-256 hashes.
-*   **Reseeding Capabilities**: Receivers who keep their transfer session open can act as seeders for late-joining peers.
-*   **Password Protected Rooms**: Secure your room codes with optional SHA-256 password hashing.
-*   **Dynamic TURN Credentials**: Automatic dynamic TURN credential generation from the signaling server protects your TURN secrets from being exposed on the frontend client bundle.
+[![npm](https://img.shields.io/npm/v/mesh-share?color=cb3837&label=npm%20%E2%80%94%20mesh-share&logo=npm)](https://www.npmjs.com/package/mesh-share)
+[![live demo](https://img.shields.io/badge/live%20demo-mesh--share.vercel.app-black?logo=vercel)](https://mesh-share.vercel.app)
+[![runtime dependencies](https://img.shields.io/badge/CLI%20runtime%20deps-0-brightgreen)](packages/cli/package.json)
+[![node](https://img.shields.io/badge/node-%E2%89%A518-339933?logo=nodedotjs&logoColor=white)](packages/cli/package.json)
+[![tests](https://img.shields.io/badge/tests-150%2B-blue)](#-testing)
+[![license](https://img.shields.io/badge/license-ISC-blue)](LICENSE)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-ff69b4)](#-contributing)
 
----
+**[🌐 Try the web app](https://mesh-share.vercel.app)** · **[📦 `npm i -g mesh-share`](https://www.npmjs.com/package/mesh-share)** · **[🧠 How it works](#-how-it-works)**
 
-## 📦 Monorepo Workspaces
-
-Mesh is structured as a monorepo containing:
-
-1.  **`packages/web`**: React client built with Vite, Zustand, TailwindCSS, and D3/Peer-graphs.
-2.  **`packages/signaling`**: Node.js WebSocket signaling server that coordinates WebRTC offers, answers, and ICE candidate relays.
-3.  **`packages/engine`**: Core CLI/Node P2P engine utilizing DHT for CLI client routing.
-4.  **`packages/cli`**: Node CLI tool for command-line file sharing.
+</div>
 
 ---
 
-## 🛠️ Quick Start
+## ✨ Two clients, one philosophy
 
-### Local Development
+> **Servers coordinate. Peers transfer.** The rendezvous infrastructure only ever sees tiny control messages; when a relay is unavoidable it forwards ciphertext it cannot read. File content exists on exactly two machines: yours and theirs.
 
-1.  **Install dependencies** in the root workspace:
-    ```bash
-    npm install
-    ```
+|  | 🌐 **Web** — [mesh-share.vercel.app](https://mesh-share.vercel.app) | ⌨️ **CLI** — [`mesh-share` on npm](https://www.npmjs.com/package/mesh-share) |
+|---|---|---|
+| Share via | 4-letter room code + QR | Self-contained 84-char share code |
+| Transport | WebRTC DataChannel (DTLS 1.3) | **From-scratch stack**: Kademlia DHT · STUN · TURN · reliable-UDP |
+| Peer discovery | Room on signaling server | Distributed hash table (BitTorrent-style) |
+| Encryption | DTLS (built into WebRTC) | X25519 ECDH → HKDF → AES-256-GCM (hand-wired) |
+| Integrity | SHA-256 chunks + Merkle proofs | SHA-256 chunks + Merkle proofs |
+| Install | nothing — open a tab | `npm install -g mesh-share` |
 
-2.  **Start development servers**:
-    ```bash
-    npm run dev
-    ```
-    This launches the signaling server on port `8080` and the React web client on port `5173`.
+```
+# the entire CLI experience:
+you:          mesh send movie.mp4
+              → AIB2Z-ROQMU-H2DQF-ILAA5-...
 
-3.  **Run tests**:
-    ```bash
-    npm test
-    ```
+anyone, anywhere:  mesh receive AIB2ZROQMUH2DQFILAA5...
+              → movie.mp4  ✔ 500/500 chunks verified
+```
 
----
+## 📸 Screenshots
 
-## 🌐 Azure & Production VM Deployment
+<div align="center">
 
-When hosting the signaling and TURN servers on a cloud VM (e.g. Azure Student VM, AWS EC2, GCP), follow these guidelines to ensure successful NAT traversal.
+| | |
+|---|---|
+| ![Homepage](screenshots/01-homepage.png) | ![Send — room code & QR](screenshots/02-send-room.png) |
+| *Landing page* | *Sending — share the code or the QR* |
+| ![Transfer dashboard](screenshots/04-dashboard.png) | ![Streaming video mid-download](screenshots/05-video-stream.png) |
+| *Live transfer — chunk grid & speed* | *Watch a video **while** it downloads (MSE)* |
+| ![CLI send](screenshots/06-cli-send.png) | ![CLI receive](screenshots/07-cli-receive.png) |
+| *`mesh send` from a terminal* | *`mesh receive` — direct or relayed, always verified* |
 
-### 1. Docker Compose Configuration
-Copy `.env.example` to `.env` in the root:
+</div>
+
+## 🚀 Quick start
+
+### Web
+Open **[mesh-share.vercel.app](https://mesh-share.vercel.app)** → drop a file → share the code. That's it.
+
+### CLI
 ```bash
-cp .env.example .env
-```
-Ensure the environment variables are set correctly:
-*   `EXTERNAL_IP`: Set this to your VM's public IP address (crucial for `coturn`).
-*   `TURN_SECRET`: Set this to a random secure string (used to generate dynamic time-limited credentials).
+npm install -g mesh-share
 
-Run the services:
+mesh send ./anything.zip        # zero flags — prints a share code
+mesh receive <SHARE-CODE>       # on any machine, any network
+mesh diagnose                   # what can your NAT do?
+```
+
+## 🧠 How it works
+
+### The web client
+
+```mermaid
+sequenceDiagram
+    participant A as Sender (browser)
+    participant S as Signaling server
+    participant B as Receiver (browser)
+    A->>S: CREATE_ROOM → code "WLF4" (+ 24h TURN credentials)
+    B->>S: JOIN_ROOM "WLF4"
+    A-->>B: SDP offer/answer + ICE candidates (relayed, opaque to server)
+    A->>B: WebRTC DataChannel — DTLS encrypted, direct when possible
+    Note over A,B: chunks + Merkle proofs, verified piece-by-piece
+```
+
+### The CLI — a from-scratch P2P stack (zero runtime dependencies)
+
+```mermaid
+flowchart LR
+    subgraph SEND["mesh send"]
+        IDX["SHA-256 chunks<br/>+ Merkle tree"] --> SEED["chunk server<br/>+ TURN allocation"]
+        SEED --> ANN["announce on<br/>Kademlia DHT"]
+    end
+    ANN -. "share code<br/>(addresses + content hash)" .-> DISC
+    subgraph RECV["mesh receive"]
+        DISC["DHT lookup<br/>O(log N)"] --> LADDER{"connection<br/>ladder"}
+        LADDER -->|"tier 1"| DIRECT["direct TCP<br/>(LAN / UPnP / public)"]
+        LADDER -->|"tier 2"| RELAY["TURN relay-to-relay<br/>(ciphertext only)"]
+        DIRECT --> VERIFY["decrypt · hash ·<br/>Merkle-verify · write"]
+        RELAY --> VERIFY
+    end
+```
+
+Every layer of the CLI's network stack is implemented by hand in [`packages/engine`](packages/engine):
+
+- **Kademlia DHT** — XOR-metric routing, k-buckets, iterative `O(log N)` lookups, 90s liveness TTL ([`dht.js`](packages/engine/src/dht.js))
+- **STUN client** — RFC 5389 binding, XOR-MAPPED-ADDRESS decoding ([`net/stun.js`](packages/engine/src/net/stun.js))
+- **TURN client** — RFC 5766 allocations, permissions, HMAC credentials ([`net/turn.js`](packages/engine/src/net/turn.js))
+- **UPnP** — SSDP discovery + SOAP port mapping ([`net/upnp.js`](packages/engine/src/net/upnp.js))
+- **Reliable-UDP** — sliding-window ARQ with retransmit, reordering, backpressure ([`net/reliableDatagram.js`](packages/engine/src/net/reliableDatagram.js))
+- **E2E crypto** — ephemeral X25519 → HKDF → AES-256-GCM per connection ([`crypto.js`](packages/engine/src/crypto.js))
+- **Merkle verification** — every chunk ships a `log₂(N)`-hash proof chained to the share code's root
+- **Multi-peer swarm** — up to 30 seeders, pipelined requests, misbehaving peers evicted after 5 strikes ([`swarm.js`](packages/engine/src/swarm.js))
+- **Pause/resume** — `Ctrl+C` checkpoints to a `.meshstate` sidecar; re-run the same command to continue
+
+## 📊 By the numbers
+
+| | |
+|---|---|
+| Runtime dependencies in the published CLI | **0** |
+| Published package | **3 files, ~500 kB** (single esbuild bundle) |
+| Automated tests across engine / CLI / signaling | **150+** |
+| Connection tiers | direct TCP → TURN relay (hole-punch tier on the [roadmap](#-roadmap)) |
+| Chunk size | adaptive **64 kB → 32 MB** (≤ ~50k chunks per file) |
+| Merkle proof per chunk | `log₂(N)` hashes — ~300 bytes for a 500-chunk file |
+| Largest real-world web transfer tested | **1.8 GB** (streamed to disk, no RAM blow-up) |
+| Encryption | X25519 ECDH + HKDF-SHA256 + AES-256-GCM · DTLS 1.3 on web |
+
+## 🗂 Monorepo
+
+```
+packages/
+├── engine/      the from-scratch P2P stack (DHT, STUN, TURN, UPnP, reliable-UDP,
+│                Merkle, swarm, resume) — zero dependencies, 19 test suites
+├── cli/         `mesh` command — published to npm as mesh-share
+├── signaling/   WebSocket rooms + TURN credential minting (Docker)
+└── web/         React 19 + Vite + zustand client — deployed on Vercel
+screenshots/     images used by the READMEs
+docker-compose.yml   signaling + Caddy (TLS) + coturn — one command deploys the backend
+```
+
+## 🖥 Self-hosting the backend
+
+Everything server-side runs from one compose file on any VM:
+
 ```bash
-docker-compose up -d --build
+cp .env.example .env        # set EXTERNAL_IP, PRIVATE_IP, TURN_SECRET, TURN_REALM
+docker compose up -d        # signaling + Caddy TLS + coturn (host networking)
+nohup mesh daemon &         # DHT bootstrap node (or install it as a systemd unit)
 ```
 
-### 2. Network Security Group (NSG) Configuration
-For WebRTC peer connection establishment to succeed across cellular networks and symmetric NATs, you **must** open the following inbound ports on your Azure VM:
+Open these inbound ports: `80,443/tcp` (TLS), `8080/tcp` (signaling), `3478/udp+tcp` + `49160-49200/udp` (TURN), `4001/udp` (DHT bootstrap).
+Point clients at your box with `--bootstrap <ip>:4001 --turn-host <ip> --turn-secret <secret>` or the `MESH_*` env vars — the defaults baked into the npm package are just a public courtesy instance.
 
-| Port / Range | Protocol | Purpose |
-| :--- | :--- | :--- |
-| `80` | TCP | HTTP / ACME SSL Challenge |
-| `443` | TCP | HTTPS / Secure Websocket (WSS) |
-| `3478` | UDP & TCP | TURN / STUN listener |
-| `49152 - 65535` | UDP | TURN dynamic relay ports |
+> **Why does a P2P app have servers at all?** The same reason BitTorrent ships bootstrap routers and Tailscale runs DERP relays: something public must introduce two hidden machines, and when *both* peers are behind hostile NAT, physics requires a relay. Mesh's relay forwards ciphertext only, and every layer prefers a direct path first.
 
----
+## 🧪 Testing
 
-## 🔒 Production SSL Setup (Crucial)
-
-Modern browsers enforce **Mixed Content** policies. If your React web client is served over HTTPS (which is default on platforms like Vercel, Netlify, or Github Pages), the browser **will block** WebSocket connections to an unencrypted signaling server (`ws://<IP>:8080`).
-
-You **must** configure a reverse proxy with SSL (e.g., Caddy or Nginx with Let's Encrypt) on your Azure VM to serve the WebSocket server over a secure connection (`wss://`).
-
-### Example Caddyfile Configuration
-If you run Caddy on your VM, configuring SSL is as simple as:
-```caddy
-signaling.yourdomain.com {
-    reverse_proxy /ws* localhost:8080
-}
-```
-Then configure your web client's environment file (`.env`):
-```env
-VITE_SIGNALING_URL=wss://signaling.yourdomain.com/ws
+```bash
+npm test                    # all workspaces
+npm test -w packages/engine # loopback DHT meshes, swarm failure injection,
+                            # TURN message encoding, resume, reliable-UDP
+npm test -w packages/cli    # spawns the real binary end-to-end
 ```
 
----
+150+ tests, plus real-world verification: cross-continent transfers (India ↔ Azure), CGNAT-to-VM relay paths, and fresh-machine installs from the public registry.
 
-## 🐛 Troubleshooting & Known Bugs
+## 🗺 Roadmap
 
-For details on currently identified integration bugs (e.g. single-chunk verification vulnerability, empty-file streaming issues, and UI connection recovery state freezing) and their exact fixes, please refer to the instruction file:
+- [ ] **UDP hole punching** for the CLI — direct NAT↔NAT connections with TURN as last resort (the web already gets this via ICE)
+- [ ] Multiple default bootstrap nodes, raced in parallel
+- [ ] Share-code v3: IPv6 candidates
+- [ ] AIMD congestion control in the reliable-UDP layer
+- [ ] Authenticated key exchange bound to the share code
 
-📄 **[instructions_for_claude.md](file:///c:/Users/USER/Desktop/mesh/instructions_for_claude.md)**
+## 🤝 Contributing
+
+Mesh is open source and PRs are welcome — the codebase is deliberately dependency-light and every protocol layer is readable in one sitting. Start with [`packages/engine/src/net/connect.js`](packages/engine/src/net/connect.js) (the connection ladder) to get oriented, run `npm test`, and open an issue or PR.
+
+## 📄 License
+
+[ISC](LICENSE) © Subhodeep Samanta

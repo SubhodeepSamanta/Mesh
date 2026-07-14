@@ -1,93 +1,89 @@
-# mesh
+<div align="center">
 
-Decentralised, serverless peer-to-peer file transfer from your terminal. No accounts, no upload servers, no signaling server — two `mesh` processes find each other over a Kademlia DHT and transfer the file directly, encrypted end to end.
+# ⬡ mesh
 
-```
-mesh send ./movie.mp4
-mesh receive <share-code>
-```
+**Send a file from one terminal to another — anywhere on Earth. No accounts, no upload servers, no configuration.**
 
-## Install
+[![npm](https://img.shields.io/npm/v/mesh-share?color=cb3837&logo=npm)](https://www.npmjs.com/package/mesh-share)
+[![runtime dependencies](https://img.shields.io/badge/runtime%20deps-0-brightgreen)](https://github.com/SubhodeepSamanta/Mesh/blob/main/packages/cli/package.json)
+[![node](https://img.shields.io/badge/node-%E2%89%A518-339933?logo=nodedotjs&logoColor=white)](https://github.com/SubhodeepSamanta/Mesh)
+[![source](https://img.shields.io/badge/source-GitHub-181717?logo=github)](https://github.com/SubhodeepSamanta/Mesh)
+[![web version](https://img.shields.io/badge/browser%20version-mesh--share.vercel.app-black?logo=vercel)](https://mesh-share.vercel.app)
 
-```
+</div>
+
+```bash
 npm install -g mesh-share
 ```
 
-This installs the `mesh` command globally.
+```bash
+# machine A
+$ mesh send movie.mp4
 
-## Usage
+  Share this code with the receiver:
+  AIB2Z-ROQMU-H2DQF-ILAA5-AURPD-YNNPU-...
 
-### Send a file
-
-```
-mesh send ./path/to/file
-```
-
-This indexes the file, starts a local DHT node, opens a TCP listener to serve chunks, and prints a share code:
-
-```
-Share this code with the receiver:
-
-  AF7QA-AAB5I-SVYDT-JYJRJ-WXJOY-4SNOD-...
-
-On the other machine: mesh receive AF7QAAAB5ISVYDTJYJRJWXJOY4SNOD...
+# machine B — any network, any country
+$ mesh receive AIB2ZROQMUH2DQFILAA5AURPD...
+  [██████████████████████████████] 100.0%   ✔ saved to movie.mp4
 ```
 
-The process keeps running and seeding the file until you press Ctrl+C. The share code embeds the file's content hash and your machine's DHT address — the receiver bootstraps directly against it, no separate rendezvous server involved.
+![mesh send](https://raw.githubusercontent.com/SubhodeepSamanta/Mesh/main/screenshots/06-cli-send.png)
+![mesh receive](https://raw.githubusercontent.com/SubhodeepSamanta/Mesh/main/screenshots/07-cli-receive.png)
 
-Useful flags:
+## What makes it different
 
-Discovery and relay work with zero flags: the CLI ships with a default public bootstrap node baked in (like BitTorrent's DHT routers) and fetches short-lived TURN relay credentials automatically, so `mesh send ./file` is all a typical user ever types. The flags below override or disable those defaults:
+Two `mesh` processes find each other over a **Kademlia DHT** and transfer the file **directly**, end-to-end encrypted, verifying every chunk against a Merkle proof. The entire network stack is implemented from scratch in this package — which is why `npm install` pulls **zero runtime dependencies**:
 
-| Flag | Purpose |
+- 🕸 **Kademlia DHT** for peer discovery — the share code is self-contained (peer addresses + the file's SHA-256 Merkle root); no server interprets it
+- 🔓 **NAT traversal ladder** — direct TCP → automatic UPnP port-mapping → TURN relay fallback, tried in order, automatically
+- 🔐 **End-to-end encryption** — ephemeral X25519 key exchange, HKDF, AES-256-GCM; relays only ever see ciphertext
+- ✅ **Cryptographic integrity** — every chunk ships with a Merkle proof chained to the root embedded in the share code; corrupt or malicious data is rejected and re-fetched
+- 🚦 **Reliable transport over UDP** — hand-written sliding-window ARQ when relaying
+- ⏸ **Pause / resume** — `Ctrl+C` checkpoints progress to a `.meshstate` sidecar; run the same command again to continue
+- 🌱 **Chain seeding** — `--seed` keeps serving after your download completes, so swarms grow like BitTorrent
+- 📦 **One-file install** — the published package is a single bundled script (~500 kB, 3 files)
+
+## Commands
+
+| Command | Purpose |
 |---|---|
-| `--bootstrap <host:port>` | Join the DHT via your own bootstrap node instead of the default public one (`--no-bootstrap` to join none) |
-| `--turn-host`, `--turn-port`, `--turn-secret` | Use your own TURN relay instead of the default (`--no-turn` to disable the relay tier) |
-| `--public-ip <ip>` | Skip auto-detection and announce this IP directly (useful on a VPS with a known static IP) |
-| `--no-upnp` | Skip automatic router port-mapping |
-| `--no-stun` | Skip public-IP discovery via STUN |
-| `--port`, `--dht-port` | Pin specific TCP/UDP ports instead of random ones |
+| `mesh send <file>` | Index, seed, and print a share code. Keeps serving until Ctrl+C |
+| `mesh receive <code>` | Discover, connect (direct or relayed), download with per-chunk verification |
+| `mesh receive <code> --out <path>` | Choose where the file lands |
+| `mesh receive <code> --seed` | Keep seeding to other peers after your download finishes |
+| `mesh daemon` | Run a public DHT bootstrap node (for self-hosters, e.g. on a VPS) |
+| `mesh diagnose` | Report LAN IP, STUN-observed public IP, and UPnP support |
 
-Environment-variable equivalents, handy for self-hosted deployments: `MESH_BOOTSTRAP`, `MESH_TURN_HOST`, `MESH_TURN_PORT`, `MESH_TURN_SECRET`, `MESH_TURN_API` (a URL returning `{ iceServers }` credentials, like the signaling server's `/turn` endpoint), and `MESH_PUBLIC_IP`. Use the same values as your `coturn` deployment's `TURN_SECRET`/`EXTERNAL_IP` (see the root `.env`):
+## Zero-flag by design
 
-```
-export MESH_TURN_HOST=your-vm-ip
-export MESH_TURN_SECRET=your-turn-secret
-mesh send ./file
-```
+`mesh send ./file` just works: the package ships a default public DHT bootstrap node (the same way BitTorrent clients ship default DHT routers) and fetches short-lived TURN relay credentials automatically — **no secret is embedded in this package**. Everything is overridable for self-hosting:
 
-### Receive a file
+| Flag | Env var | Purpose |
+|---|---|---|
+| `--bootstrap <host:port>` | `MESH_BOOTSTRAP` | Use your own DHT bootstrap node (`--no-bootstrap` to join none) |
+| `--turn-host / --turn-port / --turn-secret` | `MESH_TURN_HOST / _PORT / _SECRET` | Use your own coturn (`--no-turn` disables the relay tier) |
+| — | `MESH_TURN_API` | URL returning `{ iceServers }` credentials (like the signaling server's `/turn`) |
+| `--public-ip <ip>` | `MESH_PUBLIC_IP` | Skip discovery; announce this address (VPS with static IP) |
+| `--port / --dht-port` | — | Pin the TCP transfer / UDP DHT ports |
+| `--no-upnp / --no-stun / --no-tui` | — | Disable router mapping / public-IP discovery / the fancy terminal UI |
 
-```
-mesh receive <share-code>
-```
+## How a transfer actually works
 
-Downloads the file into the current directory (or `--out <path>`), verifying every chunk against a Merkle proof of the sender's content hash. Pass `--seed` to keep serving the file to other peers after your own download completes (chain-seeding).
-
-Ctrl+C pauses a transfer safely — chunks already verified are checkpointed to a `.meshstate` sidecar file, so re-running the same `mesh receive` command resumes instead of starting over.
-
-### Check your connectivity
-
-```
-mesh diagnose
-```
-
-Reports your local IP, STUN-observed public IP, and whether your router supports UPnP automatic port-mapping — useful for predicting whether `mesh send` will be directly reachable from the open internet.
-
-## How connectivity works
-
-Two peers connect through a three-tier ladder, attempted in order:
-
-1. **Direct** — the receiver dials the sender's TCP port directly.
-2. **UPnP-assisted direct** — if the sender's router supports UPnP, `mesh send` automatically opens a port mapping so tier 1 works even behind typical home NAT.
-3. **TURN relay** — if direct connection fails, traffic relays through a TURN server (the default public relay, or your own via `--turn-host`/`--turn-secret`). This is the same coturn deployment and HMAC credential scheme used by the browser client, just driven by a small built-in TURN client instead of WebRTC — and the sender's credentials are short-lived tokens fetched over HTTP, so no secret ever ships with this package.
-
-Every tier carries the same end-to-end encryption (X25519 ECDH + AES-256-GCM) and the same Merkle-proof chunk verification — the relay only ever sees ciphertext.
-
-## Why the share code is long
-
-Unlike a signaling-server room code, the share code has no server behind it — it's a self-contained token encoding the full 256-bit file hash plus your DHT bootstrap address. That's a deliberate trade-off for zero infrastructure: copy-paste it once, and it works from any terminal, no account or server dependency involved.
+1. **`mesh send`** streams the file once, hashing every chunk (adaptive 64 kB–32 MB) into a **Merkle tree** — the root becomes the file's identity.
+2. It works out how the world can reach it: **UPnP** mapping if your router allows, otherwise **STUN** for your public address, plus a **TURN allocation** as the guaranteed fallback — then announces itself on the DHT every 25 s.
+3. The **share code** encodes up to 4 address candidates + the 32-byte Merkle root in base32. It is not a lookup key — it *is* the connection information.
+4. **`mesh receive`** bootstraps into the DHT from those candidates, finds all seeders in `O(log N)` hops, and climbs the connection ladder per peer: parallel direct dials first, encrypted relay-to-relay through TURN if both sides are NATed.
+5. Chunks download **pipelined across up to 30 seeders**; each is decrypted, hash-checked, and Merkle-verified before being written at its exact offset. Peers serving bad data get five strikes, then eviction.
 
 ## Requirements
 
-Node.js 18 or later.
+Node.js 18+. Windows, macOS, Linux.
+
+## The bigger project
+
+This CLI is half of **mesh** — there's also a browser version at **[mesh-share.vercel.app](https://mesh-share.vercel.app)** (WebRTC, same Merkle verification, streams multi-GB files to disk, plays videos while they download). Source, architecture docs, and the signaling/TURN deployment for self-hosting live in the monorepo:
+
+**→ [github.com/SubhodeepSamanta/Mesh](https://github.com/SubhodeepSamanta/Mesh)**
+
+ISC © Subhodeep Samanta
