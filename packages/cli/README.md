@@ -39,7 +39,8 @@ Two `mesh` processes find each other over a **Kademlia DHT** and transfer the fi
 - 🔓 **NAT traversal ladder** — direct TCP → automatic UPnP port-mapping → TURN relay fallback, tried in order, automatically
 - 🔐 **End-to-end encryption** — ephemeral X25519 key exchange, HKDF, AES-256-GCM; relays only ever see ciphertext
 - ✅ **Cryptographic integrity** — every chunk ships with a Merkle proof chained to the root embedded in the share code; corrupt or malicious data is rejected and re-fetched
-- 🚦 **Reliable transport over UDP** — hand-written sliding-window ARQ when relaying
+- 🚦 **Reliable transport over UDP** — hand-written sliding-window ARQ with exponential backoff, built to survive mobile-hotspot stalls
+- 💪 **Self-healing** — if every connection drops mid-transfer, the receiver re-discovers the seeder via the DHT and continues from the last verified chunk automatically
 - ⏸ **Pause / resume** — `Ctrl+C` checkpoints progress to a `.meshstate` sidecar; run the same command again to continue
 - 🌱 **Chain seeding** — `--seed` keeps serving after your download completes, so swarms grow like BitTorrent
 - 📦 **One-file install** — the published package is a single bundled script (~500 kB, 3 files)

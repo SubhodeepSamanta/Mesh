@@ -10,7 +10,7 @@ Files travel machine-to-machine. No uploads. No accounts. No file ever touches a
 [![live demo](https://img.shields.io/badge/live%20demo-mesh--share.vercel.app-black?logo=vercel)](https://mesh-share.vercel.app)
 [![runtime dependencies](https://img.shields.io/badge/CLI%20runtime%20deps-0-brightgreen)](packages/cli/package.json)
 [![node](https://img.shields.io/badge/node-%E2%89%A518-339933?logo=nodedotjs&logoColor=white)](packages/cli/package.json)
-[![tests](https://img.shields.io/badge/tests-150%2B-blue)](#-testing)
+[![tests](https://img.shields.io/badge/tests-180%2B-blue)](#-testing)
 [![license](https://img.shields.io/badge/license-ISC-blue)](LICENSE)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-ff69b4)](#-contributing)
 
@@ -115,6 +115,7 @@ Every layer of the CLI's network stack is implemented by hand in [`packages/engi
 - **E2E crypto** — ephemeral X25519 → HKDF → AES-256-GCM per connection ([`crypto.js`](packages/engine/src/crypto.js))
 - **Merkle verification** — every chunk ships a `log₂(N)`-hash proof chained to the share code's root
 - **Multi-peer swarm** — up to 30 seeders, pipelined requests, misbehaving peers evicted after 5 strikes ([`swarm.js`](packages/engine/src/swarm.js))
+- **Self-healing transfers** — retransmits back off exponentially through mobile-network stalls, and if every connection drops the receiver re-discovers peers via the DHT and continues from the last verified chunk ([`transfer.js`](packages/engine/src/transfer.js))
 - **Pause/resume** — `Ctrl+C` checkpoints to a `.meshstate` sidecar; re-run the same command to continue
 
 ## 📊 By the numbers
@@ -123,7 +124,7 @@ Every layer of the CLI's network stack is implemented by hand in [`packages/engi
 |---|---|
 | Runtime dependencies in the published CLI | **0** |
 | Published package | **3 files, ~500 kB** (single esbuild bundle) |
-| Automated tests across engine / CLI / signaling | **150+** |
+| Automated tests across engine / CLI / signaling | **180+** (including a seeder killed and resurrected mid-transfer) |
 | Connection tiers | direct TCP → TURN relay (hole-punch tier on the [roadmap](#-roadmap)) |
 | Chunk size | adaptive **64 kB → 32 MB** (≤ ~50k chunks per file) |
 | Merkle proof per chunk | `log₂(N)` hashes — ~300 bytes for a 500-chunk file |
@@ -167,13 +168,14 @@ npm test -w packages/engine # loopback DHT meshes, swarm failure injection,
 npm test -w packages/cli    # spawns the real binary end-to-end
 ```
 
-150+ tests, plus real-world verification: cross-continent transfers (India ↔ Azure), CGNAT-to-VM relay paths, and fresh-machine installs from the public registry.
+180+ tests — including a network-blackout survival test and one that kills the only seeder mid-transfer, resurrects it, and asserts the file still arrives byte-identical — plus real-world verification: cross-continent transfers (India ↔ Azure), CGNAT and mobile-hotspot relay paths, and fresh-machine installs from the public registry.
 
 ## 🗺 Roadmap
 
 - [ ] **UDP hole punching** for the CLI — direct NAT↔NAT connections with TURN as last resort (the web already gets this via ICE)
 - [ ] Multiple default bootstrap nodes, raced in parallel
 - [ ] Share-code v3: IPv6 candidates
+- [ ] Skip the download entirely when the output file already matches the Merkle root ("you already have this file")
 - [ ] AIMD congestion control in the reliable-UDP layer
 - [ ] Authenticated key exchange bound to the share code
 
