@@ -139,9 +139,12 @@ Examples:
       Download to the sender's original filename in the current directory.
       Spaces/dashes in the code are fine — paste it however it was shared.
 
+  $ mesh receive AIB2ZROQ... --out renamed.mp4
+      Save under a different filename instead of the sender's original name.
+
   $ mesh receive AIB2ZROQ... --out ~/Downloads/movie.mp4
-      Choose exactly where the file lands (avoid pointing --out at a file
-      you are seeding from the same directory — it would overwrite it).
+      Full path: choose the folder and the name (avoid pointing --out at a
+      file you are seeding from the same directory — it would overwrite it).
 
   $ mesh receive AIB2ZROQ... --seed
       Keep serving verified chunks to other peers after your download
