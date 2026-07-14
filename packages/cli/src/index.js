@@ -15,11 +15,44 @@ function tuiEnabled(options) {
   return Boolean(process.stdout.isTTY) && options.tui !== false;
 }
 
+const OWNER_CARD = `
+  mesh v${pkg.version} — built by Subhodeep Samanta
+
+  Portfolio   https://subhodeepsamanta.github.io/
+  GitHub      https://github.com/SubhodeepSamanta
+  LinkedIn    https://www.linkedin.com/in/subhodeepsamanta/
+  Email       subhodeepsamanta2005@gmail.com
+
+  Source      https://github.com/SubhodeepSamanta/Mesh
+  Web app     https://mesh-share.vercel.app
+`;
+
+// `mesh --owner` (no subcommand) — handled before commander parses.
+if (process.argv[2] === '--owner') {
+  console.log(OWNER_CARD);
+  process.exit(0);
+}
+
 const program = new Command();
 program
   .name('mesh')
   .description('Decentralised peer-to-peer file transfer over a Kademlia DHT')
-  .version(pkg.version);
+  .version(pkg.version, '-v, --version', 'print the installed mesh version')
+  .addHelpText('after', `
+Examples:
+  $ mesh send movie.mp4                        seed a file, get a share code
+  $ mesh receive AIB2ZROQMUH2DQF...            download it on any machine
+  $ mesh receive AIB2ZROQ... --out ~/dl/a.mp4  choose where the file lands
+  $ mesh receive AIB2ZROQ... --seed            keep seeding after download
+  $ mesh diagnose                              what can your NAT do?
+  $ mesh daemon --dht-port 4001                run a DHT bootstrap node (VPS)
+  $ mesh owner                                 who built this
+
+Run 'mesh <command> --help' for every flag with worked examples,
+e.g. 'mesh send --help' or 'mesh receive --help'.
+
+Interrupted transfers resume: Ctrl+C checkpoints to a .meshstate sidecar —
+re-run the exact same receive command to continue from the last verified chunk.`);
 
 program
   .command('send <file>')
@@ -36,6 +69,30 @@ program
   .option('--turn-secret <secret>', 'TURN static-auth-secret, shared with the coturn deployment')
   .option('--no-turn', 'disable the TURN relay fallback tier')
   .option('--no-tui', 'disable the interactive terminal UI and use plain log output')
+  .addHelpText('after', `
+Examples:
+  $ mesh send movie.mp4
+      Zero flags — joins the public mesh DHT, fetches short-lived TURN relay
+      credentials automatically, prints a share code, and seeds until Ctrl+C.
+
+  $ mesh send big.iso --port 5000 --dht-port 4001
+      Pin the TCP chunk port and the UDP DHT port (useful when you have
+      forwarded those ports on your router manually).
+
+  $ mesh send movie.mp4 --public-ip 203.0.113.7 --no-upnp --no-stun
+      VPS with a static public IP — skip all address discovery.
+
+  $ mesh send movie.mp4 --bootstrap 203.0.113.7:4001 --turn-host 203.0.113.7 --turn-secret s3cret
+      Fully self-hosted: your own DHT bootstrap node and coturn relay.
+
+  $ mesh send notes.pdf --no-turn --no-tui
+      LAN-only transfer with plain log output (good for scripts and CI).
+
+Environment variables (flags win over these):
+  MESH_BOOTSTRAP    default DHT bootstrap node, host:port
+  MESH_TURN_API     URL returning { iceServers } TURN credentials
+  MESH_TURN_HOST / MESH_TURN_PORT / MESH_TURN_SECRET   your own coturn
+  MESH_PUBLIC_IP    skip discovery and announce this address`)
   .action(async (file, options) => {
     let tuiInstance = null;
     try {
@@ -76,6 +133,26 @@ program
   .option('--no-upnp', 'skip automatic UPnP port mapping when re-seeding with --seed')
   .option('--no-stun', 'skip STUN public-IP discovery when re-seeding with --seed')
   .option('--no-tui', 'disable the interactive terminal UI and use plain log output')
+  .addHelpText('after', `
+Examples:
+  $ mesh receive AIB2ZROQMUH2DQFILAA5AURPD...
+      Download to the sender's original filename in the current directory.
+      Spaces/dashes in the code are fine — paste it however it was shared.
+
+  $ mesh receive AIB2ZROQ... --out ~/Downloads/movie.mp4
+      Choose exactly where the file lands (avoid pointing --out at a file
+      you are seeding from the same directory — it would overwrite it).
+
+  $ mesh receive AIB2ZROQ... --seed
+      Keep serving verified chunks to other peers after your download
+      completes, BitTorrent-style (Ctrl+C to stop).
+
+  $ mesh receive AIB2ZROQ... --no-tui
+      Plain percentage log output for scripts, CI, or narrow terminals.
+
+Resume: Ctrl+C mid-download checkpoints progress to a .meshstate sidecar.
+Run the exact same command again and it continues from the last verified
+chunk — even hours later, even if the sender's address changed.`)
   .action(async (code, options) => {
     let tuiInstance = null;
     let lastPercent = -1;
@@ -143,6 +220,16 @@ program
   .command('daemon')
   .description('Run a standalone DHT bootstrap node (e.g. on a public VPS) that helps NATed peers find each other')
   .option('--dht-port <port>', 'UDP port to listen on', '4001')
+  .addHelpText('after', `
+Examples:
+  $ mesh daemon
+      Listen on UDP 4001. Open that port in your firewall / cloud NSG,
+      then point clients at it with --bootstrap <your-ip>:4001.
+
+  $ mesh daemon --dht-port 5001
+      Use a different UDP port.
+
+Tip: on a VPS, run it under systemd (or nohup) so it survives reboots.`)
   .action(async (options) => {
     try {
       const daemon = await daemonCommand(options);
@@ -160,6 +247,13 @@ program
 program
   .command('diagnose')
   .description('Check NAT traversal capability (UPnP, STUN, local network)')
+  .addHelpText('after', `
+Reports your LAN IP, whether your router accepts UPnP port mappings, and
+your STUN-observed public address — i.e. whether peers will reach you
+directly or fall back to the TURN relay tier.
+
+Example:
+  $ mesh diagnose`)
   .action(async () => {
     try {
       await diagnoseCommand();
@@ -167,6 +261,14 @@ program
       console.error(`Error: ${e.message}`);
       process.exitCode = 1;
     }
+  });
+
+program
+  .command('owner')
+  .alias('author')
+  .description('Show who built mesh — links and contact')
+  .action(() => {
+    console.log(OWNER_CARD);
   });
 
 program.parseAsync(process.argv);
