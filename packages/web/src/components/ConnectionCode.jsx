@@ -30,31 +30,44 @@ export default function ConnectionCode({ onJoin, joining = false, defaultValue =
         video: { facingMode: 'environment' },
       })
       streamRef.current = stream
+      // The <video> element doesn't exist yet — it mounts on the re-render
+      // this triggers. The effect below finishes the wiring once it's in the
+      // DOM (checking videoRef here would always see null and bail).
       setScanning(true)
-
-      if (!videoRef.current) { stopCamera(); return }
-      videoRef.current.srcObject = stream
-      await new Promise((resolve, reject) => {
-        const v = videoRef.current
-        if (!v) { resolve(); return }
-        v.onloadedmetadata = resolve
-        v.onerror = reject
-        setTimeout(resolve, 3000)
-      })
-
-      if (!videoRef.current) { stopCamera(); return }
-      try { await videoRef.current.play() } catch { stopCamera(); return }
-      scanFrame()
     } catch (err) {
       setScanning(false)
       useToastStore.getState().addToast('Camera access denied or unavailable', 'error')
     }
   }
 
+  useEffect(() => {
+    if (!scanning || !streamRef.current || !videoRef.current) return
+    const video = videoRef.current
+    let cancelled = false
+    video.srcObject = streamRef.current
+    ;(async () => {
+      await new Promise((resolve) => {
+        video.onloadedmetadata = resolve
+        setTimeout(resolve, 3000)
+      })
+      if (cancelled) return
+      try { await video.play() } catch { if (!cancelled) stopCamera(); return }
+      if (!cancelled) scanFrame()
+    })()
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scanning])
+
   function scanFrame() {
     if (!videoRef.current || !canvasRef.current) return
     const video = videoRef.current
     const canvas = canvasRef.current
+    // Camera warming up — dimensions are 0 until the first real frame, and
+    // getImageData on a 0×0 canvas throws.
+    if (!video.videoWidth || !video.videoHeight) {
+      animRef.current = requestAnimationFrame(scanFrame)
+      return
+    }
     canvas.width = video.videoWidth
     canvas.height = video.videoHeight
     const ctx = canvas.getContext('2d')

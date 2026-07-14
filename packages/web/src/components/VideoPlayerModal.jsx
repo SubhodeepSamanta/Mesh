@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { motion } from 'framer-motion'
 import { transferManager as M } from '../lib/transferManager.js'
 import { useTransferStore } from '../store/useTransferStore.js'
@@ -55,12 +55,6 @@ export default function VideoPlayerModal({ fileEntry, onClose }) {
     return fileIsComplete(fileEntry)
   }, [chunkStates, fileEntry])
 
-  useEffect(() => {
-    if (isComplete && phase !== 'ready-complete') {
-      playFromBlob()
-    }
-  }, [isComplete, phase, playFromBlob])
-
   const cleanupPlayback = useCallback(() => {
     if (blobUrlRef.current) {
       URL.revokeObjectURL(blobUrlRef.current)
@@ -96,6 +90,16 @@ export default function VideoPlayerModal({ fileEntry, onClose }) {
       }
     })()
   }, [fileEntry, container])
+
+  // Placed after playFromBlob's declaration on purpose — referencing it in the
+  // deps array earlier is a temporal-dead-zone crash on first render. Skips
+  // 'streaming': an active MSE session finishes via endOfStream, and swapping
+  // its src for a blob would reset the viewer's playback position.
+  useEffect(() => {
+    if (isComplete && phase !== 'ready-complete' && phase !== 'streaming') {
+      playFromBlob()
+    }
+  }, [isComplete, phase, playFromBlob])
 
   // Phase 1: detect whether progressive (MSE) playback is even feasible,
   // by accumulating this file's own head bytes as they arrive.
