@@ -26,13 +26,15 @@ program
   .description('Seed a file and print a share code for the receiver')
   .option('--port <port>', 'TCP port to serve chunks on (default: random)')
   .option('--dht-port <port>', 'UDP port for the DHT node (default: random)')
-  .option('--bootstrap <hostport>', 'join an existing DHT via this bootstrap node, format host:port')
+  .option('--bootstrap <hostport>', 'DHT bootstrap node, format host:port (default: the public mesh bootstrap node)')
+  .option('--no-bootstrap', 'do not join any existing DHT (receivers must reach this machine directly)')
   .option('--public-ip <ip>', 'override public IP detection')
   .option('--no-upnp', 'skip automatic UPnP port mapping')
   .option('--no-stun', 'skip STUN public-IP discovery')
-  .option('--turn-host <host>', 'TURN relay server host (fallback connectivity tier)')
+  .option('--turn-host <host>', 'TURN relay server host (default: credentials fetched from the public mesh relay)')
   .option('--turn-port <port>', 'TURN relay server port', '3478')
   .option('--turn-secret <secret>', 'TURN static-auth-secret, shared with the coturn deployment')
+  .option('--no-turn', 'disable the TURN relay fallback tier')
   .option('--no-tui', 'disable the interactive terminal UI and use plain log output')
   .action(async (file, options) => {
     let tuiInstance = null;

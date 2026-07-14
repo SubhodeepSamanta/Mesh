@@ -13,7 +13,7 @@ describe('sendCommand announced address', () => {
     const filePath = join(dir, 'f.bin');
     await writeFile(filePath, Buffer.from('announce address regression test'));
 
-    const session = await sendCommand(filePath, { publicIp: '203.0.113.77', upnp: false, stun: false }, { log: () => {} });
+    const session = await sendCommand(filePath, { bootstrap: false, turn: false, publicIp: '203.0.113.77', upnp: false, stun: false }, { log: () => {} });
 
     try {
       assert.equal(session.dhtNode.publicAddress, '203.0.113.77');

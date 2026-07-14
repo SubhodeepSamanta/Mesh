@@ -37,15 +37,18 @@ The process keeps running and seeding the file until you press Ctrl+C. The share
 
 Useful flags:
 
+Discovery and relay work with zero flags: the CLI ships with a default public bootstrap node baked in (like BitTorrent's DHT routers) and fetches short-lived TURN relay credentials automatically, so `mesh send ./file` is all a typical user ever types. The flags below override or disable those defaults:
+
 | Flag | Purpose |
 |---|---|
+| `--bootstrap <host:port>` | Join the DHT via your own bootstrap node instead of the default public one (`--no-bootstrap` to join none) |
+| `--turn-host`, `--turn-port`, `--turn-secret` | Use your own TURN relay instead of the default (`--no-turn` to disable the relay tier) |
 | `--public-ip <ip>` | Skip auto-detection and announce this IP directly (useful on a VPS with a known static IP) |
 | `--no-upnp` | Skip automatic router port-mapping |
 | `--no-stun` | Skip public-IP discovery via STUN |
-| `--turn-host`, `--turn-port`, `--turn-secret` | Configure a TURN relay fallback (see below) |
 | `--port`, `--dht-port` | Pin specific TCP/UDP ports instead of random ones |
 
-The TURN flags can also be set as environment variables instead of typing them every time — `MESH_TURN_HOST`, `MESH_TURN_PORT`, `MESH_TURN_SECRET`, and `MESH_PUBLIC_IP`. Use the same values as your `coturn` deployment's `TURN_SECRET`/`EXTERNAL_IP` (see the root `.env`):
+Environment-variable equivalents, handy for self-hosted deployments: `MESH_BOOTSTRAP`, `MESH_TURN_HOST`, `MESH_TURN_PORT`, `MESH_TURN_SECRET`, `MESH_TURN_API` (a URL returning `{ iceServers }` credentials, like the signaling server's `/turn` endpoint), and `MESH_PUBLIC_IP`. Use the same values as your `coturn` deployment's `TURN_SECRET`/`EXTERNAL_IP` (see the root `.env`):
 
 ```
 export MESH_TURN_HOST=your-vm-ip
@@ -77,7 +80,7 @@ Two peers connect through a three-tier ladder, attempted in order:
 
 1. **Direct** — the receiver dials the sender's TCP port directly.
 2. **UPnP-assisted direct** — if the sender's router supports UPnP, `mesh send` automatically opens a port mapping so tier 1 works even behind typical home NAT.
-3. **TURN relay** — if direct connection fails and a TURN server is configured (`--turn-host`/`--turn-secret`), traffic relays through it. This is the same coturn deployment and HMAC credential scheme used by the browser client, just driven by a small built-in TURN client instead of WebRTC.
+3. **TURN relay** — if direct connection fails, traffic relays through a TURN server (the default public relay, or your own via `--turn-host`/`--turn-secret`). This is the same coturn deployment and HMAC credential scheme used by the browser client, just driven by a small built-in TURN client instead of WebRTC — and the sender's credentials are short-lived tokens fetched over HTTP, so no secret ever ships with this package.
 
 Every tier carries the same end-to-end encryption (X25519 ECDH + AES-256-GCM) and the same Merkle-proof chunk verification — the relay only ever sees ciphertext.
 

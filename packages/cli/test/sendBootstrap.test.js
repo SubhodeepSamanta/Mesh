@@ -19,7 +19,7 @@ describe('sendCommand with a bootstrap node', () => {
 
     const session = await sendCommand(
       filePath,
-      { bootstrap: `127.0.0.1:${bootstrapNode.port}`, publicIp: '203.0.113.99', upnp: false, stun: false },
+      { bootstrap: `127.0.0.1:${bootstrapNode.port}`, turn: false, publicIp: '203.0.113.99', upnp: false, stun: false },
       { log: () => {} }
     );
 

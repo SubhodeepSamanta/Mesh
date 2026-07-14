@@ -15,7 +15,12 @@ export const TURN_REFRESH_INTERVAL_MS = 15 * 1000;
 export const ANNOUNCE_INTERVAL_MS = 25 * 1000;
 
 async function setupRelay(dhtNode, turnConfig, identity, server) {
-  const { username, credential } = generateTurnCredentials(turnConfig.secret, identity, turnConfig.credentialTtlSec);
+  // Either mint credentials locally from a shared static-auth secret, or use
+  // pre-issued time-limited ones (e.g. fetched from the signaling server's
+  // /turn endpoint, which keeps the secret off client machines).
+  const { username, credential } = turnConfig.secret
+    ? generateTurnCredentials(turnConfig.secret, identity, turnConfig.credentialTtlSec)
+    : { username: turnConfig.username, credential: turnConfig.credential };
   const turnClient = new TurnClient({ host: turnConfig.host, port: turnConfig.port, username, credential });
   const { relayedAddress } = await turnClient.allocate();
 

@@ -22,6 +22,30 @@ function send(ws, msg) {
 }
 
 describe('signaling server', () => {
+  it('serves time-limited TURN credentials over GET /turn', async () => {
+    process.env.TURN_URL = 'turn:198.51.100.7:3478';
+    process.env.TURN_SECRET = 'test-secret';
+    const server = new SignalingServer();
+    const addr = await server.listen(0);
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${addr.port}/turn`);
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      const turn = body.iceServers.find((s) => s.urls === 'turn:198.51.100.7:3478');
+      assert.ok(turn, 'response includes the TURN server');
+      assert.match(turn.username, /^\d+:[0-9a-f]{16}$/);
+      assert.ok(turn.credential.length > 0);
+      // Two requests must mint distinct identities.
+      const second = await (await fetch(`http://127.0.0.1:${addr.port}/turn`)).json();
+      assert.notEqual(second.iceServers.at(-1).username, turn.username);
+    } finally {
+      delete process.env.TURN_URL;
+      delete process.env.TURN_SECRET;
+      await server.close();
+    }
+  });
+
   it('creates a room and returns a room code', async () => {
     const server = new SignalingServer();
     const addr = await server.listen(0);

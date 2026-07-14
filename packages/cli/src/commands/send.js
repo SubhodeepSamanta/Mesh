@@ -5,6 +5,7 @@ import { isIP } from 'net';
 import { DHTNode, SeedManager } from '@mesh/engine';
 import { resolveCandidates, makeTransferCandidateResolver } from '../lib/network.js';
 import { encodeShareCode, formatShareCode } from '../lib/shareCode.js';
+import { DEFAULT_BOOTSTRAP, DEFAULT_TURN_API, fetchTurnCredentials } from '../lib/defaults.js';
 
 async function resolveBootstrapTarget(hostPort) {
   const [host, portStr] = hostPort.split(':');
@@ -26,14 +27,20 @@ export async function sendCommand(filePath, options, { log = console.log, onSeed
   const dhtNode = new DHTNode();
   await dhtNode.listen(options.dhtPort ? Number(options.dhtPort) : 0, '0.0.0.0');
 
+  // Default to the project's public bootstrap node so `mesh send <file>` works
+  // with no flags; --bootstrap overrides it, --no-bootstrap opts out.
+  const bootstrapSpec = options.bootstrap === false
+    ? null
+    : (typeof options.bootstrap === 'string' ? options.bootstrap : (process.env.MESH_BOOTSTRAP || DEFAULT_BOOTSTRAP));
+
   let bootstrapTarget = null;
-  if (options.bootstrap) {
+  if (bootstrapSpec) {
     try {
-      bootstrapTarget = await resolveBootstrapTarget(options.bootstrap);
+      bootstrapTarget = await resolveBootstrapTarget(bootstrapSpec);
       await dhtNode.bootstrap(bootstrapTarget.host, bootstrapTarget.port);
     } catch (e) {
       bootstrapTarget = null;
-      log(`Warning: could not bootstrap into ${options.bootstrap}: ${e.message}`);
+      log(`Warning: could not bootstrap into ${bootstrapSpec}: ${e.message}`);
     }
   }
 
@@ -59,9 +66,21 @@ export async function sendCommand(filePath, options, { log = console.log, onSeed
   const turnSecret = options.turnSecret || process.env.MESH_TURN_SECRET;
   const turnPort = options.turnPort || process.env.MESH_TURN_PORT || 3478;
 
-  const turnConfig = turnHost && turnSecret
-    ? { host: turnHost, port: Number(turnPort), secret: turnSecret }
-    : null;
+  // TURN relay tier: an explicit host+secret wins; otherwise fetch time-limited
+  // credentials from the credential endpoint so no flags (and no secret) are
+  // needed. --no-turn opts out of the relay tier entirely.
+  let turnConfig = null;
+  if (options.turn !== false) {
+    if (turnHost && turnSecret) {
+      turnConfig = { host: turnHost, port: Number(turnPort), secret: turnSecret };
+    } else {
+      try {
+        turnConfig = await fetchTurnCredentials(process.env.MESH_TURN_API || DEFAULT_TURN_API);
+      } catch (e) {
+        log(`Warning: TURN relay unavailable (${e.message}) — continuing with direct connectivity only`);
+      }
+    }
+  }
 
   const seedEntry = await seedManager.seedFile(absolutePath, {
     fileName: basename(absolutePath),

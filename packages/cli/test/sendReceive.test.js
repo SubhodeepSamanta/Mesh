@@ -43,7 +43,7 @@ describe('mesh send/receive CLI integration', () => {
     try {
       await writeFile(srcPath, content);
 
-      const sender = runCli(['send', srcPath, '--public-ip', '127.0.0.1', '--no-upnp', '--no-stun']);
+      const sender = runCli(['send', srcPath, '--public-ip', '127.0.0.1', '--no-upnp', '--no-stun', '--no-bootstrap', '--no-turn']);
       const shareCode = await waitForShareCode(sender);
 
       const receiver = runCli(['receive', shareCode, '--out', outPath]);
@@ -88,7 +88,7 @@ describe('mesh send/receive CLI integration', () => {
     try {
       await writeFile(srcPath, randomBytes(1000));
 
-      const sender = runCli(['send', srcPath, '--no-upnp', '--no-stun']);
+      const sender = runCli(['send', srcPath, '--no-upnp', '--no-stun', '--no-bootstrap', '--no-turn']);
       await waitForShareCode(sender);
 
       assert.match(sender.getStdout(), /Connectivity: local/);

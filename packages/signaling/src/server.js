@@ -112,6 +112,15 @@ export class SignalingServer {
           }));
           return;
         }
+        // Hands out time-limited HMAC TURN credentials (same scheme the web
+        // client gets over the socket) so CLI peers never need the secret.
+        if (req.url === '/turn') {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({
+            iceServers: getIceServers(randomBytes(8).toString('hex')),
+          }));
+          return;
+        }
         res.writeHead(404);
         res.end();
       });
