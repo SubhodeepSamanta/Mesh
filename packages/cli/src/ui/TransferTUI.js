@@ -89,13 +89,12 @@ function ReceiveApp({ fileLabel, swarm }) {
     );
   }
 
+  // Collapsed on purpose: unreachable peers are routine (stale DHT listings
+  // from stopped seeders) and the transfer already succeeded via the peers
+  // shown above. Total failure surfaces the full per-peer detail as an error.
   if (warnings.length > 0) {
     children.push(
-      h(
-        Box,
-        { flexDirection: 'column', marginTop: 1, key: 'warnings' },
-        ...warnings.map((w, i) => h(Text, { color: 'yellow', key: `warn-${i}` }, `Warning: ${w.peerId} — ${w.reason}`))
-      )
+      h(Text, { dimColor: true, key: 'warnings' }, `Skipped ${warnings.length} unreachable peer listing(s)`)
     );
   }
 

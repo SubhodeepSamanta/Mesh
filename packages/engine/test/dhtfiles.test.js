@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { DHTNode, generateNodeId } from '../src/dht.js';
+import { DHTNode, generateNodeId, PEER_TTL_MS } from '../src/dht.js';
 import { sha256 } from '../src/crypto.js';
 
 describe('dht announce and get peers', () => {
@@ -117,6 +117,67 @@ it('an announcing node remains discoverable directly even after the peer it repl
     assert.equal(matching.length, 1);
 
     await nodeA.close();
+  });
+
+  it('peer entries expire once the seeder stops re-announcing', async () => {
+    const store = new DHTNode();
+    const seeder = new DHTNode();
+    const finder = new DHTNode();
+    await store.listen();
+    await seeder.listen();
+    await finder.listen();
+
+    seeder.routingTable.addPeer({ id: store.nodeId, addr: '127.0.0.1', port: store.port });
+    finder.routingTable.addPeer({ id: store.nodeId, addr: '127.0.0.1', port: store.port });
+
+    const fileHash = sha256(Buffer.from('ttl expiry test'));
+    await seeder.announceFile(fileHash, 6200);
+
+    assert.ok((await finder.getPeersForFile(fileHash)).some(p => p.port === 6200), 'fresh announce is discoverable');
+
+    // Simulate the seeder dying: age the announcement everywhere it is stored
+    // (a live seeder would keep refreshing both via its re-announce timer).
+    for (const node of [store, seeder]) {
+      for (const peers of node.fileStore.values()) {
+        for (const p of peers) p.announcedAt = Date.now() - PEER_TTL_MS - 1;
+      }
+    }
+
+    const stale = await finder.getPeersForFile(fileHash);
+    assert.equal(stale.filter(p => p.port === 6200).length, 0, 'expired announce is no longer served');
+    assert.equal(store.fileStore.size, 0, 'store compacts fully-expired entries');
+
+    await store.close();
+    await seeder.close();
+    await finder.close();
+  });
+
+  it('a re-announce within the TTL keeps the seeder discoverable', async () => {
+    const store = new DHTNode();
+    const seeder = new DHTNode();
+    await store.listen();
+    await seeder.listen();
+
+    seeder.routingTable.addPeer({ id: store.nodeId, addr: '127.0.0.1', port: store.port });
+
+    const fileHash = sha256(Buffer.from('ttl refresh test'));
+    await seeder.announceFile(fileHash, 6300);
+
+    // Age the entry close to expiry, then re-announce — the refreshed
+    // timestamp must reset the clock.
+    for (const peers of store.fileStore.values()) {
+      for (const p of peers) p.announcedAt = Date.now() - PEER_TTL_MS + 1000;
+    }
+    await seeder.announceFile(fileHash, 6300);
+
+    for (const peers of store.fileStore.values()) {
+      for (const p of peers) {
+        assert.ok(Date.now() - p.announcedAt < 5000, 're-announce refreshed the timestamp');
+      }
+    }
+
+    await store.close();
+    await seeder.close();
   });
 
   it('announce and getPeers work across a five node mesh', async () => {

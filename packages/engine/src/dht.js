@@ -6,6 +6,10 @@ export const DHT_K = 20;
 export const ID_BYTES = 20;
 export const ALPHA = 3;
 export const REQUEST_TIMEOUT_MS = 3000;
+// Seeders re-announce every ~25s; an entry not refreshed for a few cycles
+// means the seeder is gone. Without this TTL every test/aborted send leaves a
+// dead peer behind forever, and receivers burn timeouts dialing corpses.
+export const PEER_TTL_MS = 90 * 1000;
 
 export function isValidNodeId(id) {
   return typeof id === 'string' && id.length === ID_BYTES * 2 && /^[0-9a-f]+$/i.test(id);
@@ -243,7 +247,7 @@ _handleMessage(msgBuf, rinfo) {
 
     if (msg.type === DHT_MSG.GET_PEERS) {
       if (typeof msg.fileHash !== 'string') return;
-      const peers = this.fileStore.get(msg.fileHash) || [];
+      const peers = this._livePeers(msg.fileHash);
       this._send(rinfo.address, rinfo.port, {
         type: DHT_MSG.PEERS, msgId: msg.msgId, nodeId: this.nodeId,
         fileHash: msg.fileHash,
@@ -274,6 +278,19 @@ _handleMessage(msgBuf, rinfo) {
       }
       return;
     }
+  }
+
+  // Read-side expiry of file announcements: filters out entries whose seeder
+  // stopped re-announcing, and compacts the store while at it.
+  _livePeers(fileHash) {
+    const peers = this.fileStore.get(fileHash) || [];
+    const now = Date.now();
+    const fresh = peers.filter(p => now - (p.announcedAt || 0) < PEER_TTL_MS);
+    if (fresh.length !== peers.length) {
+      if (fresh.length === 0) this.fileStore.delete(fileHash);
+      else this.fileStore.set(fileHash, fresh);
+    }
+    return fresh;
   }
 
   requestRelayPermission(dhtAddr, dhtPort, { timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
@@ -459,7 +476,7 @@ async getPeersForFile(fileHash) {
   const dhtKey = fileHashToDhtKey(fileHash);
   const closest = await this.iterativeFindNode(dhtKey);
 
-  const localPeers = this.fileStore.get(fileHash) || [];
+  const localPeers = this._livePeers(fileHash);
   const seen = new Set();
   const merged = [];
 

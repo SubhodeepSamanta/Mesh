@@ -101,7 +101,7 @@ program
             console.log(`\nConnected to peer ${peerId} via ${tier} tier`);
           });
           swarm.on('connectionWarnings', (warnings) => {
-            for (const w of warnings) console.warn(`\nWarning: could not connect to ${w.peerId}: ${w.reason}`);
+            console.warn(`\nSkipped ${warnings.length} unreachable peer listing(s)`);
           });
         },
       });
